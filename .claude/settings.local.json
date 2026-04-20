@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api *)",
+      "Bash(gh auth *)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -sL https://raw.githubusercontent.com/github/awesome-copilot/main/agents/specification.agent.md -o /tmp/spec.agent.md)",
+      "Read(//tmp/**)"
+    ]
+  }
+}
