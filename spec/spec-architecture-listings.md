@@ -256,22 +256,9 @@ CREATE TRIGGER deny_listing_delete
 ### 4.2 Schema — supporting tables
 
 ```sql
--- listing_media
-CREATE TABLE listing_media (
-  id                   UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-  listing_id           UUID         NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
-  file_key             TEXT         NOT NULL,
-  mime_type            TEXT         NOT NULL CHECK (mime_type IN ('image/jpeg','image/png','image/webp')),
-  size_bytes           BIGINT       NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 10485760),
-  sort_order           SMALLINT     NOT NULL DEFAULT 0,
-  status               TEXT         NOT NULL DEFAULT 'pending_confirmation'
-                         CHECK (status IN ('pending_confirmation','confirmed')),
-  scheduled_delete_at  TIMESTAMPTZ,
-  created_at           TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_listing_media_listing ON listing_media (listing_id, sort_order);
-CREATE INDEX idx_listing_media_sweep ON listing_media (scheduled_delete_at)
-  WHERE scheduled_delete_at IS NOT NULL;
+-- listing_media: SUPERSEDED. See spec-architecture-media-pipeline.md §4.2 for the
+-- canonical definition (FK to media_objects; role derived from media_objects.purpose;
+-- single-cover trigger). The previous DDL (file_key TEXT, size_bytes, status) is retired.
 
 -- listing_audit_events (partitioned monthly)
 CREATE TABLE listing_audit_events (
