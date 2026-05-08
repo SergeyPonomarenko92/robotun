@@ -1,8 +1,8 @@
 ---
 title: Deal Workflow (BIZ-001)
-version: 1.0
+version: 1.1
 date_created: 2026-05-06
-last_updated: 2026-05-06
+last_updated: 2026-05-08
 owner: Platform / Backend Team
 tags: [architecture, deals, state-machine, escrow, marketplace]
 ---
@@ -482,6 +482,8 @@ Implementation: app-layer `project_event_metadata(event_type, metadata, caller_r
 
 ### 4.8 Outbox event registry
 
+#### 4.8.1 Payments-consumed events (v1.0)
+
 | Event type | Emitted on | Payload keys |
 |---|---|---|
 | `deal.created` | POST /deals success | deal_id, client_id, provider_id, agreed_price, category_id |
@@ -493,6 +495,31 @@ Implementation: app-layer `project_event_metadata(event_type, metadata, caller_r
 | `deal.escrow_partial_release` | admin /resolve outcome=split | deal_id, release_amount_kopecks, refund_amount_kopecks, escrow_hold_id |
 
 Consumed by Payments module. Producer (Deal service) is NOT a system of record for escrow funds.
+
+#### 4.8.2 Notification-consumed events (v1.1)
+
+Added in v1.1 as a hard prerequisite for Notifications Module 9 and Messaging Module 10. These events are emitted to `outbox_events` in the SAME transaction as the corresponding state mutation (or the timer-worker UPDATE), with `aggregate_type='deal'`. They MUST be present so that the Notifications worker (`aggregate_type IN ('deal','review','user','message','conversation')`) can route user-facing notifications without polling `deal_events`.
+
+| Event type | Emitted on | Payload keys |
+|---|---|---|
+| `deal.rejected` | Provider `POST /deals/{id}/reject` (pending → cancelled by provider rejection) | deal_id, client_id, provider_id, rejection_reason |
+| `deal.cancel_requested` | Either party first `POST /deals/{id}/cancel` from active (cancel-consent flow) | deal_id, client_id, provider_id, requested_by_role, requested_by_user_id |
+| `deal.cancelled_by_client` | Client `POST /deals/{id}/cancel` from pending | deal_id, client_id, provider_id |
+| `deal.cancelled_mutual` | Second party completes mutual cancel (active → cancelled, both parties consented) | deal_id, client_id, provider_id |
+| `deal.expired_pending` | Timer worker 72h pending-expiry sweep | deal_id, client_id, provider_id |
+| `deal.submitted` | Provider `POST /deals/{id}/submit` (active → in_review) | deal_id, client_id, provider_id |
+| `deal.approved` | Client `POST /deals/{id}/approve` (in_review → completed) | deal_id, client_id, provider_id |
+| `deal.disputed` | Client `POST /deals/{id}/dispute` | deal_id, client_id, provider_id |
+| `deal.dispute_resolved` | Admin `POST /deals/{id}/resolve` | deal_id, client_id, provider_id, outcome |
+| `deal.dispute_escalated` | Dispute SLA timer sweep (14d → escalate) | deal_id, escalation_number |
+| `deal.dispute_unresolved` | Dispute SLA second-expiry sweep (refund-to-client cancel path) | deal_id, client_id, provider_id |
+| `deal.auto_completed` | Timer worker auto-complete sweep (in_review → completed after 7d grace) | deal_id, client_id, provider_id |
+
+**Consumed by:** Notifications module (Module 9) for user-facing notifications; Messaging module (Module 10) for the deal-conversation lock-by-deal handler that fires on `deal.approved`, `deal.auto_completed`, `deal.cancelled_*`, `deal.dispute_resolved`, `deal.dispute_unresolved`.
+
+**Emission constraint:** All events in §4.8.2 are emitted via `INSERT INTO outbox_events` inside the same transaction as the corresponding `deals` UPDATE (for synchronous transitions) or the timer-worker `UPDATE ... RETURNING` row (for sweeps). On 0 rows returned by the guarded UPDATE, no outbox event is emitted (PAT-002 idempotency).
+
+**Polling fallback explicitly forbidden:** Consumers MUST NOT scan `deal_events` directly for notification routing. The outbox is the canonical integration channel.
 
 ### 4.9 Timer worker contracts
 

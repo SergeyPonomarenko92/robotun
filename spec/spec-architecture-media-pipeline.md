@@ -1,8 +1,8 @@
 ---
 title: Media Pipeline — Upload, Storage, Processing, Access
-version: 1.0
+version: 1.1
 date_created: 2026-05-06
-last_updated: 2026-05-06
+last_updated: 2026-05-08
 owner: Platform / Backend
 tags: [architecture, media, storage, s3, kyc, listings]
 ---
@@ -125,10 +125,12 @@ CREATE TABLE media_objects (
   owner_user_id        UUID         REFERENCES users(id) ON DELETE SET NULL,
   listing_id           UUID         REFERENCES listings(id) ON DELETE SET NULL,
   kyc_document_id      UUID         REFERENCES kyc_documents(id) ON DELETE SET NULL,
+  message_id           UUID,                                                     -- v1.1; FK added in Messaging Module 10 deploy migration
 
   purpose              TEXT         NOT NULL CHECK (purpose IN (
                           'listing_cover','listing_gallery','listing_attachment',
-                          'kyc_document','avatar'
+                          'kyc_document','avatar',
+                          'message_attachment'                                    -- v1.1
                        )),
 
   -- Storage location.
@@ -175,10 +177,13 @@ CREATE TABLE media_objects (
   updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
 
   -- Owner FK constraints.
+  -- v1.1: message_id added; for purpose='message_attachment', owner_user_id IS NULL
+  -- (ownership transitively derived via messages.sender_id).
   CONSTRAINT chk_exactly_one_owner CHECK (
-    ((owner_user_id IS NOT NULL)::int +
+    ((owner_user_id   IS NOT NULL)::int +
      (listing_id      IS NOT NULL)::int +
-     (kyc_document_id IS NOT NULL)::int) = 1
+     (kyc_document_id IS NOT NULL)::int +
+     (message_id      IS NOT NULL)::int) = 1
   ),
   CONSTRAINT chk_purpose_fk_listing CHECK (
     purpose NOT IN ('listing_cover','listing_gallery','listing_attachment')
@@ -189,6 +194,9 @@ CREATE TABLE media_objects (
   ),
   CONSTRAINT chk_purpose_fk_user CHECK (
     purpose <> 'avatar' OR owner_user_id IS NOT NULL
+  ),
+  CONSTRAINT chk_purpose_fk_message CHECK (                                      -- v1.1
+    purpose <> 'message_attachment' OR message_id IS NOT NULL
   ),
 
   -- KYC must live in the KYC private bucket and never be public.
@@ -205,7 +213,22 @@ CREATE INDEX idx_media_objects_orphan      ON media_objects (created_at)    WHER
 CREATE INDEX idx_media_objects_scan_retry  ON media_objects (scan_error_at) WHERE status = 'scan_error';
 CREATE INDEX idx_media_objects_kyc_expiry  ON media_objects (expires_at)    WHERE purpose = 'kyc_document' AND expires_at IS NOT NULL AND hard_deleted_at IS NULL;
 CREATE INDEX idx_media_objects_grace       ON media_objects (deleted_at)    WHERE status = 'deleted' AND hard_deleted_at IS NULL;
+CREATE INDEX idx_media_objects_message     ON media_objects (message_id)    WHERE message_id IS NOT NULL AND status = 'ready';  -- v1.1
 ```
+
+#### 4.1.1 v1.1 — `message_attachment` purpose contract
+
+Added in v1.1 as a hard prerequisite for Messaging Module 10.
+
+- **Purpose value:** `'message_attachment'`.
+- **Owner FK:** `message_id` references `messages(id)` ON DELETE SET NULL. **Deploy order:** the `message_id` column ships in Media Pipeline v1.1 WITHOUT a FK (the `messages` table does not yet exist). The FK constraint is added in a follow-up migration that is part of the Messaging Module 10 deploy: `ALTER TABLE media_objects ADD CONSTRAINT fk_media_message FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL`. Until that migration lands, `message_id` is an unconstrained UUID column populated only by the Messaging service.
+- **`owner_user_id` for `message_attachment` rows:** MUST be NULL. Ownership is derived transitively via `messages.sender_id`. The `chk_exactly_one_owner` constraint enforces this (only `message_id` is set).
+- **Allowed MIME types** (Messaging REQ-014): `image/jpeg`, `image/png`, `image/webp`, `application/pdf`.
+- **Per-attachment size cap:** 10 MB.
+- **Per-message attachment cap:** 5 — enforced by Messaging callers via `pg_advisory_xact_lock(hashtextextended($message_id::text, 0))` (1-arg BIGINT form) followed by `SELECT COUNT(*) FROM media_objects WHERE message_id = $message_id AND status <> 'deleted'`. The Media Pipeline does NOT enforce this cap server-side; it is the consumer's contract (analogous to listing-gallery cap pattern in §9.3).
+- **Bucket:** `public-media` (recipient downloads through CDN-fronted stream endpoint with auth check). MIME-restricted; PDFs served with `Content-Disposition: attachment` to prevent browser inline rendering.
+- **Visibility:** sender always sees the attachment metadata; recipient access (stream endpoint) is gated on `status = 'ready'`. Threat (`status = 'quarantine_rejected'`) hides the attachment from both parties; Messaging emits `message.attachment_threat` outbox event.
+- **Retention:** unlinked when the parent `messages` row is deleted (`ON DELETE SET NULL`); orphan media older than the standard `awaiting_upload` grace are swept by the existing §4.7 lifecycle sweep. No special retention rule for `message_attachment`.
 
 ### 4.2 `listing_media` (supersedes `spec-architecture-listings.md` §4.2)
 
