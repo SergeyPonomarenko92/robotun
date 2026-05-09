@@ -6,7 +6,14 @@
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(curl -sL https://raw.githubusercontent.com/github/awesome-copilot/main/agents/specification.agent.md -o /tmp/spec.agent.md)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(npx skills *)",
+      "Bash(npx --yes create-next-app@latest web --typescript --tailwind --app --src-dir --import-alias \"@/*\" --eslint --use-npm --no-turbopack)",
+      "Bash(command -v nvm)",
+      "Read(//home/oem/.nvm/**)",
+      "Bash(bash -c 'source ~/.nvm/nvm.sh && nvm install 22 && nvm alias default 22 && node --version')",
+      "Bash(bash *)",
+      "Bash(git add *)"
     ]
   }
 }

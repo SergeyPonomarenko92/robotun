@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+/* =========================================================
+   Robotun — Foundation Tokens (v0.1, editorial light)
+   Light only. Dark клонується через [data-theme="dark"] пізніше.
+   ========================================================= */
+
+@theme {
+  /* Type families — bridged via next/font CSS variables */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-fraunces), Georgia, "Times New Roman", serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Type scale (rem; mobile baseline) */
+  --text-micro: 0.6875rem;
+  --text-caption: 0.8125rem;
+  --text-body: 0.9375rem;
+  --text-body-lg: 1.0625rem;
+  --text-h3: 1.375rem;
+  --text-h2: 1.875rem;
+  --text-h1: 2.625rem;
+  --text-display: 4rem;
+
+  /* Colors — warm paper + ink + brick accent */
+  --color-canvas: #f7f4ee;
+  --color-paper: #ffffff;
+  --color-elevated: #fffdf8;
+  --color-ink: #14110e;
+  --color-ink-soft: #2c2924;
+  --color-muted: #6e6862;
+  --color-muted-soft: #948e85;
+  --color-hairline: #e8e2d6;
+  --color-hairline-strong: #d6cfbf;
+
+  --color-accent: #b3361b;
+  --color-accent-hover: #962c14;
+  --color-accent-soft: #f3dcd2;
+
+  --color-success: #2f6f4f;
+  --color-success-soft: #d9ebe1;
+  --color-warning: #a86a14;
+  --color-warning-soft: #f6e3c2;
+  --color-danger: #a52a2a;
+  --color-danger-soft: #f4d8d4;
+  --color-info: #2b4a7a;
+  --color-info-soft: #dbe4f0;
+
+  /* Radii */
+  --radius-xs: 2px;
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* Shadows — restrained */
+  --shadow-xs: 0 1px 2px rgba(20, 17, 14, 0.04);
+  --shadow-sm: 0 1px 3px rgba(20, 17, 14, 0.06), 0 1px 2px rgba(20, 17, 14, 0.04);
+  --shadow-md: 0 6px 16px -8px rgba(20, 17, 14, 0.18), 0 2px 4px rgba(20, 17, 14, 0.04);
+  --shadow-lg: 0 18px 40px -16px rgba(20, 17, 14, 0.22), 0 4px 8px rgba(20, 17, 14, 0.06);
+  --shadow-pop: 0 30px 60px -24px rgba(20, 17, 14, 0.28);
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasis: cubic-bezier(0.2, 0, 0, 1.05);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+}
+
+/* Desktop type uplift */
+@media (min-width: 768px) {
+  :root {
+    --text-h2: 2.25rem;
+    --text-h1: 3.375rem;
+    --text-display: 5.5rem;
+  }
+}
+
+/* Display font finishing */
+.font-display {
+  font-feature-settings: "ss01", "ss02";
+  letter-spacing: -0.02em;
+}
+
+/* Globals */
+html {
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-size: var(--text-body);
+  line-height: 1.45;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-paper);
+}
+
+.divider-hair {
+  height: 1px;
+  background: var(--color-hairline);
+  border: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
