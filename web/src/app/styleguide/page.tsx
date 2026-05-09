@@ -10,7 +10,41 @@ import { SearchBar, type SearchSuggestion } from "@/components/ui/SearchBar";
 import { MoneyInput, MoneyDisplay } from "@/components/ui/MoneyInput";
 import { RatingStars } from "@/components/ui/RatingStars";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Search, ArrowRight, Plus, Heart, Inbox, FileText, MapPin } from "lucide-react";
+import { Modal, ModalClose } from "@/components/ui/Modal";
+import { useToast } from "@/components/ui/Toast";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
+import {
+  Menu,
+  MenuTrigger,
+  MenuContent,
+  MenuItem,
+  MenuSeparator,
+  MenuLabel,
+} from "@/components/ui/Menu";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/Popover";
+import { Tooltip } from "@/components/ui/Tooltip";
+import {
+  Search,
+  ArrowRight,
+  Plus,
+  Heart,
+  Inbox,
+  FileText,
+  MapPin,
+  MoreHorizontal,
+  Edit,
+  Trash2,
+  Copy,
+  Pause,
+  CheckCircle2,
+  Settings,
+  AlertTriangle,
+  Info,
+} from "lucide-react";
 
 const SUGGESTIONS: SearchSuggestion[] = [
   { id: "1", label: "Ремонт пральних машин", meta: "Електропобут · 247 пропозицій", hint: "TOP" },
@@ -56,6 +90,60 @@ const swatches: { token: string; hex: string }[] = [
   { token: "danger", hex: "#a52a2a" },
   { token: "info", hex: "#2b4a7a" },
 ];
+
+function ToastDemo() {
+  const { push } = useToast();
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Button
+        variant="secondary"
+        leftIcon={<CheckCircle2 size={14} />}
+        onClick={() =>
+          push({
+            tone: "success",
+            title: "Лістинг опубліковано",
+            description: "З'явиться у стрічці після проходження модерації.",
+          })
+        }
+      >
+        success
+      </Button>
+      <Button
+        variant="secondary"
+        leftIcon={<AlertTriangle size={14} />}
+        onClick={() =>
+          push({
+            tone: "warning",
+            title: "Ескроу спливає за 24 год",
+            description: "Підтвердіть угоду, інакше кошти повернуться клієнту.",
+            action: { label: "Відкрити угоду", onClick: () => {} },
+          })
+        }
+      >
+        warning + action
+      </Button>
+      <Button
+        variant="secondary"
+        leftIcon={<Info size={14} />}
+        onClick={() => push({ tone: "info", title: "Збережено в чернетки" })}
+      >
+        info
+      </Button>
+      <Button
+        variant="secondary"
+        onClick={() =>
+          push({
+            tone: "danger",
+            title: "Не вдалося відправити",
+            description: "Перевірте з'єднання та спробуйте ще раз.",
+          })
+        }
+      >
+        danger
+      </Button>
+    </div>
+  );
+}
 
 export default function StyleguidePage() {
   const [rating, setRating] = useState(4);
@@ -393,9 +481,169 @@ export default function StyleguidePage() {
         </Row>
       </Section>
 
+      <Section id="12" label="Modal">
+        <Row label="standard">
+          <Modal
+            trigger={<Button variant="secondary">Відкрити Modal</Button>}
+            title="Опублікувати лістинг?"
+            description="Лістинг піде на модерацію. Зазвичай це займає до 2 годин."
+            footer={
+              <>
+                <ModalClose asChild>
+                  <Button variant="ghost">Скасувати</Button>
+                </ModalClose>
+                <ModalClose asChild>
+                  <Button variant="accent">Опублікувати</Button>
+                </ModalClose>
+              </>
+            }
+          >
+            <p>
+              Перевірте назву, ціну й галерею перед публікацією. Після модерації
+              лістинг буде видно у пошуку.
+            </p>
+          </Modal>
+        </Row>
+        <Row label="destructive · locked">
+          <Modal
+            modalLock
+            trigger={<Button variant="danger" leftIcon={<Trash2 size={14} />}>Видалити лістинг</Button>}
+            title="Видалити «Ремонт пральних машин Bosch»?"
+            description="Цю дію не можна скасувати. Активні угоди по цьому лістингу залишаться у статусі pending до завершення."
+            size="lg"
+            footer={
+              <>
+                <ModalClose asChild>
+                  <Button variant="secondary">Не видаляти</Button>
+                </ModalClose>
+                <ModalClose asChild>
+                  <Button variant="danger">Видалити назавжди</Button>
+                </ModalClose>
+              </>
+            }
+          />
+        </Row>
+      </Section>
+
+      <Section id="13" label="Toast">
+        <Row label="tones">
+          <ToastDemo />
+        </Row>
+      </Section>
+
+      <Section id="14" label="Tabs">
+        <Row label="underline">
+          <div className="w-full max-w-2xl">
+            <Tabs defaultValue="about">
+              <TabsList>
+                <TabsTrigger value="about">Про мене</TabsTrigger>
+                <TabsTrigger value="listings" count={12}>Послуги</TabsTrigger>
+                <TabsTrigger value="reviews" count={147}>Відгуки</TabsTrigger>
+                <TabsTrigger value="portfolio">Портфоліо</TabsTrigger>
+              </TabsList>
+              <TabsContent value="about">
+                <p className="text-body text-ink-soft">
+                  Тут було б опис майстра, спеціалізації, мови, локація.
+                </p>
+              </TabsContent>
+              <TabsContent value="listings">12 послуг.</TabsContent>
+              <TabsContent value="reviews">147 відгуків.</TabsContent>
+              <TabsContent value="portfolio">Галерея робіт.</TabsContent>
+            </Tabs>
+          </div>
+        </Row>
+        <Row label="pill">
+          <Tabs defaultValue="all">
+            <TabsList variant="pill">
+              <TabsTrigger value="all" variant="pill">
+                Всі
+              </TabsTrigger>
+              <TabsTrigger value="active" variant="pill" count={3}>
+                Активні
+              </TabsTrigger>
+              <TabsTrigger value="review" variant="pill" count={1}>
+                На перевірці
+              </TabsTrigger>
+              <TabsTrigger value="done" variant="pill">
+                Завершені
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </Row>
+      </Section>
+
+      <Section id="15" label="Menu (DropdownMenu)">
+        <Row label="row actions">
+          <Menu>
+            <MenuTrigger asChild>
+              <Button variant="secondary" size="icon" aria-label="Дії">
+                <MoreHorizontal size={16} />
+              </Button>
+            </MenuTrigger>
+            <MenuContent>
+              <MenuLabel>Дії з лістингом</MenuLabel>
+              <MenuItem leftIcon={<Edit size={14} />} shortcut="⌘E">Редагувати</MenuItem>
+              <MenuItem leftIcon={<Copy size={14} />}>Дублювати</MenuItem>
+              <MenuItem leftIcon={<Pause size={14} />}>Призупинити</MenuItem>
+              <MenuSeparator />
+              <MenuItem destructive leftIcon={<Trash2 size={14} />}>
+                Видалити
+              </MenuItem>
+            </MenuContent>
+          </Menu>
+        </Row>
+      </Section>
+
+      <Section id="16" label="Popover">
+        <Row label="form-in-popover">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="secondary" leftIcon={<Settings size={14} />}>
+                Налаштування фільтра
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent>
+              <h4 className="font-display text-body-lg text-ink mb-3 tracking-tight">
+                Сортування
+              </h4>
+              <div className="flex flex-col gap-2 text-body">
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="sort" defaultChecked /> За релевантністю
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="sort" /> Найновіші
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="sort" /> Дешевші
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="sort" /> Найкращий рейтинг
+                </label>
+              </div>
+            </PopoverContent>
+          </Popover>
+        </Row>
+      </Section>
+
+      <Section id="17" label="Tooltip">
+        <Row label="basic">
+          <Tooltip content="KYC підтверджено через BankID">
+            <Badge tone="success" withDot>KYC ✓</Badge>
+          </Tooltip>
+          <Tooltip content="Скопіювати ID" shortcut="⌘C" side="bottom">
+            <Button variant="ghost" size="icon">
+              <Copy size={14} />
+            </Button>
+          </Tooltip>
+          <Tooltip content="Лістинг призупинений автоматично після 60 днів неактивності" side="right">
+            <Badge tone="warning">auto-paused</Badge>
+          </Tooltip>
+        </Row>
+      </Section>
+
       <footer className="mt-20 border-t border-hairline pt-8">
         <p className="font-mono text-caption text-muted-soft">
-          Далі: Modal, Toast, Tabs, MenuDropdown, Popover, Tooltip (Radix-based).
+          Далі: FileUploader, AttachmentGallery, CategoryPicker, DateTimePicker, PriceRange.
         </p>
       </footer>
     </main>

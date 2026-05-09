@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Playfair_Display, Geist, Geist_Mono } from "next/font/google";
+import { ToastProvider } from "@/components/ui/Toast";
+import { TooltipProvider } from "@/components/ui/Tooltip";
 import "./globals.css";
 
 const display = Playfair_Display({
@@ -35,7 +37,9 @@ export default function RootLayout({
       className={`${display.variable} ${geistSans.variable} ${geistMono.variable} antialiased`}
     >
       <body className="min-h-screen bg-canvas text-ink font-sans">
-        {children}
+        <TooltipProvider>
+          <ToastProvider>{children}</ToastProvider>
+        </TooltipProvider>
       </body>
     </html>
   );
