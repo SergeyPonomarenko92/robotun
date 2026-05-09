@@ -1,10 +1,23 @@
 "use client";
+import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { Tag } from "@/components/ui/Tag";
-import { Search, ArrowRight, Plus, Heart } from "lucide-react";
+import { FormField } from "@/components/ui/FormField";
+import { SearchBar, type SearchSuggestion } from "@/components/ui/SearchBar";
+import { MoneyInput, MoneyDisplay } from "@/components/ui/MoneyInput";
+import { RatingStars } from "@/components/ui/RatingStars";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Search, ArrowRight, Plus, Heart, Inbox, FileText, MapPin } from "lucide-react";
+
+const SUGGESTIONS: SearchSuggestion[] = [
+  { id: "1", label: "Ремонт пральних машин", meta: "Електропобут · 247 пропозицій", hint: "TOP" },
+  { id: "2", label: "Прибирання квартир", meta: "Клінінг · 1 240 пропозицій" },
+  { id: "3", label: "Електрика — заміна проводки", meta: "Електрика · 184 пропозиції" },
+  { id: "4", label: "Сантехніка — заміна змішувача", meta: "Сантехніка · 412 пропозицій" },
+];
 
 function Section({ id, label, children }: { id: string; label: string; children: React.ReactNode }) {
   return (
@@ -45,6 +58,9 @@ const swatches: { token: string; hex: string }[] = [
 ];
 
 export default function StyleguidePage() {
+  const [rating, setRating] = useState(4);
+  const [price, setPrice] = useState<number | null>(120000);
+  const [statement, setStatement] = useState("");
   return (
     <main className="mx-auto max-w-5xl px-6 py-16 md:py-24">
       <header className="mb-16 flex flex-col gap-6 md:gap-8">
@@ -235,9 +251,151 @@ export default function StyleguidePage() {
         </Row>
       </Section>
 
+      <Section id="07" label="FormField">
+        <Row label="basic">
+          <div className="w-full max-w-md">
+            <FormField label="Електронна адреса" helper="Ми надішлемо лист з підтвердженням" required>
+              <Input type="email" placeholder="ім’я@приклад.ua" />
+            </FormField>
+          </div>
+        </Row>
+        <Row label="error">
+          <div className="w-full max-w-md">
+            <FormField label="Пароль" error="Пароль має містити щонайменше 8 символів" required>
+              <Input type="password" defaultValue="123" />
+            </FormField>
+          </div>
+        </Row>
+        <Row label="char count">
+          <div className="w-full max-w-md">
+            <FormField
+              label="Опис послуги"
+              helper="Опишіть, що саме ви робите — без контактів"
+              optional
+              charCount={{ current: statement.length, max: 500 }}
+            >
+              <Input
+                value={statement}
+                onChange={(e) => setStatement(e.target.value)}
+                placeholder="Наприклад: ремонт пральних машин Bosch, Siemens, AEG"
+              />
+            </FormField>
+          </div>
+        </Row>
+        <Row label="hint">
+          <div className="w-full max-w-md">
+            <FormField label="Місто" hint="UA · обов’язкове">
+              <Input leftAddon={<MapPin size={14} />} placeholder="Київ" />
+            </FormField>
+          </div>
+        </Row>
+      </Section>
+
+      <Section id="08" label="SearchBar">
+        <Row label="md">
+          <SearchBar suggestions={SUGGESTIONS} onSubmit={() => {}} />
+        </Row>
+        <Row label="lg">
+          <SearchBar size="lg" suggestions={SUGGESTIONS} loading />
+        </Row>
+        <Row label="empty / no suggest">
+          <SearchBar placeholder="Знайти угоду за номером або назвою" />
+        </Row>
+      </Section>
+
+      <Section id="09" label="MoneyInput / Display">
+        <Row label="input md">
+          <div className="w-full max-w-xs">
+            <MoneyInput
+              valueKopecks={price}
+              onChangeKopecks={setPrice}
+              placeholder="0,00"
+            />
+          </div>
+        </Row>
+        <Row label="sizes">
+          <div className="w-full max-w-md flex flex-col gap-2">
+            <MoneyInput size="sm" defaultValueKopecks={50000} />
+            <MoneyInput size="md" defaultValueKopecks={120000} />
+            <MoneyInput size="lg" defaultValueKopecks={1850000} />
+          </div>
+        </Row>
+        <Row label="states">
+          <div className="w-full max-w-md grid grid-cols-2 gap-2">
+            <MoneyInput tone="error" defaultValueKopecks={5} />
+            <MoneyInput tone="success" defaultValueKopecks={250000} />
+          </div>
+        </Row>
+        <Row label="display">
+          <span className="text-body text-muted">Вартість угоди:</span>
+          <MoneyDisplay kopecks={price} emphasize className="text-h3" />
+        </Row>
+        <Row label="display variants">
+          <MoneyDisplay kopecks={0} className="text-body" />
+          <MoneyDisplay kopecks={1234567} className="text-body" />
+          <MoneyDisplay kopecks={-50000} className="text-body text-danger" />
+          <MoneyDisplay kopecks={null} className="text-body text-muted-soft" />
+        </Row>
+      </Section>
+
+      <Section id="10" label="RatingStars">
+        <Row label="display">
+          <RatingStars value={4.7} count={147} />
+        </Row>
+        <Row label="sizes">
+          <RatingStars size="sm" value={4.5} count={32} />
+          <RatingStars size="md" value={3.8} count={120} />
+          <RatingStars size="lg" value={5} count={1248} />
+        </Row>
+        <Row label="zero">
+          <RatingStars value={0} />
+          <RatingStars value={0} showZero={false} />
+        </Row>
+        <Row label="input">
+          <RatingStars mode="input" value={rating} onChange={setRating} size="lg" />
+          <span className="text-caption text-muted">обрано: {rating}</span>
+        </Row>
+      </Section>
+
+      <Section id="11" label="EmptyState">
+        <Row label="default">
+          <div className="w-full">
+            <EmptyState
+              numeral="01"
+              title="Поки що жодних угод"
+              description="Створіть першу угоду — і вона з’явиться тут разом зі статусом, ескроу і таймлайном."
+              primaryAction={
+                <Button leftIcon={<Plus size={16} />}>Створити угоду</Button>
+              }
+              secondaryAction={<Button variant="ghost">Як це працює →</Button>}
+            />
+          </div>
+        </Row>
+        <Row label="with icon · sm">
+          <div className="w-full">
+            <EmptyState
+              size="sm"
+              icon={<Inbox size={22} />}
+              title="Вхідних повідомлень немає"
+              description="Коли клієнт напише вам — побачите тут."
+            />
+          </div>
+        </Row>
+        <Row label="search">
+          <div className="w-full">
+            <EmptyState
+              icon={<FileText size={22} />}
+              title="Нічого не знайшли за запитом «барбер на дому»"
+              description="Спробуйте інший запит або зніміть фільтри."
+              primaryAction={<Button variant="secondary">Скинути фільтри</Button>}
+            />
+          </div>
+        </Row>
+      </Section>
+
       <footer className="mt-20 border-t border-hairline pt-8">
         <p className="font-mono text-caption text-muted-soft">
-          Далі: молекули — FormField, SearchBar, FileUploader, MoneyInput, CategoryPicker.
+          Далі: Modal, Toast, Tabs, MenuDropdown, Popover, Tooltip (Radix-based).
         </p>
       </footer>
     </main>
