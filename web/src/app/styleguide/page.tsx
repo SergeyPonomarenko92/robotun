@@ -27,6 +27,12 @@ import {
   PopoverContent,
 } from "@/components/ui/Popover";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { AttachmentChip } from "@/components/ui/AttachmentChip";
+import { FileUploader, type UploadedFile } from "@/components/ui/FileUploader";
+import { AttachmentGallery, type GalleryItem } from "@/components/ui/AttachmentGallery";
+import { CategoryPicker, type Category, type CategoryPath } from "@/components/ui/CategoryPicker";
+import { DateTimePicker } from "@/components/ui/DateTimePicker";
+import { PriceRange } from "@/components/ui/PriceRange";
 import {
   Search,
   ArrowRight,
@@ -45,6 +51,74 @@ import {
   AlertTriangle,
   Info,
 } from "lucide-react";
+
+const CATEGORIES: Category[] = [
+  {
+    id: "el",
+    name: "Електрика",
+    children: [
+      {
+        id: "el-house",
+        name: "Домашня електрика",
+        children: [
+          { id: "el-wiring", name: "Заміна проводки" },
+          { id: "el-socket", name: "Заміна розеток" },
+          { id: "el-light", name: "Встановлення світильників" },
+        ],
+      },
+      {
+        id: "el-pro",
+        name: "Промислова електрика",
+        children: [
+          { id: "el-panel", name: "Електрощити" },
+          { id: "el-cable", name: "Прокладання кабелю" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "rep",
+    name: "Ремонт побутової техніки",
+    children: [
+      {
+        id: "rep-wash",
+        name: "Пральні машини",
+        children: [
+          { id: "rep-wash-bosch", name: "Bosch / Siemens" },
+          { id: "rep-wash-lg", name: "LG / Samsung" },
+          { id: "rep-wash-other", name: "Інші бренди" },
+        ],
+      },
+      {
+        id: "rep-fridge",
+        name: "Холодильники",
+        children: [{ id: "rep-fridge-all", name: "Всі бренди" }],
+      },
+    ],
+  },
+  {
+    id: "clean",
+    name: "Прибирання",
+    children: [
+      {
+        id: "clean-flat",
+        name: "Квартири",
+        children: [
+          { id: "clean-flat-reg", name: "Регулярне" },
+          { id: "clean-flat-deep", name: "Генеральне" },
+          { id: "clean-flat-after", name: "Після ремонту" },
+        ],
+      },
+    ],
+  },
+];
+
+const GALLERY_INITIAL: GalleryItem[] = [
+  { id: "g1", src: "https://picsum.photos/seed/r-cover/400", alt: "cover", isCover: true },
+  { id: "g2", src: "https://picsum.photos/seed/r-2/400" },
+  { id: "g3", src: "https://picsum.photos/seed/r-3/400" },
+  { id: "g4", src: "https://picsum.photos/seed/r-4/400" },
+];
 
 const SUGGESTIONS: SearchSuggestion[] = [
   { id: "1", label: "Ремонт пральних машин", meta: "Електропобут · 247 пропозицій", hint: "TOP" },
@@ -149,6 +223,10 @@ export default function StyleguidePage() {
   const [rating, setRating] = useState(4);
   const [price, setPrice] = useState<number | null>(120000);
   const [statement, setStatement] = useState("");
+  const [category, setCategory] = useState<CategoryPath | null>(null);
+  const [gallery, setGallery] = useState<GalleryItem[]>(GALLERY_INITIAL);
+  const [uploads, setUploads] = useState<UploadedFile[]>([]);
+  const [priceRange, setPriceRange] = useState<[number, number]>([20000, 250000]);
   return (
     <main className="mx-auto max-w-5xl px-6 py-16 md:py-24">
       <header className="mb-16 flex flex-col gap-6 md:gap-8">
@@ -641,9 +719,117 @@ export default function StyleguidePage() {
         </Row>
       </Section>
 
+      <Section id="18" label="AttachmentChip">
+        <Row label="states">
+          <AttachmentChip fileName="contract.pdf" sizeBytes={184320} mimeType="application/pdf" status="uploading" progress={48} />
+          <AttachmentChip fileName="boiler.jpg" sizeBytes={1820480} mimeType="image/jpeg" status="scanning" />
+          <AttachmentChip fileName="warranty.pdf" sizeBytes={102400} mimeType="application/pdf" status="ready" onRemove={() => {}} />
+          <AttachmentChip fileName="suspicious.exe" sizeBytes={5242880} status="threat" onRemove={() => {}} />
+          <AttachmentChip fileName="huge.zip" sizeBytes={120000000} status="error" errorMessage="Перевищено 100 МБ" onRemove={() => {}} />
+        </Row>
+      </Section>
+
+      <Section id="19" label="FileUploader">
+        <Row label="multi · 3 max">
+          <div className="w-full max-w-xl">
+            <FileUploader
+              maxFiles={3}
+              maxSizeBytes={10 * 1024 * 1024}
+              hint="JPG, PNG, WebP, PDF"
+              files={uploads}
+              onFilesAdd={(files) =>
+                setUploads((cur) => [
+                  ...cur,
+                  ...files.map((f) => ({
+                    id: crypto.randomUUID(),
+                    file: f,
+                    status: "ready" as const,
+                  })),
+                ])
+              }
+              onRemove={(id) => setUploads((cur) => cur.filter((u) => u.id !== id))}
+            />
+          </div>
+        </Row>
+      </Section>
+
+      <Section id="20" label="AttachmentGallery">
+        <Row label="listing gallery (1 cover + 9)">
+          <AttachmentGallery
+            items={gallery}
+            maxItems={10}
+            onRemove={(id) => setGallery((cur) => cur.filter((g) => g.id !== id))}
+            onSetCover={(id) =>
+              setGallery((cur) => cur.map((g) => ({ ...g, isCover: g.id === id })))
+            }
+            onReorder={setGallery}
+            emptyHint="Додайте до 10 фото послуги — перше стане обкладинкою."
+          />
+        </Row>
+      </Section>
+
+      <Section id="21" label="CategoryPicker">
+        <Row label="3-level cascade">
+          <div className="w-full">
+            <CategoryPicker
+              categories={CATEGORIES}
+              value={category}
+              onChange={setCategory}
+            />
+            <p className="mt-3 text-caption text-muted">
+              Обрано:{" "}
+              {category ? (
+                <span className="font-mono text-ink">
+                  {category.l1.name} → {category.l2.name} → {category.l3.name}
+                </span>
+              ) : (
+                <span className="text-muted-soft">—</span>
+              )}
+            </p>
+          </div>
+        </Row>
+      </Section>
+
+      <Section id="22" label="DateTimePicker">
+        <Row label="date">
+          <div className="w-full max-w-xs">
+            <DateTimePicker variant="date" />
+          </div>
+        </Row>
+        <Row label="datetime">
+          <div className="w-full max-w-xs">
+            <DateTimePicker variant="datetime" />
+          </div>
+        </Row>
+        <Row label="time">
+          <div className="w-full max-w-[160px]">
+            <DateTimePicker variant="time" />
+          </div>
+        </Row>
+        <Row label="error">
+          <div className="w-full max-w-xs">
+            <DateTimePicker variant="date" tone="error" defaultValue="2024-01-01" />
+          </div>
+        </Row>
+      </Section>
+
+      <Section id="23" label="PriceRange">
+        <Row label="filter">
+          <div className="w-full max-w-md">
+            <PriceRange
+              value={priceRange}
+              onChange={setPriceRange}
+              min={0}
+              max={1000000}
+              step={5000}
+            />
+          </div>
+        </Row>
+      </Section>
+
       <footer className="mt-20 border-t border-hairline pt-8">
         <p className="font-mono text-caption text-muted-soft">
-          Далі: FileUploader, AttachmentGallery, CategoryPicker, DateTimePicker, PriceRange.
+          Далі: Breadcrumbs, Pagination, Stepper, InlineAlert, CopyButton, CountBadge, Drawer, ErrorState.
         </p>
       </footer>
     </main>
