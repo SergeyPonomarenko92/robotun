@@ -1,10 +1,10 @@
 ---
 title: Messaging — Two-Sided Client↔Provider Direct Messaging
-version: 1.0
+version: 1.1
 date_created: 2026-05-08
-last_updated: 2026-05-08
+last_updated: 2026-05-09
 owner: Platform / Messaging
-tags: [architecture, messaging, sse, realtime, attachments, gdpr, anti-abuse]
+tags: [architecture, messaging, sse, realtime, attachments, gdpr, anti-abuse, disputes]
 ---
 
 # Introduction
@@ -43,7 +43,7 @@ This specification defines:
 - **Conversation** — durable 1:1 channel between exactly one Client and one Provider, anchored to a listing or a deal.
 - **Pre-deal scope** — conversation anchored to a `listings` row; only Client may initiate.
 - **Deal scope** — conversation anchored to a `deals` row; either party may initiate.
-- **Locked conversation** — `status='locked'`; read-only after deal reaches a terminal state (`completed`, `cancelled`, `disputed`).
+- **Locked conversation** — `status='locked'`; read-only after deal reaches a terminal state (`completed`, `cancelled`). `disputed` is NOT a locking trigger; the conversation remains open for both parties with `admin_visible=TRUE` applied to all messages (Module 14).
 - **SSE** — Server-Sent Events; unidirectional server→client over HTTP/2.
 - **Block** — user-level mute; `(blocker_id, blocked_id)` row prevents the blocked user from sending into any conversation with the blocker.
 - **TOCTOU** — Time-of-check / time-of-use race.
@@ -54,12 +54,13 @@ This specification defines:
 ### Requirements
 
 - **REQ-001** — `pre_deal` conversations MUST be Client-initiated only and require a listing in `status='active'` at creation time.
-- **REQ-002** — `deal`-scoped conversations MUST verify deal exists, caller is a party, and `deals.status NOT IN ('completed','cancelled','disputed')` synchronously at creation.
+- **REQ-002** — `deal`-scoped conversations MUST verify deal exists, caller is a party, and `deals.status NOT IN ('completed','cancelled')` synchronously at creation. `disputed` deals allow new conversation creation (Module 14: conversation stays open during dispute).
 - **REQ-003** — Conversation creation MUST be idempotent per `(scope, listing_id|deal_id, client_id, provider_id)` via UNIQUE constraints.
 - **REQ-004** — Message body limit: 4000 characters, enforced application-side; over-limit returns `400 body_too_long`.
 - **REQ-005** — Edit/delete window for sender: 10 minutes from `created_at`. After 10 min: `409 edit_window_expired`.
 - **REQ-006** — Cursor pagination on `GET /conversations/{id}/messages` uses `(created_at, id)`-tuple opaque base64 cursors; default page size 50, max 100.
-- **REQ-007** — Conversation lock on deal terminal state via outbox consumer calling `POST /internal/conversations/lock-by-deal`. Lock is irreversible by users; admins may unlock for dispute review.
+- **REQ-007** — Conversation lock on deal terminal state via outbox consumer calling `POST /internal/conversations/lock-by-deal`. Terminal states that trigger locking: `completed`, `cancelled`. `disputed` does NOT trigger locking (Module 14). Lock is irreversible by users; admins may unlock for review.
+- **REQ-021** — When `deals.status = 'disputed'`, all messages sent into the deal's conversation MUST be inserted with `admin_visible = TRUE`. All prior messages in that conversation MUST be backfilled to `admin_visible = TRUE` by the outbox consumer handling `deal.status_changed{new_status: 'disputed'}`. On exit from `disputed`, new messages revert to `admin_visible = FALSE` (default); existing flipped messages retain `admin_visible = TRUE` permanently as an audit trail. Admin/moderator roles MAY read all `admin_visible=TRUE` messages via `GET /api/v1/admin/deals/{deal_id}/messages`.
 - **REQ-008** — Realtime delivery via SSE per conversation. Redis pub/sub fan-out at key `conv:{conversation_id}`.
 - **REQ-009** — SSE reconnection MUST gap-fill via `messages` table within a 7-day window; older history requires REST pagination.
 - **REQ-010** — Unread counts computed lazily (no denormalized columns). Cached in Redis with TTL 300 s. Cache invalidation occurs only AFTER PostgreSQL commit.
@@ -71,7 +72,7 @@ This specification defines:
 - **REQ-016** — `message_reports` retention sweep daily: delete rows with `status IN ('actioned','dismissed') AND created_at < now() - 12 months`; delete orphan reports older than 30 days when parent message is hard-deleted.
 - **REQ-017** — `sse_cursors` retention sweep weekly: delete rows with `last_seen_at < now() - 90 days`.
 - **REQ-018** — GDPR erasure on `user.gdpr_erased_*`: set `body=NULL`, `body_scrubbed=TRUE`, `body_scrub_reason='gdpr'`, `gdpr_erased_at=now()` for sender's messages within 12-month window. Emit `user.gdpr_erased_messages`.
-- **REQ-019** — API responses MUST treat `gdpr_erased_at IS NOT NULL` identically to `deleted_at IS NOT NULL`: render `[повідомлення видалено]`, omit `gdpr_erased_at` and `body_scrub_reason` from response payloads. Internal/admin queries retain full columns.
+- **REQ-019** — User-facing API responses MUST treat `gdpr_erased_at IS NOT NULL` identically to `deleted_at IS NOT NULL`: render `[повідомлення видалено]`, omit `gdpr_erased_at` and `body_scrub_reason` from response payloads. Admin/internal endpoints (`/admin/`, `/internal/`) retain full columns including `gdpr_erased_at` and `body_scrub_reason` for compliance audit purposes. For `admin_visible=TRUE` messages where body has been GDPR-erased, the admin response renders `body` as `null` and includes the erasure metadata columns.
 - **REQ-020** — Messaging emits outbox events with `aggregate_type IN ('message','conversation','user')`. Notifications v1.1 worker MUST consume.
 
 ### Security
@@ -81,7 +82,8 @@ This specification defines:
 - **MSG-SEC-003** — Listing status check at conversation create returns uniform `404` for non-existent OR non-active listings (no enumeration sidechannel; mirrors Listings SEC-003).
 - **MSG-SEC-004** — Internal endpoint `POST /internal/conversations/lock-by-deal` authenticates via service-account JWT (audience `internal.messaging`); mTLS deferred per CON-005.
 - **MSG-SEC-005** — Attachment ownership transitively derived through `messages.sender_id`. `media_objects` rows for `purpose='message_attachment'` MUST have `owner_user_id IS NULL`.
-- **MSG-SEC-006** — `gdpr_erased_at` and `body_scrub_reason` MUST NEVER appear in user-facing API responses.
+- **MSG-SEC-006** — `gdpr_erased_at` and `body_scrub_reason` MUST NEVER appear in user-facing API responses. Admin/internal endpoints are exempt from this restriction (internal compliance surfaces).
+- **MSG-SEC-007** — `GET /api/v1/admin/deals/{deal_id}/messages` MUST verify the caller JWT contains role `admin` or `moderator` (Module 12 RBAC matrix) before returning any rows. A missing or insufficient role MUST return `403` with no row leakage.
 
 ### Constraints
 
@@ -160,6 +162,7 @@ CREATE TABLE messages (
   contact_info_detected  BOOLEAN         NOT NULL DEFAULT FALSE,
   moderation_flagged     BOOLEAN         NOT NULL DEFAULT FALSE,
   moderation_actioned_at TIMESTAMPTZ,
+  admin_visible          BOOLEAN         NOT NULL DEFAULT FALSE,  -- v1.1: TRUE when deal is disputed
   created_at             TIMESTAMPTZ     NOT NULL DEFAULT now(),
   CONSTRAINT chk_msg_body_or_attachment CHECK (
     body IS NOT NULL OR deleted_at IS NOT NULL OR body_scrubbed = TRUE
@@ -171,6 +174,10 @@ CREATE INDEX idx_msg_unread       ON messages (conversation_id, sender_id, read_
 CREATE INDEX idx_msg_sender       ON messages (sender_id, created_at DESC) WHERE sender_id IS NOT NULL;
 CREATE INDEX idx_msg_flagged      ON messages (moderation_flagged, created_at DESC) WHERE moderation_flagged;
 CREATE INDEX idx_msg_deleted      ON messages (conversation_id, deleted_at) WHERE deleted_at IS NOT NULL;
+-- v1.1: partial index for admin dispute review; small because disputed deals are a minority
+CREATE INDEX idx_messages_admin_visible
+  ON messages (conversation_id, created_at)
+  WHERE admin_visible = TRUE;
 
 ALTER TABLE conversations ADD CONSTRAINT fk_conv_last_message
   FOREIGN KEY (last_message_id) REFERENCES messages(id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
@@ -263,7 +270,8 @@ SELECT pg_advisory_xact_lock(
                                  || ':' || GREATEST($sender::text, $recipient::text), 0)
 );
 
--- Single-statement insert with sender-status and block guards
+-- Single-statement insert with sender-status, block, and dispute-visibility guards
+-- v1.1 DELTA: deal_status CTE reads deals.status FOR SHARE to set admin_visible atomically
 WITH sender_check AS (
   SELECT status FROM users WHERE id = $sender FOR SHARE
 ),
@@ -272,12 +280,26 @@ block_check AS (
   WHERE (blocker_id = $recipient AND blocked_id = $sender)
      OR (blocker_id = $sender    AND blocked_id = $recipient)
   FOR SHARE
+),
+-- v1.1: LEFT JOIN so non-deal conversations (deal_id IS NULL) yield deal_status = NULL
+deal_status AS (
+  SELECT d.status AS deal_status
+  FROM conversations c
+  LEFT JOIN deals d ON d.id = c.deal_id
+  WHERE c.id = $conversation_id
+  FOR SHARE
 )
-INSERT INTO messages (conversation_id, sender_id, body, created_at)
-SELECT $conversation_id, $sender, $body, now()
+INSERT INTO messages (conversation_id, sender_id, body, admin_visible, created_at)
+SELECT
+  $conversation_id,
+  $sender,
+  $body,
+  -- admin_visible TRUE iff deal-scoped conversation currently in disputed state
+  COALESCE((SELECT deal_status = 'disputed' FROM deal_status), FALSE),
+  now()
 WHERE (SELECT status FROM sender_check) = 'active'
   AND NOT EXISTS (SELECT 1 FROM block_check)
-RETURNING id, created_at;
+RETURNING id, created_at, admin_visible;
 
 COMMIT;
 -- 0 rows returned → application maps to 403 account_suspended OR 403 blocked
@@ -285,6 +307,45 @@ COMMIT;
 --                       redis.del("msg:unread_total:<recipient>"),
 --                       PUBLISH conv:<conversation_id> {type: 'message.received', ...}
 ```
+
+#### 4.2.1 Backfill on entry to `disputed` (outbox consumer)
+
+When a deal transitions INTO `disputed`, the outbox consumer handling `deal.status_changed` performs a single bulk UPDATE to flip all prior messages. This is NOT a trigger — see §7 rationale.
+
+```python
+# Outbox consumer — handles event_type = 'deal.status_changed'
+
+def handle_deal_status_changed(event: OutboxEvent) -> None:
+    deal_id = event.payload["deal_id"]
+    new_status = event.payload["new_status"]
+    if new_status != "disputed":
+        return  # only disputed transition triggers backfill
+
+    with db.transaction():
+        # Single UPDATE — idempotent (WHERE admin_visible = FALSE)
+        db.execute("""
+            UPDATE messages m
+            SET admin_visible = TRUE
+            WHERE m.conversation_id = (
+                SELECT id FROM conversations WHERE deal_id = :deal_id
+            )
+              AND m.admin_visible = FALSE
+        """, {"deal_id": deal_id})
+
+        db.execute("""
+            INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+            VALUES ('deal', :deal_id, 'deal.messages_made_admin_visible',
+                    jsonb_build_object('deal_id', :deal_id))
+        """, {"deal_id": deal_id})
+```
+
+#### 4.2.2 Rule on exit from `disputed`
+
+When a dispute resolves (`dispute_resolved` / deal transitions to `completed` or a resolved terminal state):
+
+- Messages already flipped to `admin_visible = TRUE` REMAIN `TRUE` permanently. They form the audit trail for adjudication.
+- New messages inserted after resolution have `admin_visible = FALSE` (the DEFAULT; the `deal_status` CTE returns a non-`disputed` status, so `COALESCE(..., FALSE)` yields FALSE).
+- No reverse UPDATE is performed. The flag is append-only in the TRUE direction.
 
 ### 4.3 Lazy Unread Counter
 
@@ -355,7 +416,19 @@ VALUES (
 COMMIT;
 ```
 
-API projection rule (REQ-019, MSG-SEC-006): endpoints returning message rows MUST treat `gdpr_erased_at IS NOT NULL` identically to `deleted_at IS NOT NULL`, render `[повідомлення видалено]`, and OMIT both `gdpr_erased_at` and `body_scrub_reason` from the response body.
+API projection rule (REQ-019, MSG-SEC-006): user-facing endpoints returning message rows MUST treat `gdpr_erased_at IS NOT NULL` identically to `deleted_at IS NOT NULL`, render `[повідомлення видалено]`, and OMIT both `gdpr_erased_at` and `body_scrub_reason` from the response body.
+
+**v1.1 — GDPR + admin_visible rule:** The GDPR erasure handler above runs on ALL messages for the erased user regardless of `admin_visible`. The `admin_visible` flag is NOT cleared by erasure — it remains `TRUE` on dispute-period messages to preserve the structural audit log. The body content (PII) is NULLed; the flag (non-PII structural metadata) is retained. Admin endpoints render `body` as `null` for erased messages and MAY include `gdpr_erased_at` and `body_scrub_reason` in the admin response (these are internal compliance surfaces, not user-facing, so MSG-SEC-006 does not apply).
+
+**MSG-SEC-008 — admin access audit log (v1.1, GDPR Art. 5(2) accountability):** Every successful invocation of `GET /api/v1/admin/deals/{deal_id}/messages` MUST INSERT a row into `admin_actions` (Module 12 schema) within the same DB transaction as the SELECT, with:
+```
+actor_id     = caller's admin/moderator user_id
+action       = 'view_dispute_messages'
+target_type  = 'deal'
+target_id    = deal_id
+metadata     = {message_count: N, cursor_after: <cursor or NULL>}
+```
+A 403 RBAC rejection (MSG-SEC-007) MUST NOT write an `admin_actions` row (write only on authorised access). Retention follows the standard `admin_actions` retention schedule owned by Module 12. This satisfies the access-log requirement for residual structural metadata of GDPR-erased users surfaced via the admin endpoint.
 
 ### 4.6 Contact-Info Detection — Regex Set
 
@@ -393,10 +466,11 @@ Threshold: `≥5 detections in 7 days` for the same `sender_id` → escalation. 
 | GET | `/api/v1/conversations/{id}/events` | access | SSE stream |
 | GET | `/api/v1/admin/conversations` | admin/mod | Admin listing/filter |
 | GET | `/api/v1/admin/conversations/{id}/messages` | admin/mod | Admin full view |
+| GET | `/api/v1/admin/deals/{deal_id}/messages` | admin/mod | v1.1: List `admin_visible=TRUE` messages for a disputed deal; cursor-paginated |
 | POST | `/api/v1/admin/messages/{msg_id}/redact` | admin/mod | Force-redact (sets `body_scrub_reason='admin_redaction'`) |
 | GET | `/api/v1/admin/message-reports` | admin/mod | Pending report queue |
 | POST | `/api/v1/admin/message-reports/{id}/action` | admin/mod | Action or dismiss |
-| POST | `/api/v1/internal/conversations/lock-by-deal` | service-account JWT | Deal outbox consumer locks conversation on terminal state |
+| POST | `/api/v1/internal/conversations/lock-by-deal` | service-account JWT | Deal outbox consumer locks conversation on terminal state (`completed`, `cancelled` only) |
 
 **`POST /conversations` (idempotent)**
 
@@ -430,6 +504,43 @@ Threshold: `≥5 detections in 7 days` for the same `sender_id` → escalation. 
 // 422 attachment_wrong_purpose
 // 429 rate_limit_exceeded
 ```
+
+**`GET /admin/deals/{deal_id}/messages` (v1.1)**
+
+RBAC: roles `admin`, `moderator` (Module 12 RBAC matrix). Returns only messages where `admin_visible = TRUE`. Cursor pagination identical to user-facing message list: `(created_at, id)` tuple, base64-encoded, default page 50, max 100.
+
+```json
+// GET /api/v1/admin/deals/{deal_id}/messages?cursor=...&limit=50
+
+// 200 OK
+{
+  "deal_id": "uuid",
+  "conversation_id": "uuid",
+  "messages": [
+    {
+      "id": "uuid",
+      "sender_id": "uuid",          // null if GDPR-unlinked
+      "body": "...",                // null if GDPR-erased; render "[повідомлення видалено]" in UI
+      "body_scrubbed": false,
+      "body_scrub_reason": null,    // admin projection: may be 'gdpr'|'admin_redaction'|'sender_delete'
+      "gdpr_erased_at": null,       // admin projection: included (not user-facing)
+      "admin_visible": true,
+      "contact_info_detected": false,
+      "moderation_flagged": false,
+      "created_at": "2026-05-09T10:00:00Z"
+    }
+  ],
+  "next_cursor": "base64...",
+  "total_admin_visible": 42
+}
+
+// 403 — caller role is not admin or moderator
+// 404 — deal_id not found or no conversation for this deal
+```
+
+**SSE for admin readers — DEFERRED (v1.1)**
+
+Admin moderators use `GET /admin/deals/{deal_id}/messages` (REST polling) during dispute review. No SSE stream is provided for admin consumers in v1.1. Rationale: dispute review is a low-frequency human-driven workflow; REST polling is sufficient and avoids a distinct SSE auth path on the fan-out infrastructure. SSE for admin is documented as a v1.2 candidate if real-time dispute dashboards are required.
 
 **`GET /conversations/{id}/events` (SSE)**
 
@@ -502,6 +613,13 @@ Keys follow Category Tree §4.8 pattern: `rl:msg:send:user:{user_id}:{YYYYMMDDHH
 - **AC-013** — Given `sse_cursors` rows with `last_seen_at < now() - 90 days`, When the weekly sweep runs, Then those rows are hard-deleted.
 - **AC-014** — Given a `message.created` outbox event with `aggregate_type='message'`, When the Notifications v1.1 worker scans, Then the event is consumed and a `new_message_for_recipient` notification is dispatched per the v1.1 catalog (in_app + push).
 - **AC-015** — Given a successful `mark_read` transaction, When the post-commit hook fires, Then Redis `msg:unread:{user}:{conv}` is DELed; given a TX failure, Then no DEL is issued and the cache expires at the 300 s TTL.
+- **AC-016** — Given a deal in `disputed` status, When a party sends a message, Then the inserted `messages` row has `admin_visible = TRUE` and the `deal_status` CTE used `FOR SHARE` to read `deals.status` within the same transaction.
+- **AC-017** — Given a deal that transitions to `disputed`, When the outbox consumer processes `deal.status_changed{new_status: 'disputed'}`, Then all prior messages in the deal's conversation are updated to `admin_visible = TRUE` in a single UPDATE statement, and a `deal.messages_made_admin_visible` outbox event is emitted.
+- **AC-018** — Given the outbox consumer for AC-017 runs twice (retry), Then the second run is a no-op (UPDATE affects 0 rows because `WHERE admin_visible = FALSE` matches nothing).
+- **AC-019** — Given a dispute that resolves, When new messages are sent post-resolution, Then new messages have `admin_visible = FALSE`; existing messages from the dispute period retain `admin_visible = TRUE`.
+- **AC-020** — Given a GDPR erasure for a user with messages where `admin_visible = TRUE`, When the handler runs, Then `body = NULL`, `body_scrubbed = TRUE`, `gdpr_erased_at` is set, AND `admin_visible` remains `TRUE` on those rows.
+- **AC-021** — Given a caller with role `moderator` or `admin`, When `GET /api/v1/admin/deals/{deal_id}/messages` is called, Then only messages with `admin_visible = TRUE` are returned, including `gdpr_erased_at` and `body_scrub_reason` columns.
+- **AC-022** — Given a caller without `admin` or `moderator` role, When `GET /api/v1/admin/deals/{deal_id}/messages` is called, Then the response is `403`.
 
 ## 6. Test Automation Strategy
 
@@ -528,6 +646,9 @@ Key rationale:
 - **Media Pipeline v1.1 amendment (CON-001)** — Adding `purpose='message_attachment'` is the GUD-005 contract path in the Media Pipeline. The amendment also adds `message_id` as a top-level FK on `media_objects` (no separate scan_status duplication), reuses the advisory-lock cap pattern, and updates `chk_exactly_one_owner` to accept message attachments with `owner_user_id IS NULL`.
 - **Notifications v1.1 amendment (CON-002)** — The Notifications worker scan filter `aggregate_type IN ('deal','review','user')` excludes `message` and `conversation`. Module 10 cannot ship until this is amended and the §4.6 catalog has dispatch rows for the three new notification codes; otherwise events are silently consumed by the cursor advance with no notification sent.
 - **'simple' FTS at MVP (CON-004)** — The `'ukrainian'` configuration is not universally available on cloud Postgres providers. The `'simple'` configuration is portable but does not handle Ukrainian morphology. The DO-guarded opportunistic `'ukrainian'` GIN index is created when the dictionary is present; the application query continues to use `'simple'` for portability. This is a documented MVP limitation with a clear v1.1 upgrade path.
+- **admin_visible backfill via outbox consumer, not trigger (REQ-021, v1.1)** — A PostgreSQL trigger on `deals.status` firing a cross-table UPDATE on `messages` creates hidden cross-module coupling: a write to the Deal schema silently modifies the Messaging schema, violating the module-isolation contract established across this spec suite. Triggers that UPDATE rows in a different logical service are invisible to the application layer, making distributed tracing, error handling, and idempotent retries impossible without PL/pgSQL error propagation hacks. The outbox consumer is the established pattern for cross-module side effects in this system (Category Tree §4.3). The consumer UPDATE is idempotent (`WHERE admin_visible = FALSE`), re-runnable on failure, and traceable via the `deal.messages_made_admin_visible` outbox event. The only cost is consumer processing lag (typically < 1 s), during which prior messages have not yet been flagged; this is acceptable for a dispute review workflow where admin access is not instantaneous.
+- **admin_visible flag permanence after dispute resolution (REQ-021, v1.1)** — Messages flagged during a dispute are not reverted when the dispute resolves. The flagged set is the evidentiary record for adjudication; reverting it would destroy the audit trail. The flag is append-only in the TRUE direction. New messages after resolution are `admin_visible = FALSE` by the send pipeline's deal_status CTE (non-disputed status → COALESCE → FALSE).
+- **GDPR body NULL does not clear admin_visible (REQ-021 + REQ-018, v1.1)** — GDPR Article 17 requires erasure of personal data content (the message body). The `admin_visible` flag is structural/audit metadata, not personal data within the meaning of GDPR Recital 26. Clearing it would impair the completeness of the dispute audit log without serving any GDPR purpose. The admin endpoint renders erased bodies as null and retains the flag and erasure metadata columns for compliance audit.
 
 ## 8. Dependencies & External Integrations
 
@@ -632,5 +753,6 @@ A compliant implementation MUST:
 - [`spec/spec-architecture-media-pipeline.md`](./spec-architecture-media-pipeline.md) — v1.1 (CON-001 satisfied): adds `purpose='message_attachment'`, `message_id` column (FK added in Messaging deploy migration), advisory-lock cap pattern. See §4.1.1.
 - [`spec/spec-architecture-notifications.md`](./spec-architecture-notifications.md) — v1.1 (CON-002 satisfied): worker scan allowlist `IN ('deal','review','user','message','conversation')`; §4.6 catalog adds `new_message_for_recipient`, `conversation_blocked_confirmation`, `message_redacted_for_sender`.
 - [`spec/spec-architecture-reviews.md`](./spec-architecture-reviews.md) — REQ-026 retention sweep pattern mirrored as MSG-REQ-016.
+- [`spec/spec-design-disputes-ui-flow.md`](./spec-design-disputes-ui-flow.md) — Module 14: Disputes UI flow. Requires `admin_visible` messaging (v1.1). Explicitly rejects conversation locking during `disputed` state; mandates conversation stays open for both parties with full admin/moderator read visibility.
 - RFC 5322 — Email format (used in contact-info regex).
 - E.164 — International phone numbering plan.

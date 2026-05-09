@@ -1,8 +1,8 @@
 ---
 title: Deal Workflow (BIZ-001)
-version: 1.1
+version: 1.3
 date_created: 2026-05-06
-last_updated: 2026-05-08
+last_updated: 2026-05-09
 owner: Platform / Backend Team
 tags: [architecture, deals, state-machine, escrow, marketplace]
 ---
@@ -154,6 +154,7 @@ CREATE TABLE deals (
   escrow_release_requested_at   TIMESTAMPTZ,  -- gates completed→disputed rollback
   escrow_released_at            TIMESTAMPTZ,
   escrow_refunded_at            TIMESTAMPTZ,
+  escrow_hold_cap_reached       BOOLEAN      NOT NULL DEFAULT false,                         -- v1.2: PSP signals cap via /internal callback
 
   -- Scheduling
   deadline_at                   TIMESTAMPTZ,
@@ -169,7 +170,13 @@ CREATE TABLE deals (
   -- Cancel consent
   cancel_requested_by_client_at   TIMESTAMPTZ,
   cancel_requested_by_provider_at TIMESTAMPTZ,
-  cancellation_reason           TEXT,
+  cancellation_reason           TEXT
+                                  CHECK (cancellation_reason IS NULL OR cancellation_reason IN (
+                                    'escrow_timeout',
+                                    'dispute_unresolved',
+                                    'provider_suspended',
+                                    'escrow_hold_expired'                                    -- v1.2
+                                  )),
 
   -- Dispute resolution
   resolution_outcome            TEXT
@@ -219,9 +226,59 @@ CREATE INDEX idx_deals_cancel_expiry   ON deals (
   )
   WHERE cancel_requested_by_client_at IS NOT NULL OR cancel_requested_by_provider_at IS NOT NULL;
 
+-- v1.2: PSP hold-cap expiry sweep
+CREATE INDEX idx_deals_hold_cap_expired ON deals (escrow_status, escrow_hold_cap_reached)
+  WHERE escrow_status = 'hold_requested' AND escrow_hold_cap_reached = true;
+
 CREATE TRIGGER set_deal_updated_at
   BEFORE UPDATE ON deals
   FOR EACH ROW EXECUTE FUNCTION trg_set_updated_at();
+
+-- v1.3: increment provider_profiles.completed_deals_count on transition INTO 'completed'.
+-- Column DDL is owned by Users & Auth spec (Module 1) provider_profiles table; the trigger
+-- and the v1.3 backfill query are owned here. Synchronous because Module 13 Search reads
+-- this counter at query time (30% weight in provider_quality_score) and cannot tolerate
+-- eventual consistency lag the way review_count (Reviews module, separate-TX) can.
+CREATE OR REPLACE FUNCTION trg_increment_completed_deals_count()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  -- Increment on entry into 'completed'.
+  IF NEW.status = 'completed' AND OLD.status <> 'completed' THEN
+    UPDATE provider_profiles
+       SET completed_deals_count = completed_deals_count + 1
+     WHERE user_id = NEW.provider_id;
+  -- Decrement on exit FROM 'completed' (only path: completed → disputed via grace
+  -- dispute, §4.5 row "completed | disputed | client | now() ≤ dispute_window_until").
+  -- Floor at 0 to defend against any anomaly. Search spec REQ §30 also documents the
+  -- decrement on dispute_resolved{outcome=refund_to_client} — that case is captured
+  -- here transitively because the resolved-refund path is completed → disputed → cancelled,
+  -- and the decrement fires on the completed → disputed leg (the cancelled leg is a no-op
+  -- because OLD.status='disputed', which was never 'completed' at OLD-time).
+  ELSIF OLD.status = 'completed' AND NEW.status <> 'completed' THEN
+    UPDATE provider_profiles
+       SET completed_deals_count = GREATEST(completed_deals_count - 1, 0)
+     WHERE user_id = NEW.provider_id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_deal_completed_count
+  AFTER UPDATE OF status ON deals
+  FOR EACH ROW EXECUTE FUNCTION trg_increment_completed_deals_count();
+
+-- v1.3 DEPLOY MIGRATION (run once, BEFORE enabling the trigger above):
+--   ALTER TABLE provider_profiles
+--     ADD COLUMN IF NOT EXISTS completed_deals_count INTEGER NOT NULL DEFAULT 0;
+--   UPDATE provider_profiles pp
+--     SET completed_deals_count = (
+--       SELECT COUNT(*) FROM deals d
+--        WHERE d.provider_id = pp.user_id AND d.status = 'completed'
+--     );
+-- Deploy order: (1) migration runs → (2) trigger DDL applied → (3) new app code deployed.
+-- Idempotency: 'completed' is terminal (CON-007); the OLD.status<>'completed' guard fires
+-- exactly once per deal. Any future state machine change that adds a 'completed → ...'
+-- transition MUST revisit this trigger to prevent double-counting.
 ```
 
 ### 4.2 Audit log — `deal_events`
@@ -328,6 +385,7 @@ State-actor-guard table:
 | pending | cancelled | provider | status='pending' | Event `deal.rejected`; outbox `deal.escrow_hold_cancelled` |
 | pending | cancelled | system | created_at + 72h ≤ now() | Event `deal.expired_pending`; outbox `deal.escrow_hold_cancelled` |
 | pending | cancelled | system | escrow_status='hold_requested' AND escrow_hold_requested_at + 30min ≤ now() | Event `deal.cancelled_escrow_timeout`; outbox `deal.escrow_hold_cancelled` |
+| pending | cancelled | system | escrow_status='hold_requested' AND escrow_hold_cap_reached=true (v1.2; PSP signals cap via `/internal/deals/{id}/escrow-hold-cap-reached`) | Set `cancellation_reason='escrow_hold_expired'`, `escrow_status='refunded'`; event `deal.cancelled_hold_expired`; outbox `deal.cancelled_hold_expired` (notify) + `deal.escrow_hold_cancelled` (Payments) |
 | active | in_review | provider | status='active' | Set review_started_at=now(), auto_complete_after=now()+7d, dispute_window_until=now()+8d; event `deal.submitted` |
 | active | cancelled | client+provider | both cancel_requested_by_*_at non-null within 48h | Event `deal.cancelled_mutual`; outbox `deal.escrow_refund_requested` |
 | in_review | completed | client | status='in_review' | Event `deal.approved`; outbox `deal.escrow_release_requested` (immediate) |
@@ -362,6 +420,7 @@ All endpoints prefixed `/api/v1`. `application/json`. Auth: Bearer JWT (access t
 | GET | `/deals/{id}/attachments` | client, provider, admin | — | List attachments (filtered by visible_to) |
 | GET | `/deals/{id}/events` | client, provider, admin | — | Read event log (PII-projected for non-admin) |
 | POST | `/internal/deals/{id}/escrow-held` | service:payments_service | — | Payments callback: confirm escrow placement (atomic pending → active) |
+| POST | `/internal/deals/{id}/escrow-hold-cap-reached` | service:payments_service | — | v1.2: Payments signals PSP hold cap reached; sets `escrow_hold_cap_reached=true` so timer worker cancels on next sweep |
 
 #### 4.6.1 `POST /deals` — create
 
@@ -452,6 +511,20 @@ WHERE id=$2 AND escrow_status='hold_requested' AND status='pending' AND version=
 ```
 0 rows → 409 `version_conflict` or `status_conflict` per re-read.
 
+#### 4.6.6 `POST /internal/deals/{id}/escrow-hold-cap-reached` (v1.2)
+
+Auth: service-account JWT (SEC-002 pattern, identical to `/escrow-held`). Request:
+```json
+{ "version": 1, "hold_expired_at": "2026-05-09T10:00:00Z", "original_hold_amount_minor": 120000 }
+```
+Atomic UPDATE:
+```sql
+UPDATE deals
+SET escrow_hold_cap_reached=true, version=version+1, updated_at=now()
+WHERE id=$1 AND escrow_status='hold_requested' AND escrow_hold_cap_reached=false AND version=$2;
+```
+0 rows → 409 `version_conflict` or `status_conflict` per re-read. The actual cancellation transition (`pending → cancelled` with `cancellation_reason='escrow_hold_expired'`) is performed asynchronously by the timer worker on its next sweep, NOT inside this callback — this keeps the callback fast and idempotent and concentrates outbox emission in the worker (PAT-002).
+
 ### 4.7 PII projection on `GET /deals/{id}/events`
 
 For non-admin callers: `ip` and `user_agent` are stripped from every row. `metadata` is filtered per event_type:
@@ -477,6 +550,8 @@ For non-admin callers: `ip` and `user_agent` are stripped from every row. `metad
 | `deal.attachment_added` | attachment_id, file_name, visible_to | ip, user_agent |
 | `deal.escrow_hold_confirmed` | (not surfaced to parties) | escrow_hold_id |
 | `deal.escrow_hold_stalled` | (not surfaced to parties) | (none) |
+| `deal.cancelled_hold_expired` | cancelled_at, hold_expired_at, original_hold_amount_minor, currency | (none — system event) |
+| `deal.escrow_hold_warning` | hold_expires_at, hours_remaining | (none — system event) |
 
 Implementation: app-layer `project_event_metadata(event_type, metadata, caller_role)` function. Whitelist as compile-time constant map. Both parties see the same projection on shared events.
 
@@ -514,8 +589,14 @@ Added in v1.1 as a hard prerequisite for Notifications Module 9 and Messaging Mo
 | `deal.dispute_escalated` | Dispute SLA timer sweep (14d → escalate) | deal_id, escalation_number |
 | `deal.dispute_unresolved` | Dispute SLA second-expiry sweep (refund-to-client cancel path) | deal_id, client_id, provider_id |
 | `deal.auto_completed` | Timer worker auto-complete sweep (in_review → completed after 7d grace) | deal_id, client_id, provider_id |
+| `deal.cancelled_hold_expired` (v1.2) | Timer worker `escrow_hold_timeout` sweep when `escrow_hold_cap_reached=true` (PSP hold cap expired before deal accepted) | deal_id, client_id, provider_id, listing_id, cancelled_at, hold_expired_at, original_hold_amount_minor, currency |
+| `deal.escrow_hold_warning` (v1.2) | T-24h before PSP hold cap expiry — **emitted by Payments module (Module 11)**, NOT the Deal service. Declared here for cross-spec discoverability of the `deal.*` namespace. | deal_id, client_id, provider_id, hold_expires_at, hours_remaining (SMALLINT) |
 
 **Consumed by:** Notifications module (Module 9) for user-facing notifications; Messaging module (Module 10) for the deal-conversation lock-by-deal handler that fires on `deal.approved`, `deal.auto_completed`, `deal.cancelled_*`, `deal.dispute_resolved`, `deal.dispute_unresolved`.
+
+**Idempotency for `deal.cancelled_hold_expired`:** key = `'deal.cancelled_hold_expired:' || deal_id`; the outbox UNIQUE constraint on `(aggregate_type, aggregate_id, event_type, idempotency_key)` prevents double-emission across worker retries. Producer is the Deal-service timer worker (§4.9). Consumer is Notifications.
+
+**Cross-spec emission for `deal.escrow_hold_warning`:** producer is Payments (Module 11), which owns the T-24h timer logic, idempotency key, and emission code path. The Deal spec declares this event purely for `aggregate_type='deal'` namespace cohesion so Notifications routing remains consistent.
 
 **Emission constraint:** All events in §4.8.2 are emitted via `INSERT INTO outbox_events` inside the same transaction as the corresponding `deals` UPDATE (for synchronous transitions) or the timer-worker `UPDATE ... RETURNING` row (for sweeps). On 0 rows returned by the guarded UPDATE, no outbox event is emitted (PAT-002 idempotency).
 
@@ -547,7 +628,14 @@ WHERE id=$1 AND escrow_release_requested_at IS NULL;
 
 -- Pending expiry (72h)
 -- Cancel consent expiry (48h)
--- Escrow hold timeout (15min alert / 30min auto-cancel)
+-- Escrow hold timeout (15min alert / 30min auto-cancel / PSP hold-cap expiry cancel — v1.2)
+--   PSP hold-cap path: Payments calls /internal/.../escrow-hold-cap-reached → flag set;
+--   timer sweep matches escrow_status='hold_requested' AND escrow_hold_cap_reached=true →
+--     UPDATE deals SET status='cancelled', cancellation_reason='escrow_hold_expired',
+--                      escrow_status='refunded', version=version+1, updated_at=now()
+--      WHERE id=$1 AND escrow_status='hold_requested' AND escrow_hold_cap_reached=true
+--      RETURNING id;
+--   On RETURNING row, emits deal.cancelled_hold_expired + deal.escrow_hold_cancelled.
 -- Dispute SLA (14d → escalate; on second expiry → refund-to-client cancel)
 ```
 
@@ -802,8 +890,9 @@ A conforming implementation MUST satisfy:
 - [`spec/spec-architecture-marketplace-social-platform.md`](./spec-architecture-marketplace-social-platform.md) — umbrella spec; CON-002 (no payment processing at MVP), BIZ-001 (this module).
 - [`spec/spec-architecture-users-authentication.md`](./spec-architecture-users-authentication.md) — Module 1; SEC-006 admin role re-read pattern; INF-003 RS256 key infra reused for service-account JWTs; soft-delete blocking interaction (AC-009 there ↔ AC-018 here).
 - [`spec/spec-data-category-tree.md`](./spec-data-category-tree.md) — Module 2; `categories.id` is the FK target for `deals.category_id`; `outbox_events` table DDL.
-- Future: `spec/spec-architecture-payments.md` — consumer of `deal.escrow_*` events; producer of `/internal/deals/{id}/escrow-held` callback.
+- [`spec/spec-architecture-payments.md`](./spec-architecture-payments.md) — Module 11; consumer of `deal.escrow_*` events; producer of `/internal/deals/{id}/escrow-held` and (v1.2) `/internal/deals/{id}/escrow-hold-cap-reached` callbacks; producer of `deal.escrow_hold_warning` (T-24h PSP cap warning).
 - Future: `spec/spec-architecture-listings.md` — owner of `listings.id`, source of optional `deals.listing_id`.
-- Future: `spec/spec-architecture-reviews.md` — consumer of `deal.approved` / `deal.auto_completed` events for review eligibility.
+- [`spec/spec-architecture-reviews.md`](./spec-architecture-reviews.md) — consumer of `deal.approved` / `deal.auto_completed` events for review eligibility.
+- [`spec/spec-architecture-search-discovery.md`](./spec-architecture-search-discovery.md) — Module 13; reads `provider_profiles.completed_deals_count` (30% weight in provider quality score). Column is incremented by `trg_deal_completed_count` defined in §4.1; v1.3 backfill query is documented inline there. Column DDL itself is owned by Users & Auth spec (Module 1).
 - Закон України "Про захист прав споживачів" — SLA defaults legal review (GUD-004).
 - Закон України "Про захист персональних даних" — IP/UA exposure on `/events` (SEC-003).

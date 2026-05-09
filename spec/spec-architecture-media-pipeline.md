@@ -1,8 +1,8 @@
 ---
 title: Media Pipeline — Upload, Storage, Processing, Access
-version: 1.1
+version: 1.2
 date_created: 2026-05-06
-last_updated: 2026-05-08
+last_updated: 2026-05-09
 owner: Platform / Backend
 tags: [architecture, media, storage, s3, kyc, listings]
 ---
@@ -126,11 +126,13 @@ CREATE TABLE media_objects (
   listing_id           UUID         REFERENCES listings(id) ON DELETE SET NULL,
   kyc_document_id      UUID         REFERENCES kyc_documents(id) ON DELETE SET NULL,
   message_id           UUID,                                                     -- v1.1; FK added in Messaging Module 10 deploy migration
+  dispute_evidence_id  UUID,                                                     -- v1.2; FK added in Disputes Module 14 deploy migration
 
   purpose              TEXT         NOT NULL CHECK (purpose IN (
                           'listing_cover','listing_gallery','listing_attachment',
                           'kyc_document','avatar',
-                          'message_attachment'                                    -- v1.1
+                          'message_attachment',                                   -- v1.1
+                          'dispute_evidence'                                      -- v1.2
                        )),
 
   -- Storage location.
@@ -179,11 +181,14 @@ CREATE TABLE media_objects (
   -- Owner FK constraints.
   -- v1.1: message_id added; for purpose='message_attachment', owner_user_id IS NULL
   -- (ownership transitively derived via messages.sender_id).
+  -- v1.2: dispute_evidence_id added; for purpose='dispute_evidence', owner_user_id IS NULL
+  -- (ownership transitively derived via dispute_evidence.uploader_user_id).
   CONSTRAINT chk_exactly_one_owner CHECK (
-    ((owner_user_id   IS NOT NULL)::int +
-     (listing_id      IS NOT NULL)::int +
-     (kyc_document_id IS NOT NULL)::int +
-     (message_id      IS NOT NULL)::int) = 1
+    ((owner_user_id        IS NOT NULL)::int +
+     (listing_id           IS NOT NULL)::int +
+     (kyc_document_id      IS NOT NULL)::int +
+     (message_id           IS NOT NULL)::int +
+     (dispute_evidence_id  IS NOT NULL)::int) = 1
   ),
   CONSTRAINT chk_purpose_fk_listing CHECK (
     purpose NOT IN ('listing_cover','listing_gallery','listing_attachment')
@@ -197,6 +202,9 @@ CREATE TABLE media_objects (
   ),
   CONSTRAINT chk_purpose_fk_message CHECK (                                      -- v1.1
     purpose <> 'message_attachment' OR message_id IS NOT NULL
+  ),
+  CONSTRAINT chk_purpose_fk_dispute_evidence CHECK (                             -- v1.2
+    purpose <> 'dispute_evidence' OR dispute_evidence_id IS NOT NULL
   ),
 
   -- KYC must live in the KYC private bucket and never be public.
@@ -213,10 +221,11 @@ CREATE INDEX idx_media_objects_orphan      ON media_objects (created_at)    WHER
 CREATE INDEX idx_media_objects_scan_retry  ON media_objects (scan_error_at) WHERE status = 'scan_error';
 CREATE INDEX idx_media_objects_kyc_expiry  ON media_objects (expires_at)    WHERE purpose = 'kyc_document' AND expires_at IS NOT NULL AND hard_deleted_at IS NULL;
 CREATE INDEX idx_media_objects_grace       ON media_objects (deleted_at)    WHERE status = 'deleted' AND hard_deleted_at IS NULL;
-CREATE INDEX idx_media_objects_message     ON media_objects (message_id)    WHERE message_id IS NOT NULL AND status = 'ready';  -- v1.1
+CREATE INDEX idx_media_objects_message          ON media_objects (message_id)          WHERE message_id IS NOT NULL AND status = 'ready';  -- v1.1
+CREATE INDEX idx_media_objects_dispute_evidence ON media_objects (dispute_evidence_id) WHERE dispute_evidence_id IS NOT NULL;               -- v1.2
 ```
 
-#### 4.1.1 v1.1 — `message_attachment` purpose contract
+#### 4.1.1 v1.1 — `message_attachment` purpose contract (pattern reference for §4.1.2)
 
 Added in v1.1 as a hard prerequisite for Messaging Module 10.
 
@@ -229,6 +238,20 @@ Added in v1.1 as a hard prerequisite for Messaging Module 10.
 - **Bucket:** `public-media` (recipient downloads through CDN-fronted stream endpoint with auth check). MIME-restricted; PDFs served with `Content-Disposition: attachment` to prevent browser inline rendering.
 - **Visibility:** sender always sees the attachment metadata; recipient access (stream endpoint) is gated on `status = 'ready'`. Threat (`status = 'quarantine_rejected'`) hides the attachment from both parties; Messaging emits `message.attachment_threat` outbox event.
 - **Retention:** unlinked when the parent `messages` row is deleted (`ON DELETE SET NULL`); orphan media older than the standard `awaiting_upload` grace are swept by the existing §4.7 lifecycle sweep. No special retention rule for `message_attachment`.
+
+#### 4.1.2 v1.2 — `dispute_evidence` purpose contract
+
+Added in v1.2 as a hard prerequisite for Disputes UI Flow Module 14.
+
+- **Purpose value:** `'dispute_evidence'`.
+- **Owner FK:** `dispute_evidence_id` references `dispute_evidence(id)` ON DELETE SET NULL. **Deploy order:** the `dispute_evidence_id` column ships in Media Pipeline v1.2 WITHOUT a FK (the `dispute_evidence` table does not yet exist). The FK constraint is added in a follow-up migration that is part of Disputes Module 14 deploy: `ALTER TABLE media_objects ADD CONSTRAINT fk_media_dispute_evidence FOREIGN KEY (dispute_evidence_id) REFERENCES dispute_evidence(id) ON DELETE SET NULL`. Until that migration lands, `dispute_evidence_id` is an unconstrained UUID column populated only by the Disputes service.
+- **`owner_user_id` for `dispute_evidence` rows:** MUST be NULL. Ownership is derived transitively via `dispute_evidence.uploader_user_id`. The `chk_exactly_one_owner` constraint enforces this (only `dispute_evidence_id` is set).
+- **Who can upload:** deal participants only — the Client or Provider on the deal to which the dispute belongs. Authorization is enforced by the Disputes module at its upload-initiation call site, not here. The Media Pipeline accepts any `dispute_evidence_id` that is a valid UUID; the FK constraint (added by Module 14's migration) then restricts it to rows that actually exist in `dispute_evidence`.
+- **Allowed MIME types** (Disputes Module 14): `image/jpeg`, `image/png`, `image/webp`, `application/pdf`.
+- **Per-attachment size cap:** 10 MB (same as `listing_attachment`; enforced via the presigned POST `content-length-range` policy).
+- **Per-party gallery cap:** 0–5 files. This cap is enforced by Module 14 (same advisory-lock/count pattern as §9.3); the Media Pipeline does NOT enforce it server-side.
+- **Bucket:** `public-media`. Evidence files are not publicly accessible; stream-endpoint authorization is enforced at read time (deal participants + admins only; `Cache-Control: private, no-store`).
+- **Retention anchor:** Module 14 owns the `dispute_evidence` structural row with a 7-year retention (`decided_at + 7 years`). For the corresponding `media_objects` rows, the retention anchor is the same `decided_at` field on the parent dispute. When the Disputes module's GDPR/retention sweep purges a `dispute_evidence` row, the ON DELETE SET NULL cascade leaves the `media_objects` row orphaned with `dispute_evidence_id = NULL`. The media pipeline's existing orphan-handling rule does NOT cover this case (orphan sweep targets `awaiting_upload`; evidence rows are `ready`). Module 14 is responsible for explicitly soft-deleting `media_objects` rows linked to evidence being purged, which triggers the standard 7-day soft-delete grace sweep (CON-008) and eventual hard-delete. The Media Pipeline does NOT apply a special `expires_at` to `dispute_evidence` rows; Module 14 drives deletion via `DELETE /media/{id}` calls on each linked object before purging the `dispute_evidence` row.
 
 ### 4.2 `listing_media` (supersedes `spec-architecture-listings.md` §4.2)
 
@@ -699,3 +722,4 @@ VALUES (gen_random_uuid(), '...', '...', 'listing_cover', '...', 'public-media',
 - [`spec-architecture-kyc-provider-verification.md`](./spec-architecture-kyc-provider-verification.md) — KYC submission flow; consumes `kyc.document_ready`, owns `expires_at` writes for `kyc_document` purpose, defines `decided_at` retention anchor (§4.11), provides REQ-013 streaming-proxy mandate honored here, defines SEC-009 1-year KYC access-log retention.
 - [`spec-architecture-listings.md`](./spec-architecture-listings.md) — **§4.2 `listing_media` DDL is superseded by §4.2 of this spec.** Listings spec retains a one-line pointer to this module; the `file_key TEXT` / `size_bytes` columns are replaced by `media_id UUID FK`. **Coordinator follow-up action:** edit `/spec/spec-architecture-listings.md` §4.2 to replace the DDL block with `-- Superseded. See spec-architecture-media-pipeline.md §4.2.`
 - [`spec-architecture-deal-workflow.md`](./spec-architecture-deal-workflow.md) — future `deal_attachment` purpose (currently out of scope) will integrate here when the Deal-attachments module is specified.
+- [`spec-design-disputes-ui-flow.md`](./spec-design-disputes-ui-flow.md) — Module 14; introduces `dispute_evidence` table and `purpose='dispute_evidence'` (§4.1.2). Module 14 deploy migration adds `fk_media_dispute_evidence` FK to `media_objects`. Module 14 owns the 7-year retention sweep and drives soft-deletes of linked media objects.

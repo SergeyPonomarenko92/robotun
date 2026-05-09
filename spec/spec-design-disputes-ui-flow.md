@@ -63,7 +63,7 @@ This specification defines:
 - **REQ-010** — Evidence attachments use `media_objects` with `purpose='dispute_evidence'`. `deal_attachments` table is NOT used for evidence. Attachment caps: max 5 per submission, 10 MB per file, allowed MIME `image/jpeg|png|webp` and `application/pdf`.
 - **REQ-011** — Timer worker emits `dispute.response_reminder` at `provider_response_due_at - 24h` for any `disputed` deal where `provider_responded_at IS NULL`.
 - **REQ-012** — Outbox events emitted with `aggregate_type='deal'`: `dispute.evidence_submitted`, `dispute.response_submitted`, `dispute.response_reminder`, `dispute.resolution_published_for_client`, `dispute.resolution_published_for_provider`.
-- **REQ-013** — Notifications v1.3 catalog entries: `dispute_response_due_reminder` (provider, in_app+email+push, not mandatory), `dispute_resolution_published_for_client` (client, all channels, MANDATORY), `dispute_resolution_published_for_provider` (provider, all channels, MANDATORY).
+- **REQ-013** — Notifications v1.3 catalog entries: `dispute_response_due_reminder` (provider, in_app+email+push, MANDATORY — quiet-hours bypass; legal-deadline-bearing per Notifications v1.3 §4.6), `dispute_resolution_published_for_client` (client, all channels, MANDATORY), `dispute_resolution_published_for_provider` (provider, all channels, MANDATORY).
 - **REQ-014** — `GET /deals/{id}/dispute` (party-filtered view) and `GET /admin/deals/{id}/dispute` (full admin view) return current dispute state, evidence (party-filtered for party callers), timing, resolution, and copy strings.
 
 ### Security
@@ -108,7 +108,7 @@ CREATE TABLE dispute_evidence (
   deal_id         UUID        NOT NULL REFERENCES deals(id) ON DELETE RESTRICT,
   submitted_by    UUID        NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
   party_role      TEXT        NOT NULL CHECK (party_role IN ('client','provider')),
-  statement       TEXT        NOT NULL CHECK (char_length(statement) BETWEEN 30 AND 4000),
+  statement       TEXT        CHECK (statement IS NULL OR char_length(statement) BETWEEN 30 AND 4000),  -- v1.0.1: NULLable to allow GDPR erasure (REQ-009/AC-009/DSP-CON-007); 30..4000 enforced at INSERT by application + this CHECK
   attachment_ids  UUID[]      NOT NULL DEFAULT '{}'::uuid[],
   submitted_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT uq_dispute_evidence_party UNIQUE (deal_id, party_role)
@@ -358,7 +358,7 @@ Existing Deal Workflow events `deal.disputed`, `deal.dispute_resolved`, `deal.di
 
 | Code | Trigger event | Recipient | In-app | Email | Push | Mandatory |
 |---|---|---|---|---|---|---|
-| `dispute_response_due_reminder` | `dispute.response_reminder` | provider | ✓ | ✓ | ✓ | — |
+| `dispute_response_due_reminder` | `dispute.response_reminder` | provider | ✓ | ✓ | ✓ | ✓ |
 | `dispute_resolution_published_for_client` | `dispute.resolution_published_for_client` | client | ✓ | ✓ | ✓ | ✓ |
 | `dispute_resolution_published_for_provider` | `dispute.resolution_published_for_provider` | provider | ✓ | ✓ | ✓ | ✓ |
 

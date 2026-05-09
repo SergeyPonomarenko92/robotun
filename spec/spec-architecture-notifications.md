@@ -1,8 +1,8 @@
 ---
 title: Notifications — Transport & Delivery Layer for Outbox Events
-version: 1.1
+version: 1.3
 date_created: 2026-05-08
-last_updated: 2026-05-08
+last_updated: 2026-05-09
 owner: Platform / Notifications
 tags: [architecture, notifications, outbox, transport, delivery, push, email, gdpr]
 ---
@@ -25,7 +25,7 @@ This specification defines:
 - API surface for the user inbox, preferences, device-token lifecycle, admin queue, and admin template preview.
 - Outbox events emitted by Notifications itself for downstream observability (`notification.sent`, `notification.failed`, `notification.bounced`, `preference.updated`).
 
-**Out of scope:** SMS, social-login auth events, in-app threading/grouping, third-party webhooks, multi-locale beyond `uk`, push rich media, push delivery receipts, email open/click tracking, admin broadcast tooling, `payment.*` events, `auth.login_new_device`, DKIM/SPF DNS configuration, Prometheus metric schemas, `deal_events` polling fallback (rejected — outbox-only consumption).
+**Out of scope:** SMS, social-login auth events, in-app threading/grouping, third-party webhooks, multi-locale beyond `uk`, push rich media, push delivery receipts, email open/click tracking, admin broadcast tooling, `auth.login_new_device`, DKIM/SPF DNS configuration, Prometheus metric schemas, `deal_events` polling fallback (rejected — outbox-only consumption).
 
 **Audience:** backend engineers, platform/SRE, mobile engineers, security/legal reviewers.
 
@@ -48,7 +48,7 @@ This specification defines:
 
 ### Requirements
 
-- **REQ-001** — Notifications consumes outbox events with `aggregate_type IN ('deal','review','user','message','conversation')` and the cross-module event types in the catalog (§4.6). The `'message'` and `'conversation'` aggregate types were added in v1.1 as a hard prerequisite for Messaging Module 10.
+- **REQ-001** — Notifications consumes outbox events with `aggregate_type IN ('deal','review','user','message','conversation','payment','payout','refund','chargeback','wallet')` and the cross-module event types in the catalog (§4.6). The `'message'`/`'conversation'` aggregate types were added in v1.1 (Messaging Module 10); `'payment'`/`'payout'`/`'refund'`/`'chargeback'`/`'wallet'` in v1.2 (Payments Module 11). Module 14 (Disputes UI, v1.3) emits its `dispute.*` events with **`aggregate_type='deal'`** and is therefore routed via the existing `'deal'` allowlist; no new aggregate_type is added in v1.3.
 - **REQ-002** — The Notifications worker MUST NOT modify `outbox_events.status`. It maintains its own cursor in `notification_consumer_cursors`.
 - **REQ-003** — Idempotency: dedup constraint `UNIQUE (source_event_id, user_id, channel, notification_code)` on `notifications`.
 - **REQ-004** — Worker single-activeness MUST be enforced via `SELECT ... FOR UPDATE SKIP LOCKED` on the cursor row before each scan tick.
@@ -264,7 +264,7 @@ FOR UPDATE SKIP LOCKED;
 SELECT id, aggregate_type, event_type, payload, created_at
 FROM   outbox_events
 WHERE  id > $last_seen_id
-   AND aggregate_type IN ('deal','review','user','message','conversation')  -- v1.1: +message,+conversation
+   AND aggregate_type IN ('deal','review','user','message','conversation','payment','payout','refund','chargeback','wallet')  -- v1.1: +message,+conversation; v1.2: +payment,+payout,+refund,+chargeback,+wallet; v1.3 dispute.* events ride aggregate_type='deal' (no allowlist change)
 ORDER BY id ASC
 LIMIT  500;
 
@@ -388,7 +388,7 @@ Codes use `<intent>` form (e.g., `deal_disputed_as_provider`); event types are t
 | `deal.cancelled_mutual` | `deal_cancelled_mutual_*` | both | ✓ | ✓ | — | — | — |
 | `deal.cancelled_escrow_timeout` | `deal_cancelled_escrow_timeout_*` | both | ✓ | ✓ | — | — | — |
 | `deal.expired_pending` | `deal_expired_pending_for_client` | client | ✓ | ✓ | — | — | — |
-| `deal.dispute_resolved` | `deal_dispute_resolved_*` | both | ✓ | ✓ | ✓ | ✓ | — |
+| `deal.dispute_resolved` | (system-only since v1.3 — superseded by per-party `dispute.resolution_published_for_{client,provider}` rows from Module 14) | — | — | — | — | — | — |
 | `deal.dispute_escalated` | `deal_dispute_escalated_admin` | admin queue | ✓ | ✓ | — | — | — |
 | `deal.dispute_unresolved` | `deal_dispute_unresolved_*` | both | ✓ | ✓ | ✓ | ✓ | — |
 | `kyc.submitted` | `kyc_submitted_admin` | admin queue | ✓ | — | — | — | daily |
@@ -420,8 +420,22 @@ Codes use `<intent>` form (e.g., `deal_disputed_as_provider`); event types are t
 | `message.created` | `new_message_for_recipient` | recipient | ✓ | — | ✓ | — | — |
 | `conversation.blocked` | `conversation_blocked_confirmation` | blocker | ✓ | — | — | — | — |
 | `message.auto_redacted` | `message_redacted_for_sender` | sender | ✓ | ✓ | — | ✓ | — |
+| `payment.captured` | `payment_captured_for_client` | client | ✓ | ✓ | ✓ | — | — |
+| `payment.failed` | `payment_failed_for_client` | client | ✓ | ✓ | ✓ | ✓ | — |
+| `payment.hold_expiring` | `payment_hold_expiring_for_client` | client | ✓ | ✓ | ✓ | — | — |
+| `payout.requested` | `payout_initiated_for_provider` | provider | ✓ | ✓ | — | — | — |
+| `payout.completed` | `payout_completed_for_provider` | provider | ✓ | ✓ | ✓ | — | — |
+| `payout.failed` | `payout_failed_for_provider` | provider | ✓ | ✓ | ✓ | ✓ | — |
+| `refund.issued` | `refund_issued_for_client` | client | ✓ | ✓ | ✓ | — | — |
+| `chargeback.received` | `chargeback_received_for_provider` | provider | ✓ | ✓ | ✓ | ✓ | — |
+| `chargeback.lost` | `chargeback_lost_for_provider` | provider | ✓ | ✓ | ✓ | ✓ | — |
+| `dispute.evidence_submitted` | `dispute_evidence_submitted_for_counterparty` | counterparty | ✓ | ✓ | ✓ | ✓ | — |
+| `dispute.response_submitted` | `dispute_response_submitted_for_disputer` | client (original disputer) | ✓ | ✓ | ✓ | ✓ | — |
+| `dispute.response_reminder` | `dispute_response_due_reminder` | provider | ✓ | ✓ | ✓ | ✓ | — |
+| `dispute.resolution_published_for_client` | `dispute_resolution_published_for_client` | client | ✓ | ✓ | ✓ | ✓ | — |
+| `dispute.resolution_published_for_provider` | `dispute_resolution_published_for_provider` | provider | ✓ | ✓ | ✓ | ✓ | — |
 
-**Non-notifiable (system-only) events:** `user.soft_deleted`, `user.gdpr_erased_*` (triggers erasure, not a notification — Messaging's `user.gdpr_erased_messages` is in this set), `deal.escrow_*`, `deal.transition_rejected`, `listing.created`, `listing.edited`, `listing.bulk_*`, `listing.paused` (provider-self-paused), `media.scan_clean`, `media.deleted`, `kyc.document_ready`, `category.archived`, `category.admin_created`, `category.name_edited`, `conversation.created` (informational; surfaced to recipient via the first `message.created`), `message.contact_info_detected`, `message.attachment_threat`, `message.reported` (these route to the admin queue via `admin_notifications`, not user inbox).
+**Non-notifiable (system-only) events:** `user.soft_deleted`, `user.gdpr_erased_*` (triggers erasure, not a notification — Messaging's `user.gdpr_erased_messages` is in this set), `deal.escrow_*`, `deal.transition_rejected`, `listing.created`, `listing.edited`, `listing.bulk_*`, `listing.paused` (provider-self-paused), `media.scan_clean`, `media.deleted`, `kyc.document_ready`, `category.archived`, `category.admin_created`, `category.name_edited`, `conversation.created` (informational; surfaced to recipient via the first `message.created`), `message.contact_info_detected`, `message.attachment_threat`, `message.reported` (these route to the admin queue via `admin_notifications`, not user inbox), `payment.hold_expired` (system; triggers Deal `deal.cancelled_hold_expired` instead), `refund.failed` (system; admin queue only), `chargeback.won` / `chargeback.arbitration_won` / `chargeback.settled` (system; ledger-internal — v1.2), `wallet.balance_changed` (too noisy; opt-in low-balance derived signal deferred — v1.2), `deal.dispute_resolved` (superseded by per-party `dispute.resolution_published_for_{client,provider}` — v1.3 dedup; deal.dispute_resolved still emitted by Deal state machine for non-notification consumers).
 
 **v1.1 — Messaging integration notes:**
 
@@ -429,6 +443,22 @@ Codes use `<intent>` form (e.g., `deal_disputed_as_provider`); event types are t
 - `conversation.blocked` (`aggregate_type='conversation'`) sends an in-app confirmation to the blocker only. The blocked user is not notified (deliberate; matches industry norm for safety).
 - `message.auto_redacted` (`aggregate_type='message'`) is `mandatory=true` because it informs the sender of a moderation action; it bypasses preferences and quiet hours.
 - Push coalescing for `message.created` uses `digest_key='msg_conv:{recipient_id}:{conversation_id}'` with a 5-minute window (in-app remains per-message).
+
+**v1.2 — Payments integration notes:**
+
+- Event names match Payments §4.7 outbox table verbatim. `payment.captured` (`aggregate_type='payment'`), `payment.failed` (mandatory), `payment.hold_expiring`, `payout.requested|completed|failed`, `refund.issued`, `chargeback.received|lost` (mandatory).
+- `payment.hold_expiring` is paired with `deal.escrow_hold_warning` (declared on the deal aggregate by Deal v1.2; producer is Payments — see Payments REQ-021). Only the `payment.hold_expiring` row is catalog-registered; `deal.escrow_hold_warning` is intentionally NOT in this catalog to prevent duplicate delivery (the paired emission produces two outbox rows per warning, but only one notification fires).
+- `chargeback.received` ALSO produces one `admin_notifications` row (code `chargeback_received_admin`) for Module 12 admin handling. That row is registered in the Payments / Chargebacks spec, NOT this catalog.
+- `wallet.balance_changed` is intentionally NOT in this catalog (fires on every ledger write; far too noisy). A future low-balance threshold notification is deferred — it requires a producer-side filter inside Payments before emission, which is out of scope for v1.2.
+
+**v1.3 — Disputes UI integration notes:**
+
+- All `dispute.*` events ride **`aggregate_type='deal'`** per Module 14 REQ-012 (see `spec-design-disputes-ui-flow.md` §4.7). They are routed via the existing `'deal'` allowlist — no new aggregate_type is registered in v1.3.
+- `dispute.evidence_submitted` — counterparty resolved from payload (submitter=client → notify provider, and vice-versa). Mandatory: legal-deadline-bearing event.
+- `dispute.response_submitted` — notifies the original disputer (client) that the provider responded. Mandatory.
+- `dispute.response_reminder` — emitted when 24 h remain in the 3-day provider response window (Module 14 REQ-011). Mandatory; quiet-hours bypass. Code name `dispute_response_due_reminder` matches Module 14 §4.8 catalog row verbatim.
+- `dispute.resolution_published_for_client` / `dispute.resolution_published_for_provider` — TWO distinct outbox event types (per Module 14 REQ-012 / §4.8). Each fans out to ONE notification row (per-party). Mandatory.
+- **Dedup with `deal.dispute_resolved`:** Admin `/resolve` (Deal §4.5) ALSO emits `deal.dispute_resolved` for state-machine integration. To prevent duplicate user-facing notifications, `deal.dispute_resolved` is moved to non-notifiable in v1.3 (see catalog row above and the non-notifiable list). The `dispute.resolution_published_for_{client,provider}` events are now the canonical user-notification source for resolutions.
 
 ### 4.7 REST API
 
