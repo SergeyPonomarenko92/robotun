@@ -33,6 +33,14 @@ import { AttachmentGallery, type GalleryItem } from "@/components/ui/AttachmentG
 import { CategoryPicker, type Category, type CategoryPath } from "@/components/ui/CategoryPicker";
 import { DateTimePicker } from "@/components/ui/DateTimePicker";
 import { PriceRange } from "@/components/ui/PriceRange";
+import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
+import { Pagination } from "@/components/ui/Pagination";
+import { Stepper } from "@/components/ui/Stepper";
+import { InlineAlert } from "@/components/ui/InlineAlert";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { CountBadge } from "@/components/ui/CountBadge";
+import { Drawer, DrawerClose } from "@/components/ui/Drawer";
+import { ErrorState } from "@/components/ui/ErrorState";
 import {
   Search,
   ArrowRight,
@@ -827,9 +835,241 @@ export default function StyleguidePage() {
         </Row>
       </Section>
 
+      <Section id="24" label="Breadcrumbs">
+        <Row label="3-level">
+          <Breadcrumbs
+            items={[
+              { label: "Послуги", href: "/" },
+              { label: "Електрика", href: "/c/elec" },
+              { label: "Заміна проводки", href: "/c/elec/wiring" },
+              { label: "LST-9241 · Заміна проводки в 2-кімн" },
+            ]}
+          />
+        </Row>
+        <Row label="sm">
+          <Breadcrumbs
+            size="sm"
+            items={[
+              { label: "Адмін", href: "/admin" },
+              { label: "Черга", href: "/admin/queue" },
+              { label: "Спір DLR-7831" },
+            ]}
+          />
+        </Row>
+      </Section>
+
+      <Section id="25" label="Pagination (cursor)">
+        <Row label="hasMore">
+          <div className="w-full max-w-2xl">
+            <Pagination hasMore loaded={20} total={147} onLoadMore={() => {}} />
+          </div>
+        </Row>
+        <Row label="loading">
+          <div className="w-full max-w-2xl">
+            <Pagination hasMore loading loaded={40} total={147} onLoadMore={() => {}} />
+          </div>
+        </Row>
+        <Row label="end">
+          <div className="w-full max-w-2xl">
+            <Pagination hasMore={false} loaded={147} total={147} onLoadMore={() => {}} />
+          </div>
+        </Row>
+      </Section>
+
+      <Section id="26" label="Stepper">
+        <Row label="horizontal — KYC">
+          <div className="w-full max-w-2xl">
+            <Stepper
+              activeId="selfie"
+              steps={[
+                { id: "doc", label: "Документ", hint: "Паспорт або ID" },
+                { id: "selfie", label: "Селфі", hint: "Liveness check" },
+                { id: "review", label: "Перевірка", hint: "До 24 годин" },
+                { id: "result", label: "Готово" },
+              ]}
+            />
+          </div>
+        </Row>
+        <Row label="vertical — listing wizard">
+          <div className="w-full max-w-sm">
+            <Stepper
+              orientation="vertical"
+              activeId="media"
+              steps={[
+                { id: "basics", label: "Назва і опис", status: "completed" },
+                { id: "media", label: "Фото та галерея", hint: "1 cover + до 9 додаткових" },
+                { id: "pricing", label: "Ціна та умови", status: "upcoming" },
+                { id: "review", label: "Перевірити та опублікувати", status: "upcoming" },
+              ]}
+            />
+          </div>
+        </Row>
+        <Row label="error">
+          <div className="w-full max-w-2xl">
+            <Stepper
+              steps={[
+                { id: "1", label: "Завантажено", status: "completed" },
+                { id: "2", label: "Перевірка", status: "error" },
+                { id: "3", label: "Публікація", status: "upcoming" },
+              ]}
+            />
+          </div>
+        </Row>
+      </Section>
+
+      <Section id="27" label="InlineAlert">
+        <Row label="card · success">
+          <div className="w-full max-w-xl">
+            <InlineAlert
+              tone="success"
+              title="KYC підтверджено"
+              action={<Button size="sm" variant="ghost">Налаштувати виплати</Button>}
+              onDismiss={() => {}}
+            >
+              Тепер ви можете отримувати виплати. Перші ~3 дні Робочого Дня.
+            </InlineAlert>
+          </div>
+        </Row>
+        <Row label="card · warning">
+          <div className="w-full max-w-xl">
+            <InlineAlert tone="warning" title="Ескроу спливає за 18 год">
+              Якщо клієнт не підтвердить угоду до 18:00 — кошти повернуться, угода буде скасована.
+            </InlineAlert>
+          </div>
+        </Row>
+        <Row label="card · danger">
+          <div className="w-full max-w-xl">
+            <InlineAlert tone="danger" title="Чарджбек відкрито">
+              Клієнт оспорив транзакцію через PSP. Відповідь обовʼязкова до 2026-05-15.
+            </InlineAlert>
+          </div>
+        </Row>
+        <Row label="banner">
+          <div className="w-full">
+            <InlineAlert
+              variant="banner"
+              tone="info"
+              title="Реліз 1.3"
+              action={<Button size="sm" variant="link">Переглянути</Button>}
+              onDismiss={() => {}}
+            >
+              Додано можливість оспорювати завершені угоди протягом 24 год.
+            </InlineAlert>
+          </div>
+        </Row>
+      </Section>
+
+      <Section id="28" label="CopyButton">
+        <Row label="ghost (icon-only)">
+          <CopyButton value="LST-9241" />
+          <CopyButton value="DLR-7831" size="sm" />
+        </Row>
+        <Row label="inline (with label)">
+          <CopyButton value="LST-9241" variant="inline" />
+          <CopyButton value="aks74ym@gmail.com" variant="inline" label="aks74ym@gmail.com" />
+        </Row>
+      </Section>
+
+      <Section id="29" label="CountBadge">
+        <Row label="sizes / tones">
+          <span className="inline-flex items-center gap-1.5">
+            <span>Inbox</span>
+            <CountBadge value={3} />
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span>Messages</span>
+            <CountBadge value={28} tone="accent" />
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span>Disputes</span>
+            <CountBadge value={147} tone="danger" />
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span>Md</span>
+            <CountBadge value={5} size="md" />
+          </span>
+          <CountBadge value={0} hideZero={false} />
+        </Row>
+      </Section>
+
+      <Section id="30" label="Drawer">
+        <Row label="right">
+          <Drawer
+            trigger={<Button variant="secondary">Відкрити фільтри</Button>}
+            title="Фільтри"
+            description="Уточніть результати пошуку"
+            footer={
+              <>
+                <DrawerClose asChild>
+                  <Button variant="ghost">Скасувати</Button>
+                </DrawerClose>
+                <DrawerClose asChild>
+                  <Button>Застосувати</Button>
+                </DrawerClose>
+              </>
+            }
+          >
+            <p className="mb-4">Тут будуть PriceRange, Tag-фільтри по категоріях, перемикачі.</p>
+            <PriceRange value={priceRange} onChange={setPriceRange} min={0} max={1000000} step={5000} />
+          </Drawer>
+        </Row>
+        <Row label="bottom (mobile sheet)">
+          <Drawer
+            side="bottom"
+            trigger={<Button variant="secondary">Сортування</Button>}
+            title="Сортування"
+            footer={
+              <DrawerClose asChild>
+                <Button>Готово</Button>
+              </DrawerClose>
+            }
+          >
+            <div className="flex flex-col gap-2 text-body">
+              <label className="flex items-center gap-2">
+                <input type="radio" name="sort-bottom" defaultChecked /> За релевантністю
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="sort-bottom" /> Найновіші
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" name="sort-bottom" /> Дешевші
+              </label>
+            </div>
+          </Drawer>
+        </Row>
+      </Section>
+
+      <Section id="31" label="ErrorState">
+        <Row label="page · network">
+          <div className="w-full">
+            <ErrorState kind="network" onRetry={() => {}} />
+          </div>
+        </Row>
+        <Row label="inline · forbidden">
+          <div className="w-full max-w-xl">
+            <ErrorState
+              variant="inline"
+              kind="forbidden"
+              code="403 · req-9af3"
+              onRetry={() => {}}
+            />
+          </div>
+        </Row>
+        <Row label="inline · server">
+          <div className="w-full max-w-xl">
+            <ErrorState
+              variant="inline"
+              kind="server"
+              code="500 · req-1b2c"
+              onRetry={() => {}}
+            />
+          </div>
+        </Row>
+      </Section>
+
       <footer className="mt-20 border-t border-hairline pt-8">
         <p className="font-mono text-caption text-muted-soft">
-          Далі: Breadcrumbs, Pagination, Stepper, InlineAlert, CopyButton, CountBadge, Drawer, ErrorState.
+          Молекули завершені (24 компоненти). Далі: організми — TopNav, ListingCard, DealStateTracker, MessageBubble.
         </p>
       </footer>
     </main>
