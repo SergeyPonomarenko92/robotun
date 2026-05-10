@@ -68,6 +68,11 @@ function uuid(): string {
 
 export const PLATFORM_FEE_BPS = 500; // 5.00% in basis points (Module 11 mock)
 
+export type TransitionError =
+  | "not_found"
+  | "forbidden"
+  | "invalid_state";
+
 export const dealsStore = {
   insert(input: Omit<MockDeal, "id" | "status" | "created_at" | "fee_kopecks" | "total_held_kopecks" | "hold_id">): MockDeal {
     const fee = Math.round(input.budget_kopecks * PLATFORM_FEE_BPS / 10_000);
@@ -99,13 +104,92 @@ export const dealsStore = {
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
   },
+  /** Module 3 §4.5 transitions (mock subset).
+   *  pending → active (provider accept)
+   *  pending → cancelled (provider reject OR client cancel)
+   *  Other transitions out of scope for the viewer wiring. */
+  transition(
+    id: string,
+    callerId: string,
+    action: "accept" | "reject" | "cancel"
+  ): MockDeal | { error: TransitionError } {
+    const d = db().get(id);
+    if (!d) return { error: "not_found" };
+
+    if (action === "accept" || action === "reject") {
+      if (d.provider_id !== callerId) return { error: "forbidden" };
+      if (d.status !== "pending") return { error: "invalid_state" };
+      d.status = action === "accept" ? "active" : "cancelled";
+      return d;
+    }
+    if (action === "cancel") {
+      if (d.client_id !== callerId) return { error: "forbidden" };
+      if (d.status !== "pending") return { error: "invalid_state" };
+      d.status = "cancelled";
+      return d;
+    }
+    return { error: "invalid_state" };
+  },
 };
 
 /* =====================================================================
-   Public projection (REST shape) — drops nothing for now since deals
-   are created by their client and most fields are non-sensitive. Real
-   backend may strip provider_payout_method etc. depending on viewer role.
+   Public projection (REST shape) — embeds party display info so /deals/:id
+   can render DealHeader without a separate users JOIN. Real backend would
+   strip provider_payout_method etc. depending on viewer role.
    ===================================================================== */
+import { store as usersStore, type MockUser } from "./store";
+import { findListing } from "./listings";
+
+type PartyEmbed = {
+  id: string;
+  display_name: string;
+  avatar_url?: string;
+  kyc_verified: boolean;
+};
+
+function embedClient(userId: string): PartyEmbed {
+  const u = usersStore.findUserById(userId);
+  if (u) {
+    return {
+      id: u.id,
+      display_name: u.display_name,
+      avatar_url: u.avatar_url,
+      kyc_verified: u.kyc_status === "approved",
+    };
+  }
+  // Unknown — graceful fallback (deleted user, mock-only)
+  return {
+    id: userId,
+    display_name: "Користувач",
+    kyc_verified: false,
+  };
+}
+
+function embedProvider(providerId: string, listingId: string): PartyEmbed {
+  // Try users first (real seeded provider)
+  const u = usersStore.findUserById(providerId);
+  if (u) {
+    return {
+      id: u.id,
+      display_name: u.display_name,
+      avatar_url: u.avatar_url,
+      kyc_verified: u.kyc_status === "approved",
+    };
+  }
+  // Listings have synthetic provider IDs (uuid5 from name) that don't exist
+  // in the users table — fall back to the listing's provider snapshot.
+  const l = findListing(listingId);
+  if (l) {
+    return {
+      id: providerId,
+      display_name: l.provider.name,
+      avatar_url: l.provider.avatar_url,
+      kyc_verified: l.provider.kyc_verified,
+    };
+  }
+  return { id: providerId, display_name: "Виконавець", kyc_verified: false };
+}
+
 export function projectDeal(d: MockDeal) {
   return {
     id: d.id,
@@ -125,6 +209,14 @@ export function projectDeal(d: MockDeal) {
     hold_id: d.hold_id,
     created_at: d.created_at,
     listing_title_snapshot: d.listing_title_snapshot,
+    /** Embedded party display blocks (Module 3 spec leaves this to projection
+     *  layer — keeping read-side denormalized avoids a JOIN in the hot path). */
+    client: embedClient(d.client_id),
+    provider: embedProvider(d.provider_id, d.listing_id),
   };
 }
+
+// MockUser used only inside this module — silence unused-import in some builds
+void (null as unknown as MockUser);
+
 export type DealProjection = ReturnType<typeof projectDeal>;

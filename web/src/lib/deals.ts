@@ -12,6 +12,13 @@ export type DealStatus =
 
 export type Urgency = "today" | "tomorrow" | "week" | "later";
 
+export type DealParty = {
+  id: string;
+  display_name: string;
+  avatar_url?: string;
+  kyc_verified: boolean;
+};
+
 export type Deal = {
   id: string;
   listing_id: string;
@@ -30,6 +37,8 @@ export type Deal = {
   hold_id: string;
   created_at: string;
   listing_title_snapshot: string;
+  client: DealParty;
+  provider: DealParty;
 };
 
 export type CreateDealInput = {
@@ -147,4 +156,43 @@ export function useDeal(id: string | null | undefined): DealState {
   }, [id]);
 
   return state;
+}
+
+/* =====================================================================
+   State transition actions — wraps POST /deals/:id/transition.
+   ===================================================================== */
+export type DealAction = "accept" | "reject" | "cancel";
+
+export async function transitionDeal(
+  id: string,
+  action: DealAction
+): Promise<{ ok: true; deal: Deal } | { ok: false; error: { message: string; status: number } }> {
+  try {
+    const deal = await apiFetch<Deal>(
+      `/deals/${encodeURIComponent(id)}/transition`,
+      {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      }
+    );
+    return { ok: true, deal };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const message =
+        e.status === 401
+          ? "Потрібно увійти знову"
+          : e.status === 403
+            ? "Цю дію може виконати лише інша сторона угоди"
+            : e.status === 409
+              ? "Стан угоди не дозволяє цю дію — оновіть сторінку"
+              : e.status === 404
+                ? "Угоду не знайдено"
+                : "Сервіс тимчасово недоступний";
+      return { ok: false, error: { message, status: e.status } };
+    }
+    return {
+      ok: false,
+      error: { message: "Не вдалось підключитись", status: 0 },
+    };
+  }
 }
