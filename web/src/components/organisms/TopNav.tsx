@@ -2,6 +2,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { Bell, MessageCircle, Plus, Menu as MenuIcon, ChevronDown, LogOut, Settings, User } from "lucide-react";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/Button";
 import { Avatar } from "@/components/ui/Avatar";
@@ -89,6 +90,8 @@ export function TopNav({
               </Button>
             </Link>
           )}
+
+          <ThemeToggle className="border-transparent bg-transparent hover:border-hairline-strong hover:bg-paper text-ink-soft hover:text-ink" />
 
           {user ? (
             <>

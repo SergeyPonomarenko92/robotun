@@ -2,8 +2,9 @@
 @import "tw-animate-css";
 
 /* =========================================================
-   Robotun — Foundation Tokens (v0.1, editorial light)
-   Light only. Dark клонується через [data-theme="dark"] пізніше.
+   Robotun — Foundation Tokens
+   Light: warm paper + ink + brick
+   Dark:  warm charcoal + ivory + brighter brick (override via [data-theme="dark"])
    ========================================================= */
 
 @theme {
@@ -66,6 +67,51 @@
   --duration-fast: 120ms;
   --duration-base: 200ms;
   --duration-slow: 320ms;
+}
+
+/* =========================================================
+   Dark theme — token inversion only.
+   Activated via <html data-theme="dark"> (set by ThemeProvider).
+   - Surface scale: canvas (deepest) → paper → elevated
+   - Text scale: ink (brightest) → ink-soft → muted → muted-soft
+   - Brick accent stays brick, brightened slightly to pop on dark.
+   - "soft" tone backgrounds become dark-tinted instead of pastel.
+   ========================================================= */
+[data-theme="dark"] {
+  --color-canvas: #14110e;
+  --color-paper: #1c1916;
+  --color-elevated: #232019;
+  --color-ink: #f7f4ee;
+  --color-ink-soft: #d6cfbf;
+  --color-muted: #948e85;
+  --color-muted-soft: #6e6862;
+  --color-hairline: #2c2924;
+  --color-hairline-strong: #3a3631;
+
+  --color-accent: #d44529;
+  --color-accent-hover: #e95535;
+  --color-accent-soft: #3a1f17;
+
+  --color-success: #5fb088;
+  --color-success-soft: #1a2e23;
+  --color-warning: #e0a050;
+  --color-warning-soft: #3a2812;
+  --color-danger: #e07a6e;
+  --color-danger-soft: #3a1c1a;
+  --color-info: #7aa3d8;
+  --color-info-soft: #1a2638;
+
+  /* Stronger shadows on dark — soft ambient, no blur on top */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 16px -8px rgba(0, 0, 0, 0.6), 0 2px 4px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 18px 40px -16px rgba(0, 0, 0, 0.7), 0 4px 8px rgba(0, 0, 0, 0.45);
+  --shadow-pop: 0 30px 60px -24px rgba(0, 0, 0, 0.8);
+}
+
+[data-theme="dark"] ::selection {
+  background: var(--color-accent);
+  color: var(--color-paper);
 }
 
 /* Desktop type uplift */
