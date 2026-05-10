@@ -1,9 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { TopNav } from "@/components/organisms/TopNav";
 import { MobileTabBar } from "@/components/organisms/MobileTabBar";
 import { Footer } from "@/components/organisms/Footer";
-import { ListingCard, type ListingCardData } from "@/components/organisms/ListingCard";
+import { ListingCard } from "@/components/organisms/ListingCard";
 import { ProviderCard, type ProviderCardData } from "@/components/organisms/ProviderCard";
 import {
   FilterPanel,
@@ -16,7 +16,9 @@ import { Button } from "@/components/ui/Button";
 import { Pagination } from "@/components/ui/Pagination";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/Tabs";
-import { Filter, ArrowRight } from "lucide-react";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { Filter, ArrowRight, Loader2 } from "lucide-react";
+import { useFeed, projectionToCard, type FeedFilters } from "@/lib/feed";
 
 const USER = {
   id: "u1",
@@ -26,116 +28,6 @@ const USER = {
   hasProviderRole: true,
 };
 
-const LISTINGS: ListingCardData[] = [
-  {
-    id: "l1",
-    href: "#",
-    title: "Ремонт пральних машин Bosch / Siemens — виїзд по Києву",
-    coverUrl: "https://picsum.photos/seed/r-l1/640/480",
-    priceFromKopecks: 32000,
-    priceUnit: "/виклик",
-    city: "Київ",
-    region: "Київська обл.",
-    category: "Ремонт побутової техніки",
-    provider: {
-      name: "Bosch Group Service",
-      avatarUrl: "https://i.pravatar.cc/120?img=12",
-      kycVerified: true,
-      avgRating: 4.9,
-      reviewsCount: 320,
-      completedDealsCount: 412,
-    },
-    flags: ["Топ-1%", "Швидкий"],
-    responseTime: "відп. за 12 хв",
-    saved: true,
-  },
-  {
-    id: "l2",
-    href: "#",
-    title: "Прибирання після ремонту — генеральне з вивозом сміття",
-    coverUrl: "https://picsum.photos/seed/r-l2/640/480",
-    priceFromKopecks: 120000,
-    priceUnit: "/обʼєкт",
-    city: "Львів",
-    category: "Прибирання",
-    provider: {
-      name: "CleanWave",
-      avatarUrl: "https://i.pravatar.cc/120?img=22",
-      kycVerified: true,
-      avgRating: 4.7,
-      reviewsCount: 184,
-    },
-  },
-  {
-    id: "l3",
-    href: "#",
-    title: "Електрик — заміна проводки, штробління, монтаж",
-    coverUrl: "https://picsum.photos/seed/r-l3/640/480",
-    priceFromKopecks: 50000,
-    priceUnit: "/год",
-    city: "Київ",
-    category: "Електрика",
-    provider: {
-      name: "Микола Петренко",
-      avatarUrl: "https://i.pravatar.cc/120?img=8",
-      kycVerified: false,
-      avgRating: 4.5,
-      reviewsCount: 32,
-    },
-    flags: ["Новий"],
-  },
-  {
-    id: "l4",
-    href: "#",
-    title: "Сантехніка — заміна змішувачів, унітаз, бойлер",
-    coverUrl: "https://picsum.photos/seed/r-l4/640/480",
-    priceFromKopecks: 45000,
-    priceUnit: "/виклик",
-    city: "Харків",
-    category: "Сантехніка",
-    provider: {
-      name: "Олег Б.",
-      avatarUrl: "https://i.pravatar.cc/120?img=15",
-      kycVerified: true,
-      avgRating: 4.8,
-      reviewsCount: 92,
-    },
-  },
-  {
-    id: "l5",
-    href: "#",
-    title: "Меблі під замовлення — кухні, шафи-купе, гардеробні",
-    coverUrl: "https://picsum.photos/seed/r-l5/640/480",
-    priceFromKopecks: 1850000,
-    priceUnit: "/проект",
-    city: "Дніпро",
-    category: "Меблі",
-    provider: {
-      name: "Wood Atelier",
-      kycVerified: true,
-      avgRating: 5,
-      reviewsCount: 14,
-    },
-    flags: ["Преміум"],
-  },
-  {
-    id: "l6",
-    href: "#",
-    title: "Майстер на годину — дрібний ремонт у квартирі",
-    coverUrl: "https://picsum.photos/seed/r-l6/640/480",
-    priceFromKopecks: 30000,
-    priceUnit: "/год",
-    city: "Київ",
-    category: "Дрібний ремонт",
-    provider: {
-      name: "FixIt",
-      avatarUrl: "https://i.pravatar.cc/120?img=33",
-      kycVerified: true,
-      avgRating: 4.6,
-      reviewsCount: 247,
-    },
-  },
-];
 
 const PROVIDERS: ProviderCardData[] = [
   {
@@ -188,8 +80,7 @@ export default function FeedDemoPage() {
   });
   const [sort, setSort] = useState<SortKey>("relevance");
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [savedIds, setSavedIds] = useState<Record<string, boolean>>({ l1: true });
-  const [emptyMode, setEmptyMode] = useState(false);
+  const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
 
   const handleSave = (id: string, next: boolean) =>
     setSavedIds((s) => ({ ...s, [id]: next }));
@@ -204,7 +95,31 @@ export default function FeedDemoPage() {
       categories: [],
     });
 
-  const visibleListings = emptyMode ? [] : LISTINGS;
+  // Map UI filter shape → server contract. Spec REQ-001 takes singular
+  // category_id / city — pick first selected (multi-select is FE-only sugar
+  // for now; real backend can accept repeated params later).
+  const serverFilters: FeedFilters = useMemo(
+    () => ({
+      category_id: filters.categories[0] ?? null,
+      city: filters.cities[0] ?? null,
+      price_min: filters.priceRange[0] > 0 ? filters.priceRange[0] : null,
+      price_max:
+        filters.priceRange[1] < 1_000_000 ? filters.priceRange[1] : null,
+      min_rating: filters.ratingMin,
+      kyc_only: filters.kycOnly,
+    }),
+    [filters]
+  );
+
+  const feed = useFeed(serverFilters, 12);
+  const cards = useMemo(
+    () =>
+      feed.items.map((p) => {
+        const card = projectionToCard(p);
+        return { ...card, saved: savedIds[card.id] ?? false };
+      }),
+    [feed.items, savedIds]
+  );
 
   return (
     <>
@@ -229,7 +144,12 @@ export default function FeedDemoPage() {
         <header className="mb-8">
           <h1 className="font-display text-h1 md:text-display text-ink tracking-tight leading-[1.05]">
             Майстри поряд<br />
-            <span className="text-accent">Київ</span> · 6 пропозицій
+            <span className="text-accent">{filters.cities[0] ?? "усюди"}</span>
+            {" · "}
+            <span className="tabular-nums">
+              {feed.loading ? "…" : feed.totalEstimate}
+            </span>
+            {" "}пропозицій
           </h1>
           <p className="mt-4 text-body-lg text-muted max-w-xl leading-relaxed">
             Перевірені виконавці. Гарантія через ескроу. Жодних прихованих комісій.
@@ -238,8 +158,12 @@ export default function FeedDemoPage() {
 
         <Tabs defaultValue="listings" className="mb-6">
           <TabsList>
-            <TabsTrigger value="listings" count={6}>Послуги</TabsTrigger>
-            <TabsTrigger value="providers" count={2}>Майстри</TabsTrigger>
+            <TabsTrigger value="listings" count={feed.totalEstimate}>
+              Послуги
+            </TabsTrigger>
+            <TabsTrigger value="providers" count={2}>
+              Майстри
+            </TabsTrigger>
             <TabsTrigger value="needs">Потреби</TabsTrigger>
           </TabsList>
 
@@ -254,7 +178,7 @@ export default function FeedDemoPage() {
                     cities={CITIES}
                     categories={CATEGORIES}
                     onReset={reset}
-                    resultsCount={visibleListings.length}
+                    resultsCount={feed.totalEstimate}
                     onApply={() => {}}
                   />
                 </div>
@@ -292,48 +216,59 @@ export default function FeedDemoPage() {
                     </Drawer>
                   </div>
                   <p className="font-mono text-caption text-muted-soft tabular-nums hidden md:block">
-                    {visibleListings.length} результатів
+                    {feed.loading ? "…" : `${feed.totalEstimate} результатів`}
                   </p>
                   <div className="ml-auto flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setEmptyMode((v) => !v)}
-                    >
-                      {emptyMode ? "З результатами" : "Порожній стан"}
-                    </Button>
                     <SortDropdown value={sort} onChange={setSort} size="sm" />
                   </div>
                 </div>
 
-                {visibleListings.length === 0 ? (
+                {feed.error ? (
+                  <ErrorState
+                    kind="server"
+                    title="Не вдалось завантажити стрічку"
+                    description="Спробуйте оновити сторінку. Якщо проблема не зникає — повідомте підтримку."
+                    onRetry={() => window.location.reload()}
+                  />
+                ) : feed.loading ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <ListingSkeleton key={i} />
+                    ))}
+                  </div>
+                ) : cards.length === 0 ? (
                   <NoResultsState
-                    query="ремонт ноутбука"
+                    query={filters.cities[0] ?? "за вашими фільтрами"}
                     suggestions={[
                       "ремонт телевізорів",
                       "ремонт пилососів",
-                      "ремонт мікрохвильовок",
+                      "встановити кондиціонер",
                     ]}
                     onResetFilters={reset}
-                    onSuggestionClick={() => setEmptyMode(false)}
                   />
                 ) : (
                   <>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {visibleListings.map((l) => (
+                      {cards.map((card) => (
                         <ListingCard
-                          key={l.id}
-                          data={{ ...l, saved: savedIds[l.id] ?? l.saved }}
+                          key={card.id}
+                          data={card}
                           onSaveToggle={handleSave}
                         />
                       ))}
                     </div>
                     <Pagination
-                      hasMore
-                      loaded={6}
-                      total={184}
-                      onLoadMore={() => {}}
+                      hasMore={!!feed.nextCursor}
+                      loaded={feed.items.length}
+                      total={feed.totalEstimate}
+                      onLoadMore={() => void feed.loadMore()}
                     />
+                    {feed.loadingMore && (
+                      <div className="mt-4 flex items-center justify-center text-caption text-muted">
+                        <Loader2 size={14} className="animate-spin mr-2" />
+                        Завантажуємо…
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -364,33 +299,37 @@ export default function FeedDemoPage() {
           </TabsContent>
         </Tabs>
 
-        {/* Listing card row variant gallery */}
-        <section className="mt-16">
-          <h2 className="font-display text-h2 text-ink tracking-tight mb-4">
-            ListingCard — row variant
-          </h2>
-          <div className="flex flex-col gap-3">
-            {LISTINGS.slice(0, 3).map((l) => (
-              <ListingCard
-                key={l.id + "-row"}
-                variant="row"
-                data={{ ...l, saved: savedIds[l.id] ?? l.saved }}
-                onSaveToggle={handleSave}
-              />
-            ))}
-          </div>
-        </section>
+        {/* Card variant galleries — slice from live feed for design preview */}
+        {cards.length > 0 && (
+          <>
+            <section className="mt-16">
+              <h2 className="font-display text-h2 text-ink tracking-tight mb-4">
+                ListingCard — row variant
+              </h2>
+              <div className="flex flex-col gap-3">
+                {cards.slice(0, 3).map((c) => (
+                  <ListingCard
+                    key={c.id + "-row"}
+                    variant="row"
+                    data={c}
+                    onSaveToggle={handleSave}
+                  />
+                ))}
+              </div>
+            </section>
 
-        <section className="mt-12">
-          <h2 className="font-display text-h2 text-ink tracking-tight mb-4">
-            ListingCard — compact
-          </h2>
-          <div className="border border-hairline rounded-[var(--radius-md)] bg-paper p-2 max-w-md">
-            {LISTINGS.slice(0, 4).map((l) => (
-              <ListingCard key={l.id + "-c"} variant="compact" data={l} />
-            ))}
-          </div>
-        </section>
+            <section className="mt-12">
+              <h2 className="font-display text-h2 text-ink tracking-tight mb-4">
+                ListingCard — compact
+              </h2>
+              <div className="border border-hairline rounded-[var(--radius-md)] bg-paper p-2 max-w-md">
+                {cards.slice(0, 4).map((c) => (
+                  <ListingCard key={c.id + "-c"} variant="compact" data={c} />
+                ))}
+              </div>
+            </section>
+          </>
+        )}
 
         <div className="mt-16 flex justify-end">
           <Button variant="link" rightIcon={<ArrowRight size={14} />}>
@@ -401,5 +340,22 @@ export default function FeedDemoPage() {
       <Footer />
       <MobileTabBar messagesUnread={12} />
     </>
+  );
+}
+
+function ListingSkeleton() {
+  return (
+    <div className="border border-hairline rounded-[var(--radius-md)] bg-paper overflow-hidden animate-pulse">
+      <div className="aspect-[4/3] bg-canvas" />
+      <div className="p-4 space-y-2">
+        <div className="h-3 w-1/3 bg-canvas rounded" />
+        <div className="h-5 w-4/5 bg-canvas rounded" />
+        <div className="h-5 w-2/3 bg-canvas rounded" />
+        <div className="flex items-center gap-2 pt-2">
+          <div className="h-7 w-7 rounded-full bg-canvas" />
+          <div className="h-3 w-1/2 bg-canvas rounded" />
+        </div>
+      </div>
+    </div>
   );
 }

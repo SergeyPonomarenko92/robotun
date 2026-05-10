@@ -28,7 +28,11 @@
       "Bash(grep -oE 'data-theme=\"dark\"|\\\\[data-theme[^{]*\\\\{[^}]{0,200}')",
       "Bash(grep -oE '\\\\.bg-canvas[^}]{0,80}|\\\\.text-ink[^}]{0,80}')",
       "Bash(git rev-list *)",
-      "Bash(curl -s http://localhost:3000/login)"
+      "Bash(curl -s http://localhost:3000/login)",
+      "Bash(curl -s -o /dev/null -w \"HTTP=%{http_code}\\\\n\" http://localhost:3000/feed)",
+      "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=3')",
+      "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=3&city=%D0%9A%D0%B8%D1%97%D0%B2&kyc_only=true')",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" 'http://localhost:3000/api/v1/feed?cursor=garbage')"
     ]
   }
 }
