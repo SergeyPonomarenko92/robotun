@@ -16,7 +16,8 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
-      "Bash(git commit -m '[INFRA] permission allowlist updates from FE session *)"
+      "Bash(git commit -m '[INFRA] permission allowlist updates from FE session *)",
+      "Bash(curl -s -o /tmp/listing.html -w \"HTTP=%{http_code} SIZE=%{size_download}\\\\n\" http://localhost:3000/listing)"
     ]
   }
 }
