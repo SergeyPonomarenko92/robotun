@@ -17,7 +17,17 @@
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(git commit -m '[INFRA] permission allowlist updates from FE session *)",
-      "Bash(curl -s -o /tmp/listing.html -w \"HTTP=%{http_code} SIZE=%{size_download}\\\\n\" http://localhost:3000/listing)"
+      "Bash(curl -s -o /tmp/listing.html -w \"HTTP=%{http_code} SIZE=%{size_download}\\\\n\" http://localhost:3000/listing)",
+      "Bash(curl -s -o /tmp/wiz.html -w \"HTTP=%{http_code} SIZE=%{size_download}\\\\n\" http://localhost:3000/listing-create)",
+      "Bash(curl -s -o /tmp/dc.html -w \"HTTP=%{http_code} SIZE=%{size_download}\\\\n\" http://localhost:3000/deal-create)",
+      "Bash(curl -s -o /tmp/pd.html -w \"HTTP=%{http_code} SIZE=%{size_download}\\\\n\" http://localhost:3000/provider-dashboard)",
+      "Bash(curl -s -o /tmp/kyc.html -w \"HTTP=%{http_code} SIZE=%{size_download}\\\\n\" http://localhost:3000/kyc)",
+      "Bash(curl -s -o /tmp/d.html -w \"HTTP=%{http_code} SIZE=%{size_download}\\\\n\" http://localhost:3000/dispute)",
+      "Bash(curl -s http://localhost:3000/listing)",
+      "Bash(curl -s 'http://localhost:3000/_next/static/chunks/%5Broot-of-the-server%5D__0znmm6z._.css')",
+      "Bash(grep -oE 'data-theme=\"dark\"|\\\\[data-theme[^{]*\\\\{[^}]{0,200}')",
+      "Bash(grep -oE '\\\\.bg-canvas[^}]{0,80}|\\\\.text-ink[^}]{0,80}')",
+      "Bash(git rev-list *)"
     ]
   }
 }
