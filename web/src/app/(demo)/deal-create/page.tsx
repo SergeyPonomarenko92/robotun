@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   ShieldCheck,
@@ -9,6 +10,7 @@ import {
   AlertTriangle,
   Sparkles,
   ChevronRight,
+  Loader2,
 } from "lucide-react";
 
 import { TopNav } from "@/components/organisms/TopNav";
@@ -34,38 +36,13 @@ import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { RadioCardGroup } from "@/components/ui/RadioCardGroup";
 import { TermCheckbox } from "@/components/ui/TermCheckbox";
+import { ErrorState } from "@/components/ui/ErrorState";
 import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
 import { SuccessScreen } from "@/components/organisms/SuccessScreen";
 
-const USER = {
-  id: "u1",
-  displayName: "Сергій П.",
-  email: "aks74ym@gmail.com",
-  kycVerified: true,
-  hasProviderRole: false,
-};
-
-const PROVIDER = {
-  id: "p1",
-  name: "Bosch Group Service",
-  avatarUrl: "https://i.pravatar.cc/120?img=12",
-  city: "Київ",
-  rating: 4.9,
-  reviewsCount: 320,
-  completedDealsCount: 412,
-  responseMin: 12,
-  kycVerified: true,
-};
-
-const LISTING = {
-  id: "L-21847",
-  title: "Ремонт пральних машин Bosch / Siemens — виїзд по Києву",
-  category: "Ремонт побутової техніки / Пральні машини / Bosch · Siemens",
-  fromKopecks: 32000,
-  unit: "/виклик",
-  coverUrl:
-    "https://images.unsplash.com/photo-1581092335397-9583eb92d232?w=400&q=70",
-};
+import { useRequireAuth, type AuthUser } from "@/lib/auth";
+import { useListing, type ListingDetail } from "@/lib/feed";
+import { createDeal, type Deal, type Urgency as DealUrgency } from "@/lib/deals";
 
 const URGENCY = [
   { id: "today", label: "Сьогодні", hint: "до кінця дня" },
@@ -73,37 +50,178 @@ const URGENCY = [
   { id: "week", label: "Цього тижня", hint: "гнучкий графік" },
   { id: "later", label: "Потім", hint: "погодимо в чаті" },
 ] as const;
-type Urgency = (typeof URGENCY)[number]["id"];
+type Urgency = DealUrgency;
 
 const PLATFORM_FEE_PCT = 0.05;
 const SCOPE_MIN = 40;
 const SCOPE_MAX = 1500;
 
 export default function DealCreatePage() {
-  const [scope, setScope] = React.useState(
-    "Bosch Maxx 6, не зливає воду — гудить, барабан не крутиться. Машина 2018 року, до цього не ремонтувалась. Бажано приїзд цього тижня."
+  const auth = useRequireAuth("/login");
+  const params = useSearchParams();
+  const listingId = params?.get("listing") ?? null;
+  const listing = useListing(listingId);
+
+  if (!auth) {
+    return <PageLoader />;
+  }
+  if (!listingId) {
+    return (
+      <PageFrame>
+        <ErrorState
+          kind="generic"
+          title="Не вказано послугу"
+          description="Перейдіть до /feed і оберіть послугу для замовлення."
+          variant="page"
+        />
+      </PageFrame>
+    );
+  }
+  if (listing.loading) return <PageLoader />;
+  if (listing.notFound) {
+    return (
+      <PageFrame>
+        <ErrorState
+          kind="not_found"
+          title="Послугу не знайдено"
+          description="Можливо, її було знято з публікації."
+          variant="page"
+        />
+      </PageFrame>
+    );
+  }
+  if (listing.error || !listing.data) {
+    return (
+      <PageFrame>
+        <ErrorState
+          kind="server"
+          title="Не вдалось завантажити послугу"
+          onRetry={() => window.location.reload()}
+        />
+      </PageFrame>
+    );
+  }
+
+  return <DealCreateForm me={auth.user} listing={listing.data} />;
+}
+
+function PageLoader() {
+  return (
+    <PageFrame>
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <Loader2 size={20} className="animate-spin text-muted" />
+      </div>
+    </PageFrame>
   );
-  const [budget, setBudget] = React.useState<number | null>(80000);
+}
+
+function PageFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <>
+      <TopNav notificationsUnread={0} messagesUnread={0} />
+      <main className="mx-auto max-w-7xl px-4 md:px-6 py-20 md:py-32">
+        {children}
+      </main>
+      <Footer />
+      <MobileTabBar />
+    </>
+  );
+}
+
+function DealCreateForm({
+  me,
+  listing,
+}: {
+  me: AuthUser;
+  listing: ListingDetail;
+}) {
+  // Build LISTING/PROVIDER projection objects to keep the existing JSX
+  // un-touched. Real data flows from the fetched ListingDetail + AuthUser.
+  const LISTING = {
+    id: listing.id,
+    title: listing.title,
+    category: listing.category,
+    fromKopecks: listing.price_from_kopecks,
+    unit: listing.price_unit,
+    coverUrl:
+      listing.gallery.find((g) => g.is_cover)?.url ??
+      listing.gallery[0]?.url ??
+      listing.cover_url,
+  };
+  const PROVIDER = {
+    id: listing.provider.id,
+    name: listing.provider.name,
+    avatarUrl: listing.provider.avatar_url,
+    city: listing.city,
+    rating: listing.provider.avg_rating,
+    reviewsCount: listing.provider.reviews_count,
+    completedDealsCount: listing.provider.completed_deals_count,
+    responseMin: Number(listing.response_time?.replace(/[^0-9]/g, "")) || 30,
+    kycVerified: listing.provider.kyc_verified,
+  };
+
+  const [scope, setScope] = React.useState(
+    `${listing.title}.\n\nБажаний час — гнучкий, узгодимо в чаті після підтвердження.`
+  );
+  const [budget, setBudget] = React.useState<number | null>(
+    Math.max(50000, listing.price_from_kopecks * 2)
+  );
   const [urgency, setUrgency] = React.useState<Urgency>("week");
   const [date, setDate] = React.useState<string>("");
-  const [address, setAddress] = React.useState("Київ, вул. Січових Стрільців 47");
-  const [phone, setPhone] = React.useState("+380 67 123 45 67");
+  const [address, setAddress] = React.useState(`${listing.city}, `);
+  const [phone, setPhone] = React.useState("+380 ");
   const [files, setFiles] = React.useState<UploadedFile[]>([]);
   const [agreeTerms, setAgreeTerms] = React.useState(true);
   const [agreeEscrow, setAgreeEscrow] = React.useState(true);
   const [confirmOpen, setConfirmOpen] = React.useState(false);
-  const [submitted, setSubmitted] = React.useState(false);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [createdDeal, setCreatedDeal] = React.useState<Deal | null>(null);
 
   // ---------- validation ----------
   const errors: string[] = [];
   if (scope.trim().length < SCOPE_MIN)
     errors.push(`Опишіть задачу детальніше — мінімум ${SCOPE_MIN} символів`);
   if (!budget || budget < 5000) errors.push("Бюджет — мінімум 50 ₴");
-  if (!address.trim()) errors.push("Вкажіть адресу або район");
-  if (!phone.trim()) errors.push("Телефон обовʼязковий — для координації");
+  if (!address.trim() || address.trim().length < 5)
+    errors.push("Вкажіть адресу або район");
+  if (!phone.trim() || phone.trim().length < 7)
+    errors.push("Телефон обовʼязковий — для координації");
   if (!agreeTerms) errors.push("Підтвердіть умови сервісу");
   if (!agreeEscrow) errors.push("Підтвердіть роботу через ескроу");
   const valid = errors.length === 0;
+
+  const handleSubmit = async () => {
+    if (!valid || submitting || !budget) return;
+    setSubmitError(null);
+    setSubmitting(true);
+    const result = await createDeal({
+      listing_id: listing.id,
+      scope: scope.trim(),
+      urgency,
+      deadline_at: date || null,
+      address: address.trim(),
+      phone: phone.trim(),
+      budget_kopecks: budget,
+      attachment_ids: files.map((f) => f.id),
+      escrow_confirmed: agreeEscrow,
+      terms_confirmed: agreeTerms,
+    });
+    setSubmitting(false);
+    if (result.ok) {
+      setCreatedDeal(result.deal);
+    } else {
+      setSubmitError(result.error.message);
+      if (result.error.status === 401 && typeof window !== "undefined") {
+        window.location.assign(
+          `/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`
+        );
+      }
+    }
+  };
+
+  // Keep TopNav happy when AuthProvider is loading on first paint
+  void me;
 
   // ---------- breakdown ----------
   const baseKopecks = budget ?? 0;
@@ -120,13 +238,22 @@ export default function DealCreatePage() {
     setFiles((prev) => [...prev, ...uploaded].slice(0, 5));
   };
 
-  if (submitted) {
-    return <SubmittedScreen onAgain={() => setSubmitted(false)} />;
+  if (createdDeal) {
+    return (
+      <SubmittedScreen
+        deal={createdDeal}
+        provider={PROVIDER}
+        onAgain={() => {
+          setCreatedDeal(null);
+          setScope("");
+        }}
+      />
+    );
   }
 
   return (
     <>
-      <TopNav user={USER} notificationsUnread={3} messagesUnread={12} />
+      <TopNav notificationsUnread={3} messagesUnread={12} />
 
       <main className="mx-auto max-w-7xl px-4 md:px-6 pt-6 md:pt-8 pb-40 md:pb-32">
         <Breadcrumbs
@@ -387,6 +514,12 @@ export default function DealCreatePage() {
                 </ul>
               </InlineAlert>
             )}
+
+            {submitError && (
+              <InlineAlert tone="danger" title="Не вдалось створити угоду">
+                {submitError}
+              </InlineAlert>
+            )}
           </section>
 
           {/* ============ RIGHT — sticky receipt ============ */}
@@ -523,8 +656,9 @@ export default function DealCreatePage() {
               rightIcon={<CheckCircle2 size={16} />}
               onClick={() => {
                 setConfirmOpen(false);
-                setSubmitted(true);
+                void handleSubmit();
               }}
+              loading={submitting}
             >
               Підтвердити та сплатити
             </Button>
@@ -657,14 +791,22 @@ function ConfirmRow({
   );
 }
 
-function SubmittedScreen({ onAgain }: { onAgain: () => void }) {
+function SubmittedScreen({
+  deal,
+  provider,
+  onAgain,
+}: {
+  deal: Deal;
+  provider: { name: string; responseMin: number };
+  onAgain: () => void;
+}) {
   return (
     <>
-      <TopNav user={USER} notificationsUnread={3} messagesUnread={12} />
+      <TopNav notificationsUnread={3} messagesUnread={12} />
       <SuccessScreen
         icon={<CheckCircle2 size={32} />}
         iconTone="success"
-        kicker="Угода створена"
+        kicker={`Угода створена · ${deal.id.slice(0, 8)}`}
         title={
           <>
             Кошти заморожено
@@ -674,15 +816,24 @@ function SubmittedScreen({ onAgain }: { onAgain: () => void }) {
         }
         description={
           <>
-            {PROVIDER.name} отримав запит. Зазвичай відповідає протягом{" "}
-            {PROVIDER.responseMin} хвилин. Ми сповістимо вас у чаті та поштою.
+            {provider.name} отримав запит на{" "}
+            <MoneyDisplay kopecks={deal.total_held_kopecks} /> (з них{" "}
+            <MoneyDisplay kopecks={deal.fee_kopecks} /> — сервісний збір).
+            Зазвичай відповідає протягом {provider.responseMin} хвилин. Ми
+            сповістимо вас у чаті та поштою.
           </>
         }
         actions={
           <>
-            <Button variant="accent" size="lg" rightIcon={<ChevronRight size={16} />}>
-              Перейти до угоди
-            </Button>
+            <a href={`/deals/${deal.id}`}>
+              <Button
+                variant="accent"
+                size="lg"
+                rightIcon={<ChevronRight size={16} />}
+              >
+                Перейти до угоди
+              </Button>
+            </a>
             <Button variant="secondary" size="lg" onClick={onAgain}>
               Ще одне замовлення
             </Button>

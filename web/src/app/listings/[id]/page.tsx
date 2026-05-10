@@ -326,14 +326,16 @@ function ListingDetailView({ data }: { data: ListingDetail }) {
               </div>
 
               <div className="p-6 md:p-7 border-b border-hairline space-y-3">
-                <Button
-                  size="lg"
-                  variant="accent"
-                  className="w-full"
-                  rightIcon={<ArrowRight size={16} />}
-                >
-                  Замовити з ескроу
-                </Button>
+                <a href={`/deal-create?listing=${encodeURIComponent(data.id)}`}>
+                  <Button
+                    size="lg"
+                    variant="accent"
+                    className="w-full"
+                    rightIcon={<ArrowRight size={16} />}
+                  >
+                    Замовити з ескроу
+                  </Button>
+                </a>
                 <Button size="lg" variant="secondary" className="w-full">
                   Написати майстру
                 </Button>
@@ -628,14 +630,19 @@ function ListingDetailView({ data }: { data: ListingDetail }) {
             className="font-display text-h3 text-ink leading-none"
           />
         </div>
-        <Button
-          variant="accent"
-          size="lg"
+        <a
+          href={`/deal-create?listing=${encodeURIComponent(data.id)}`}
           className="flex-1"
-          rightIcon={<ArrowRight size={16} />}
         >
-          Замовити
-        </Button>
+          <Button
+            variant="accent"
+            size="lg"
+            className="w-full"
+            rightIcon={<ArrowRight size={16} />}
+          >
+            Замовити
+          </Button>
+        </a>
       </div>
 
       <Footer />
