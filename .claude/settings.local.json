@@ -27,7 +27,8 @@
       "Bash(curl -s 'http://localhost:3000/_next/static/chunks/%5Broot-of-the-server%5D__0znmm6z._.css')",
       "Bash(grep -oE 'data-theme=\"dark\"|\\\\[data-theme[^{]*\\\\{[^}]{0,200}')",
       "Bash(grep -oE '\\\\.bg-canvas[^}]{0,80}|\\\\.text-ink[^}]{0,80}')",
-      "Bash(git rev-list *)"
+      "Bash(git rev-list *)",
+      "Bash(curl -s http://localhost:3000/login)"
     ]
   }
 }

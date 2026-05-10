@@ -45,6 +45,8 @@ import { RatingStars } from "@/components/ui/RatingStars";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Menu, MenuTrigger, MenuContent, MenuItem } from "@/components/ui/Menu";
 import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
+import { useRequireAuth } from "@/lib/auth";
+import { Loader2 } from "lucide-react";
 
 const PROVIDER_USER = {
   id: "p1",
@@ -295,6 +297,16 @@ const KPIS: {
 
 export default function ProviderDashboardPage() {
   const [period, setPeriod] = React.useState<Period>("month");
+  const auth = useRequireAuth();
+
+  if (!auth) {
+    // Loading or redirecting — show a minimal frame
+    return (
+      <main className="min-h-screen flex items-center justify-center">
+        <Loader2 size={20} className="animate-spin text-muted" />
+      </main>
+    );
+  }
 
   return (
     <>

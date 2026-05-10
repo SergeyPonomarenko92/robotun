@@ -3,6 +3,7 @@ import * as React from "react";
 import Link from "next/link";
 import { Bell, MessageCircle, Plus, Menu as MenuIcon, ChevronDown, LogOut, Settings, User } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/Button";
 import { Avatar } from "@/components/ui/Avatar";
@@ -38,10 +39,12 @@ type TopNavProps = {
   searchSuggestions?: SearchSuggestion[];
   onSearchSubmit?: (q: string) => void;
   className?: string;
+  /** Override logout handler — за замовчуванням викликає auth.logout() */
+  onLogout?: () => void;
 };
 
 export function TopNav({
-  user,
+  user: propUser,
   role = "client",
   onRoleSwitch,
   notificationsUnread = 0,
@@ -49,7 +52,26 @@ export function TopNav({
   searchSuggestions,
   onSearchSubmit,
   className,
+  onLogout,
 }: TopNavProps) {
+  const auth = useAuth();
+  // Live auth identity overrides the prop. If unauthenticated — show
+  // login/register buttons. propUser used only while AuthProvider is loading
+  // (avoids flicker for demo pages that render TopNav with a hardcoded user).
+  const user: TopNavUser | null | undefined =
+    auth.status === "authenticated"
+      ? {
+          id: auth.user.id,
+          displayName: auth.user.display_name,
+          email: auth.user.email,
+          avatarUrl: auth.user.avatar_url,
+          kycVerified: auth.user.kyc_status === "approved",
+          hasProviderRole: auth.user.has_provider_role,
+        }
+      : auth.status === "unauthenticated"
+        ? null
+        : propUser;
+  const handleLogout = onLogout ?? (() => void auth.logout());
   return (
     <header
       className={cn(
@@ -148,7 +170,11 @@ export function TopNav({
                   <MenuItem leftIcon={<User size={14} />}>Мій профіль</MenuItem>
                   <MenuItem leftIcon={<Settings size={14} />}>Налаштування</MenuItem>
                   <MenuSeparator />
-                  <MenuItem destructive leftIcon={<LogOut size={14} />}>
+                  <MenuItem
+                    destructive
+                    leftIcon={<LogOut size={14} />}
+                    onSelect={() => handleLogout()}
+                  >
                     Вийти
                   </MenuItem>
                 </MenuContent>
@@ -156,10 +182,10 @@ export function TopNav({
             </>
           ) : (
             <>
-              <Link href="/auth/sign-in" className="hidden md:inline-flex">
+              <Link href="/login" className="hidden md:inline-flex">
                 <Button size="sm" variant="ghost">Увійти</Button>
               </Link>
-              <Link href="/auth/sign-up">
+              <Link href="/register">
                 <Button size="sm">Зареєструватись</Button>
               </Link>
             </>

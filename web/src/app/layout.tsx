@@ -3,6 +3,7 @@ import { Playfair_Display, Geist, Geist_Mono } from "next/font/google";
 import { ToastProvider } from "@/components/ui/Toast";
 import { TooltipProvider } from "@/components/ui/Tooltip";
 import { ThemeProvider, themeBootstrapScript } from "@/lib/theme";
+import { AuthProvider } from "@/lib/auth";
 import "./globals.css";
 
 const display = Playfair_Display({
@@ -45,9 +46,11 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen bg-canvas text-ink font-sans">
         <ThemeProvider>
-          <TooltipProvider>
-            <ToastProvider>{children}</ToastProvider>
-          </TooltipProvider>
+          <AuthProvider>
+            <TooltipProvider>
+              <ToastProvider>{children}</ToastProvider>
+            </TooltipProvider>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>
