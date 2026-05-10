@@ -41,6 +41,11 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { Modal } from "@/components/ui/Modal";
+import { RadioCardGroup } from "@/components/ui/RadioCardGroup";
+import { TermCheckbox } from "@/components/ui/TermCheckbox";
+import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
+import { WizardSheet } from "@/components/organisms/WizardSheet";
+import { WizardActionBar } from "@/components/organisms/WizardActionBar";
 import { Tooltip } from "@/components/ui/Tooltip";
 
 const USER = {
@@ -292,39 +297,38 @@ export default function ListingCreateWizard() {
       <TopNav user={USER} notificationsUnread={3} messagesUnread={12} />
 
       <main className="mx-auto max-w-7xl px-4 md:px-6 pt-6 md:pt-10 pb-40 md:pb-32">
-        {/* Editorial header */}
-        <header className="grid grid-cols-12 gap-x-6 gap-y-4 mb-10 md:mb-14 items-end">
-          <div className="col-span-12 lg:col-span-8">
-            <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-3">
-              Створення послуги
-            </p>
-            <h1 className="font-display text-h1 md:text-display text-ink leading-[0.98] tracking-tight">
+        <EditorialPageHeader
+          kicker="Створення послуги"
+          title={
+            <>
               Нова послуга
               <br />
               <span className="text-ink-soft italic">за чотири кроки</span>
-            </h1>
-          </div>
-          <aside className="col-span-12 lg:col-span-4">
-            <div className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
-              Чернетка
-            </div>
-            <div className="mt-1 flex items-baseline gap-3">
-              <span className="font-display text-h2 text-ink leading-none tabular-nums">
-                {String(idx + 1).padStart(2, "0")}
-                <span className="text-muted-soft">
-                  /{String(STEPS_DATA.length).padStart(2, "0")}
+            </>
+          }
+          sidecar={
+            <>
+              <div className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+                Чернетка
+              </div>
+              <div className="mt-1 flex items-baseline gap-3">
+                <span className="font-display text-h2 text-ink leading-none tabular-nums">
+                  {String(idx + 1).padStart(2, "0")}
+                  <span className="text-muted-soft">
+                    /{String(STEPS_DATA.length).padStart(2, "0")}
+                  </span>
                 </span>
-              </span>
-              <Badge tone="warning" size="sm" shape="square">
-                Не опубліковано
-              </Badge>
-            </div>
-            <p className="mt-3 text-caption text-muted leading-relaxed">
-              Чернетка зберігається автоматично. Опублікуємо лише після
-              перевірки модерацією.
-            </p>
-          </aside>
-        </header>
+                <Badge tone="warning" size="sm" shape="square">
+                  Не опубліковано
+                </Badge>
+              </div>
+              <p className="mt-3 text-caption text-muted leading-relaxed">
+                Чернетка зберігається автоматично. Опублікуємо лише після
+                перевірки модерацією.
+              </p>
+            </>
+          }
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-10 lg:gap-14">
           {/* ============ Stepper rail ============ */}
@@ -359,30 +363,12 @@ export default function ListingCreateWizard() {
 
           {/* ============ Step content ============ */}
           <section className="min-w-0">
-            <article className="border border-hairline rounded-[var(--radius-md)] bg-paper">
-              {/* sheet header */}
-              <header className="flex items-center justify-between gap-3 px-6 md:px-8 py-5 border-b border-hairline">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="font-mono text-micro uppercase tracking-[0.22em] text-accent shrink-0">
-                    {String(idx + 1).padStart(2, "0")}
-                  </span>
-                  <h2 className="font-display text-h2 text-ink tracking-tight leading-tight truncate">
-                    {STEPS_DATA[idx].label}
-                  </h2>
-                </div>
-                {stepValid(activeId) ? (
-                  <span className="hidden md:inline-flex items-center gap-1 text-caption text-success">
-                    <Check size={14} />
-                    готово
-                  </span>
-                ) : (
-                  <span className="hidden md:inline-flex items-center gap-1 text-caption text-warning">
-                    у роботі
-                  </span>
-                )}
-              </header>
-
-              <div className="p-6 md:p-8">
+            <WizardSheet
+              index={idx + 1}
+              title={STEPS_DATA[idx].label}
+              valid={stepValid(activeId)}
+              errors={errors[activeId]}
+            >
                 {activeId === "basics" && (
                   <BasicsStep
                     title={title}
@@ -442,21 +428,7 @@ export default function ListingCreateWizard() {
                     errors={errors}
                   />
                 )}
-              </div>
-
-              {/* errors footer */}
-              {errors[activeId]?.length ? (
-                <div className="px-6 md:px-8 pb-6">
-                  <InlineAlert tone="warning" title="Перевірте поля кроку">
-                    <ul className="list-disc ml-4 space-y-0.5">
-                      {errors[activeId]!.map((e) => (
-                        <li key={e}>{e}</li>
-                      ))}
-                    </ul>
-                  </InlineAlert>
-                </div>
-              ) : null}
-            </article>
+            </WizardSheet>
 
             {/* Encouragement strip — editorial flair */}
             <div className="mt-6 hidden md:flex items-center gap-3 text-caption text-muted">
@@ -470,25 +442,13 @@ export default function ListingCreateWizard() {
         </div>
       </main>
 
-      {/* ============ Sticky action bar ============ */}
-      <div className="fixed bottom-14 md:bottom-0 left-0 right-0 z-40 border-t border-hairline bg-paper/95 backdrop-blur-md">
-        <div className="mx-auto max-w-7xl px-4 md:px-6 py-3 flex items-center gap-3">
-          <Button
-            variant="ghost"
-            leftIcon={<ArrowLeft size={14} />}
-            onClick={back}
-            disabled={idx === 0}
-          >
-            <span className="hidden sm:inline">Назад</span>
-          </Button>
-
-          <div className="hidden md:flex items-center gap-2 font-mono text-micro uppercase tracking-[0.18em] text-muted">
-            <span>Крок {idx + 1}</span>
-            <span className="h-1 w-1 rounded-full bg-hairline-strong" aria-hidden />
-            <span className="text-ink-soft">{STEPS_DATA[idx].label}</span>
-          </div>
-
-          <div className="ml-auto flex items-center gap-2">
+      <WizardActionBar
+        index={idx + 1}
+        totalSteps={STEPS_DATA.length}
+        stepLabel={STEPS_DATA[idx].label}
+        onBack={back}
+        rightActions={
+          <>
             <Tooltip content="Зберегти чернетку" side="top">
               <Button variant="secondary" leftIcon={<Save size={14} />}>
                 <span className="hidden sm:inline">Чернетка</span>
@@ -519,9 +479,9 @@ export default function ListingCreateWizard() {
                 Опублікувати
               </Button>
             )}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* ============ Preview Modal ============ */}
       <Modal
@@ -819,60 +779,19 @@ function PricingStep({
 }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-12 gap-x-8 gap-y-8">
-      {/* model */}
       <div className="md:col-span-12">
         <FormField label="Модель ціноутворення" required>
-          <div
-            role="radiogroup"
-            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3"
-          >
-            {PRICE_MODELS.map((m) => {
-              const active = priceModel === m.id;
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => setPriceModel(m.id)}
-                  className={[
-                    "text-left rounded-[var(--radius-md)] border px-4 py-4 transition-all duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
-                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink",
-                    active
-                      ? "border-ink bg-ink text-paper"
-                      : "border-hairline bg-paper text-ink hover:border-ink",
-                  ].join(" ")}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-display text-h3 leading-none">
-                      {m.label}
-                    </span>
-                    <span
-                      className={[
-                        "h-4 w-4 rounded-full border-2 flex items-center justify-center",
-                        active
-                          ? "border-paper bg-paper"
-                          : "border-hairline-strong",
-                      ].join(" ")}
-                      aria-hidden
-                    >
-                      {active && (
-                        <span className="h-1.5 w-1.5 rounded-full bg-ink" />
-                      )}
-                    </span>
-                  </div>
-                  <p
-                    className={[
-                      "mt-2 text-caption leading-snug",
-                      active ? "text-paper/75" : "text-muted",
-                    ].join(" ")}
-                  >
-                    {m.hint}
-                  </p>
-                </button>
-              );
-            })}
-          </div>
+          <RadioCardGroup
+            value={priceModel}
+            onChange={setPriceModel}
+            columns={4}
+            labelSize="lg"
+            options={PRICE_MODELS.map((m) => ({
+              id: m.id,
+              label: m.label,
+              hint: m.hint,
+            }))}
+          />
         </FormField>
       </div>
 
@@ -912,26 +831,15 @@ function PricingStep({
         </FormField>
       </div>
 
-      {/* escrow toggle */}
       <div className="md:col-span-12">
-        <label className="flex items-start gap-4 border border-hairline rounded-[var(--radius-md)] bg-canvas p-5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={escrowDeposit}
-            onChange={(e) => setEscrowDeposit(e.target.checked)}
-            className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
-          />
-          <span className="min-w-0">
-            <span className="flex items-center gap-2 font-display text-h3 text-ink leading-tight">
-              <ShieldCheck size={18} className="text-success" />
-              Захист ескроу
-            </span>
-            <span className="block text-caption text-ink-soft mt-1 leading-relaxed">
-              Кошти заморожуються на платформі і переходять виконавцю лише після
-              підтвердження роботи. Рекомендовано для всіх послуг від 500 ₴.
-            </span>
-          </span>
-        </label>
+        <TermCheckbox
+          checked={escrowDeposit}
+          onChange={setEscrowDeposit}
+          title="Захист ескроу"
+          body="Кошти заморожуються на платформі і переходять виконавцю лише після підтвердження роботи. Рекомендовано для всіх послуг від 500 ₴."
+          icon={<ShieldCheck size={18} />}
+          className="p-5"
+        />
       </div>
 
       {/* live summary */}

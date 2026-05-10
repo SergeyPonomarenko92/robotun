@@ -33,6 +33,9 @@ import {
   FileUploader,
   type UploadedFile,
 } from "@/components/ui/FileUploader";
+import { RadioCardGroup } from "@/components/ui/RadioCardGroup";
+import { TermCheckbox } from "@/components/ui/TermCheckbox";
+import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
 
 const USER = {
   id: "u1",
@@ -167,23 +170,22 @@ export default function DisputeFlowPage() {
           ]}
         />
 
-        {/* Editorial header */}
-        <header className="grid grid-cols-12 gap-x-6 gap-y-6 mb-10 md:mb-14 items-end">
-          <div className="col-span-12 lg:col-span-8">
-            <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-3">
-              Спір по угоді {DEAL.id}
-            </p>
-            <h1 className="font-display text-h1 md:text-display text-ink leading-[0.98] tracking-tight">
+        <EditorialPageHeader
+          kicker={`Спір по угоді ${DEAL.id}`}
+          title={
+            <>
               Розгляд спору
               <br />
               <span className="text-ink-soft italic">{DEAL.title}</span>
-            </h1>
-          </div>
-          <aside className="col-span-12 lg:col-span-4 space-y-3">
-            <RoleSwitcher value={role} onChange={setRole} />
-            <PhaseSwitcher value={phase} onChange={setPhase} />
-          </aside>
-        </header>
+            </>
+          }
+          sidecar={
+            <div className="space-y-3">
+              <RoleSwitcher value={role} onChange={setRole} />
+              <PhaseSwitcher value={phase} onChange={setPhase} />
+            </div>
+          }
+        />
 
         {/* Banner */}
         <div className="mb-10">
@@ -636,23 +638,12 @@ function EvidenceForm({
           />
         </FormField>
 
-        <label className="flex items-start gap-4 border border-hairline rounded-[var(--radius-md)] bg-canvas p-4 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={confirmHonest}
-            onChange={(e) => setConfirmHonest(e.target.checked)}
-            className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
-          />
-          <span className="min-w-0">
-            <span className="block font-display text-body-lg text-ink leading-tight">
-              Підтверджую достовірність позиції
-            </span>
-            <span className="block text-caption text-muted mt-1 leading-relaxed">
-              Подача неправдивих даних — підстава для блокування акаунту і
-              може мати юридичні наслідки.
-            </span>
-          </span>
-        </label>
+        <TermCheckbox
+          checked={confirmHonest}
+          onChange={setConfirmHonest}
+          title="Підтверджую достовірність позиції"
+          body="Подача неправдивих даних — підстава для блокування акаунту і може мати юридичні наслідки."
+        />
 
         {errors.length > 0 && (
           <InlineAlert tone="warning" title="Перевірте поля">
@@ -899,57 +890,31 @@ function AdminVerdict({
         </div>
 
         <FormField label="Тип рішення" required>
-          <div role="radiogroup" className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {(
-              [
-                {
-                  id: "release_to_provider" as const,
-                  label: "На користь виконавця",
-                  hint: "Кошти повністю → виконавцю",
-                },
-                {
-                  id: "split" as const,
-                  label: "Розділити",
-                  hint: "Часткова виплата кожному",
-                },
-                {
-                  id: "refund_to_client" as const,
-                  label: "На користь клієнта",
-                  hint: "Кошти повністю → клієнту",
-                },
-              ]
-            ).map((o) => {
-              const active = outcome === o.id;
-              return (
-                <button
-                  key={o.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => setOutcome(o.id)}
-                  className={[
-                    "text-left rounded-[var(--radius-md)] border px-4 py-4 transition-all",
-                    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink",
-                    active
-                      ? "border-ink bg-ink text-paper"
-                      : "border-hairline bg-paper text-ink hover:border-ink",
-                  ].join(" ")}
-                >
-                  <span className="font-display text-body-lg leading-none block">
-                    {o.label}
-                  </span>
-                  <span
-                    className={[
-                      "mt-2 block text-caption leading-snug",
-                      active ? "text-paper/75" : "text-muted",
-                    ].join(" ")}
-                  >
-                    {o.hint}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+          <RadioCardGroup
+            value={outcome}
+            onChange={setOutcome}
+            columns={3}
+            options={[
+              {
+                id: "release_to_provider",
+                label: "На користь виконавця",
+                hint: "Кошти повністю → виконавцю",
+                trailing: <></>,
+              },
+              {
+                id: "split",
+                label: "Розділити",
+                hint: "Часткова виплата кожному",
+                trailing: <></>,
+              },
+              {
+                id: "refund_to_client",
+                label: "На користь клієнта",
+                hint: "Кошти повністю → клієнту",
+                trailing: <></>,
+              },
+            ]}
+          />
         </FormField>
 
         {outcome === "split" && (

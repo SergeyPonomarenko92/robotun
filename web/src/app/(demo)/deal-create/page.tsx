@@ -32,6 +32,10 @@ import { InlineAlert } from "@/components/ui/InlineAlert";
 import { RatingStars } from "@/components/ui/RatingStars";
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { RadioCardGroup } from "@/components/ui/RadioCardGroup";
+import { TermCheckbox } from "@/components/ui/TermCheckbox";
+import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
+import { SuccessScreen } from "@/components/organisms/SuccessScreen";
 
 const USER = {
   id: "u1",
@@ -135,23 +139,17 @@ export default function DealCreatePage() {
           ]}
         />
 
-        {/* Editorial header */}
-        <header className="grid grid-cols-12 gap-x-6 gap-y-4 mb-10 md:mb-14 items-end">
-          <div className="col-span-12 lg:col-span-8">
-            <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-3">
-              Створення угоди
-            </p>
-            <h1 className="font-display text-h1 md:text-display text-ink leading-[0.98] tracking-tight">
+        <EditorialPageHeader
+          kicker="Створення угоди"
+          title={
+            <>
               Замовлення
               <br />
               <span className="text-ink-soft italic">через ескроу</span>
-            </h1>
-            <p className="mt-5 text-body-lg text-ink-soft max-w-xl leading-relaxed">
-              Кошти заморожуються на платформі. Виконавець отримує оплату
-              лише після того, як ви підтвердите виконання роботи.
-            </p>
-          </div>
-          <aside className="col-span-12 lg:col-span-4">
+            </>
+          }
+          description="Кошти заморожуються на платформі. Виконавець отримує оплату лише після того, як ви підтвердите виконання роботи."
+          sidecar={
             <ol className="grid grid-cols-3 gap-2 text-center">
               {[
                 { n: "01", l: "Бриф", on: true },
@@ -176,8 +174,8 @@ export default function DealCreatePage() {
                 </li>
               ))}
             </ol>
-          </aside>
-        </header>
+          }
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-10 lg:gap-14">
           {/* ============ LEFT — form ============ */}
@@ -270,38 +268,17 @@ export default function DealCreatePage() {
             <div className="grid grid-cols-1 md:grid-cols-12 gap-x-8 gap-y-6">
               <div className="md:col-span-12">
                 <FormField label="Коли потрібно" required>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {URGENCY.map((u) => {
-                      const active = urgency === u.id;
-                      return (
-                        <button
-                          key={u.id}
-                          type="button"
-                          aria-pressed={active}
-                          onClick={() => setUrgency(u.id)}
-                          className={[
-                            "text-left rounded-[var(--radius-sm)] border px-3 py-3 transition-all",
-                            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink",
-                            active
-                              ? "border-ink bg-ink text-paper"
-                              : "border-hairline bg-paper text-ink hover:border-ink",
-                          ].join(" ")}
-                        >
-                          <span className="block font-display text-body-lg leading-none">
-                            {u.label}
-                          </span>
-                          <span
-                            className={[
-                              "mt-1 block text-caption leading-snug",
-                              active ? "text-paper/75" : "text-muted",
-                            ].join(" ")}
-                          >
-                            {u.hint}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <RadioCardGroup
+                    value={urgency}
+                    onChange={setUrgency}
+                    columns={4}
+                    options={URGENCY.map((u) => ({
+                      id: u.id,
+                      label: u.label,
+                      hint: u.hint,
+                      trailing: <></>,
+                    }))}
+                  />
                 </FormField>
               </div>
 
@@ -389,6 +366,7 @@ export default function DealCreatePage() {
                 title="Я працюю через ескроу"
                 body="Кошти заморожуються в момент створення угоди. Виконавець отримує оплату лише після того, як я підтверджу виконання."
                 icon={<Lock size={16} />}
+                variant="selectable"
               />
               <TermCheckbox
                 checked={agreeTerms}
@@ -396,6 +374,7 @@ export default function DealCreatePage() {
                 title="Я погоджуюсь з умовами Robotun"
                 body="Заборонено передавати контактні дані поза чатом до старту угоди. Спірні питання вирішуються через підтримку."
                 icon={<ShieldCheck size={16} />}
+                variant="selectable"
               />
             </div>
 
@@ -643,47 +622,6 @@ function Trust({
   );
 }
 
-function TermCheckbox({
-  checked,
-  onChange,
-  title,
-  body,
-  icon,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  title: string;
-  body: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <label
-      className={[
-        "flex items-start gap-4 border rounded-[var(--radius-md)] p-4 cursor-pointer transition-colors",
-        checked
-          ? "border-ink bg-paper"
-          : "border-hairline bg-paper hover:border-ink-soft",
-      ].join(" ")}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
-      />
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2 font-display text-body-lg text-ink leading-tight">
-          <span className="text-success">{icon}</span>
-          {title}
-        </span>
-        <span className="block text-caption text-muted mt-1 leading-relaxed">
-          {body}
-        </span>
-      </span>
-    </label>
-  );
-}
-
 function ConfirmRow({
   label,
   value,
@@ -723,64 +661,39 @@ function SubmittedScreen({ onAgain }: { onAgain: () => void }) {
   return (
     <>
       <TopNav user={USER} notificationsUnread={3} messagesUnread={12} />
-      <main className="mx-auto max-w-3xl px-4 md:px-6 py-20 md:py-32 text-center">
-        <span
-          className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-success-soft text-success mb-8"
-          aria-hidden
-        >
-          <CheckCircle2 size={32} />
-        </span>
-        <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-3">
-          Угода створена
-        </p>
-        <h1 className="font-display text-h1 md:text-display text-ink leading-[0.98] tracking-tight">
-          Кошти заморожено
-          <br />
-          <span className="text-ink-soft italic">очікуємо виконавця</span>
-        </h1>
-        <p className="mt-6 text-body-lg text-ink-soft max-w-xl mx-auto leading-relaxed">
-          {PROVIDER.name} отримав запит. Зазвичай відповідає протягом{" "}
-          {PROVIDER.responseMin} хвилин. Ми сповістимо вас у чаті та поштою.
-        </p>
-        <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-          <Button variant="accent" size="lg" rightIcon={<ChevronRight size={16} />}>
-            Перейти до угоди
-          </Button>
-          <Button variant="secondary" size="lg" onClick={onAgain}>
-            Ще одне замовлення
-          </Button>
-        </div>
-
-        <ol className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
-          {[
-            { n: "01", l: "Чекаємо підтвердження виконавцем", on: true },
-            { n: "02", l: "Виконання робіт у погоджений термін", on: false },
-            { n: "03", l: "Підтвердження + переказ коштів", on: false },
-          ].map((s) => (
-            <li
-              key={s.n}
-              className={[
-                "rounded-[var(--radius-md)] border p-5",
-                s.on
-                  ? "border-ink bg-paper"
-                  : "border-hairline bg-canvas",
-              ].join(" ")}
-            >
-              <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-2">
-                Крок {s.n}
-              </p>
-              <p
-                className={[
-                  "font-display text-body-lg leading-tight",
-                  s.on ? "text-ink" : "text-muted",
-                ].join(" ")}
-              >
-                {s.l}
-              </p>
-            </li>
-          ))}
-        </ol>
-      </main>
+      <SuccessScreen
+        icon={<CheckCircle2 size={32} />}
+        iconTone="success"
+        kicker="Угода створена"
+        title={
+          <>
+            Кошти заморожено
+            <br />
+            <span className="text-ink-soft italic">очікуємо виконавця</span>
+          </>
+        }
+        description={
+          <>
+            {PROVIDER.name} отримав запит. Зазвичай відповідає протягом{" "}
+            {PROVIDER.responseMin} хвилин. Ми сповістимо вас у чаті та поштою.
+          </>
+        }
+        actions={
+          <>
+            <Button variant="accent" size="lg" rightIcon={<ChevronRight size={16} />}>
+              Перейти до угоди
+            </Button>
+            <Button variant="secondary" size="lg" onClick={onAgain}>
+              Ще одне замовлення
+            </Button>
+          </>
+        }
+        steps={[
+          { n: "01", label: "Чекаємо підтвердження виконавцем", active: true },
+          { n: "02", label: "Виконання робіт у погоджений термін" },
+          { n: "03", label: "Підтвердження + переказ коштів" },
+        ]}
+      />
       <Footer />
       <MobileTabBar messagesUnread={12} />
     </>

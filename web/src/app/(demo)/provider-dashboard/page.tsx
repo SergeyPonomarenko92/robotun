@@ -44,6 +44,7 @@ import { MoneyDisplay } from "@/components/ui/MoneyInput";
 import { RatingStars } from "@/components/ui/RatingStars";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { Menu, MenuTrigger, MenuContent, MenuItem } from "@/components/ui/Menu";
+import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
 
 const PROVIDER_USER = {
   id: "p1",
@@ -300,52 +301,47 @@ export default function ProviderDashboardPage() {
       <TopNav user={PROVIDER_USER} notificationsUnread={2} messagesUnread={6} />
 
       <main className="mx-auto max-w-7xl px-4 md:px-6 pt-6 md:pt-10 pb-32 md:pb-20">
-        {/* Editorial header */}
-        <header className="grid grid-cols-12 gap-x-6 gap-y-6 mb-10 md:mb-14 items-end">
-          <div className="col-span-12 lg:col-span-8">
-            <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-3">
-              Кабінет виконавця
-            </p>
-            <h1 className="font-display text-h1 md:text-display text-ink leading-[0.98] tracking-tight">
+        <EditorialPageHeader
+          kicker="Кабінет виконавця"
+          title={
+            <>
               Доброго ранку,
               <br />
               <span className="text-accent italic">Bosch Group</span>
-            </h1>
-            <p className="mt-5 text-body-lg text-ink-soft max-w-xl leading-relaxed">
-              7 активних угод, 2 нові запити та виплата у середу. Ось як ваш
-              сервіс виглядає сьогодні.
-            </p>
-          </div>
-          <aside className="col-span-12 lg:col-span-4 flex flex-col gap-3 lg:items-end">
-            {/* period switcher */}
-            <div
-              role="tablist"
-              aria-label="Період"
-              className="inline-flex border border-hairline rounded-[var(--radius-pill)] bg-paper p-1"
-            >
-              {(["week", "month", "all"] as Period[]).map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  role="tab"
-                  aria-selected={period === p}
-                  onClick={() => setPeriod(p)}
-                  className={[
-                    "px-4 h-8 rounded-[var(--radius-pill)] text-caption transition-colors",
-                    period === p
-                      ? "bg-ink text-paper"
-                      : "text-muted hover:text-ink",
-                  ].join(" ")}
-                >
-                  {p === "week" ? "тиждень" : p === "month" ? "місяць" : "усі"}
-                </button>
-              ))}
+            </>
+          }
+          description="7 активних угод, 2 нові запити та виплата у середу. Ось як ваш сервіс виглядає сьогодні."
+          sidecar={
+            <div className="flex flex-col gap-3 lg:items-end">
+              <div
+                role="tablist"
+                aria-label="Період"
+                className="inline-flex border border-hairline rounded-[var(--radius-pill)] bg-paper p-1"
+              >
+                {(["week", "month", "all"] as Period[]).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    role="tab"
+                    aria-selected={period === p}
+                    onClick={() => setPeriod(p)}
+                    className={[
+                      "px-4 h-8 rounded-[var(--radius-pill)] text-caption transition-colors",
+                      period === p
+                        ? "bg-ink text-paper"
+                        : "text-muted hover:text-ink",
+                    ].join(" ")}
+                  >
+                    {p === "week" ? "тиждень" : p === "month" ? "місяць" : "усі"}
+                  </button>
+                ))}
+              </div>
+              <Button variant="accent" leftIcon={<Plus size={14} />}>
+                Нова послуга
+              </Button>
             </div>
-            <Button variant="accent" leftIcon={<Plus size={14} />}>
-              Нова послуга
-            </Button>
-          </aside>
-        </header>
+          }
+        />
 
         {/* ============ KPI band ============ */}
         <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-12 md:mb-16">

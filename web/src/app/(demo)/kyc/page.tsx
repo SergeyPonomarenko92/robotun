@@ -33,6 +33,12 @@ import {
   type UploadedFile,
 } from "@/components/ui/FileUploader";
 import { Modal } from "@/components/ui/Modal";
+import { RadioCardGroup } from "@/components/ui/RadioCardGroup";
+import { TermCheckbox } from "@/components/ui/TermCheckbox";
+import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
+import { WizardSheet } from "@/components/organisms/WizardSheet";
+import { WizardActionBar } from "@/components/organisms/WizardActionBar";
+import { SuccessScreen } from "@/components/organisms/SuccessScreen";
 
 const PROVIDER_USER = {
   id: "p1",
@@ -183,31 +189,26 @@ export default function KYCPage() {
       <TopNav user={PROVIDER_USER} notificationsUnread={2} messagesUnread={6} />
 
       <main className="mx-auto max-w-7xl px-4 md:px-6 pt-6 md:pt-10 pb-40 md:pb-32">
-        {/* Editorial header */}
-        <header className="grid grid-cols-12 gap-x-6 gap-y-6 mb-10 md:mb-14 items-end">
-          <div className="col-span-12 lg:col-span-8">
-            <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-3">
-              Верифікація виконавця
-            </p>
-            <h1 className="font-display text-h1 md:text-display text-ink leading-[0.98] tracking-tight">
+        <EditorialPageHeader
+          kicker="Верифікація виконавця"
+          title={
+            <>
               Підтвердження
               <br />
               <span className="text-ink-soft italic">особистості</span>
-            </h1>
-            <p className="mt-5 text-body-lg text-ink-soft max-w-xl leading-relaxed">
-              Це потрібно лише для виплат — ваші угоди можна вести й без KYC.
-              Усі документи зберігаються зашифровано та видаляються після
-              затвердження.
-            </p>
-          </div>
-          <aside className="col-span-12 lg:col-span-4 flex flex-col gap-3 lg:items-end">
-            <KYCStatusBadge status="not_started" />
-            <p className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
-              Очікуваний час перевірки&nbsp;·&nbsp;
-              <span className="text-ink-soft">до 24 годин</span>
-            </p>
-          </aside>
-        </header>
+            </>
+          }
+          description="Це потрібно лише для виплат — ваші угоди можна вести й без KYC. Усі документи зберігаються зашифровано та видаляються після затвердження."
+          sidecar={
+            <div className="flex flex-col gap-3 lg:items-end">
+              <KYCStatusBadge status="not_started" />
+              <p className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+                Очікуваний час перевірки&nbsp;·&nbsp;
+                <span className="text-ink-soft">до 24 годин</span>
+              </p>
+            </div>
+          }
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-10 lg:gap-14">
           {/* Stepper rail */}
@@ -245,28 +246,14 @@ export default function KYCPage() {
 
           {/* Step content */}
           <section className="min-w-0">
-            <article className="border border-hairline rounded-[var(--radius-md)] bg-paper">
-              <header className="flex items-center justify-between gap-3 px-6 md:px-8 py-5 border-b border-hairline">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="font-mono text-micro uppercase tracking-[0.22em] text-accent shrink-0">
-                    {String(idx + 1).padStart(2, "0")}
-                  </span>
-                  <span className="text-accent shrink-0">
-                    {STEPS_DATA[idx].icon}
-                  </span>
-                  <h2 className="font-display text-h2 text-ink tracking-tight leading-tight truncate">
-                    {STEPS_DATA[idx].label}
-                  </h2>
-                </div>
-                {stepValid(activeId) ? (
-                  <span className="hidden md:inline-flex items-center gap-1 text-caption text-success">
-                    <Check size={14} />
-                    готово
-                  </span>
-                ) : null}
-              </header>
-
-              <div className="p-6 md:p-8">
+            <WizardSheet
+              index={idx + 1}
+              title={STEPS_DATA[idx].label}
+              icon={STEPS_DATA[idx].icon}
+              valid={stepValid(activeId)}
+              statusBadge={stepValid(activeId) ? undefined : null}
+              errors={errors[activeId]}
+            >
                 {activeId === "doc" && (
                   <DocStep
                     docType={docType}
@@ -330,20 +317,7 @@ export default function KYCPage() {
                     errors={errors}
                   />
                 )}
-              </div>
-
-              {errors[activeId]?.length ? (
-                <div className="px-6 md:px-8 pb-6">
-                  <InlineAlert tone="warning" title="Перевірте поля кроку">
-                    <ul className="list-disc ml-4 space-y-0.5">
-                      {errors[activeId]!.map((e) => (
-                        <li key={e}>{e}</li>
-                      ))}
-                    </ul>
-                  </InlineAlert>
-                </div>
-              ) : null}
-            </article>
+            </WizardSheet>
 
             <div className="mt-6 hidden md:flex items-center gap-3 text-caption text-muted">
               <Sparkles size={14} className="text-accent" />
@@ -356,47 +330,33 @@ export default function KYCPage() {
         </div>
       </main>
 
-      {/* sticky action bar */}
-      <div className="fixed bottom-14 md:bottom-0 left-0 right-0 z-40 border-t border-hairline bg-paper/95 backdrop-blur-md">
-        <div className="mx-auto max-w-7xl px-4 md:px-6 py-3 flex items-center gap-3">
-          <Button
-            variant="ghost"
-            leftIcon={<ArrowLeft size={14} />}
-            onClick={back}
-            disabled={idx === 0}
-          >
-            <span className="hidden sm:inline">Назад</span>
-          </Button>
-
-          <div className="hidden md:flex items-center gap-2 font-mono text-micro uppercase tracking-[0.18em] text-muted">
-            <span>Крок {idx + 1}</span>
-            <span className="h-1 w-1 rounded-full bg-hairline-strong" aria-hidden />
-            <span className="text-ink-soft">{STEPS_DATA[idx].label}</span>
-          </div>
-
-          <div className="ml-auto flex items-center gap-2">
-            {idx < STEPS_DATA.length - 1 ? (
-              <Button
-                variant="accent"
-                rightIcon={<ArrowRight size={14} />}
-                onClick={next}
-                disabled={!stepValid(activeId)}
-              >
-                Далі
-              </Button>
-            ) : (
-              <Button
-                variant="accent"
-                rightIcon={<ShieldCheck size={14} />}
-                disabled={!allValid}
-                onClick={() => setSubmitted(true)}
-              >
-                Надіслати на перевірку
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
+      <WizardActionBar
+        index={idx + 1}
+        totalSteps={STEPS_DATA.length}
+        stepLabel={STEPS_DATA[idx].label}
+        onBack={back}
+        rightActions={
+          idx < STEPS_DATA.length - 1 ? (
+            <Button
+              variant="accent"
+              rightIcon={<ArrowRight size={14} />}
+              onClick={next}
+              disabled={!stepValid(activeId)}
+            >
+              Далі
+            </Button>
+          ) : (
+            <Button
+              variant="accent"
+              rightIcon={<ShieldCheck size={14} />}
+              disabled={!allValid}
+              onClick={() => setSubmitted(true)}
+            >
+              Надіслати на перевірку
+            </Button>
+          )
+        }
+      />
 
       <Footer />
       <MobileTabBar messagesUnread={6} />
@@ -437,55 +397,16 @@ function DocStep({
   return (
     <div className="space-y-8">
       <FormField label="Тип документа" required>
-        <div
-          role="radiogroup"
-          className="grid grid-cols-1 sm:grid-cols-3 gap-3"
-        >
-          {DOC_TYPES.map((d) => {
-            const active = docType === d.id;
-            return (
-              <button
-                key={d.id}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => setDocType(d.id)}
-                className={[
-                  "text-left rounded-[var(--radius-md)] border px-4 py-4 transition-all",
-                  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink",
-                  active
-                    ? "border-ink bg-ink text-paper"
-                    : "border-hairline bg-paper text-ink hover:border-ink",
-                ].join(" ")}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-display text-body-lg leading-none">
-                    {d.label}
-                  </span>
-                  <span
-                    className={[
-                      "h-4 w-4 rounded-full border-2 flex items-center justify-center",
-                      active ? "border-paper bg-paper" : "border-hairline-strong",
-                    ].join(" ")}
-                    aria-hidden
-                  >
-                    {active && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-ink" />
-                    )}
-                  </span>
-                </div>
-                <p
-                  className={[
-                    "mt-1 text-caption leading-snug",
-                    active ? "text-paper/75" : "text-muted",
-                  ].join(" ")}
-                >
-                  {d.sub}
-                </p>
-              </button>
-            );
-          })}
-        </div>
+        <RadioCardGroup
+          value={docType}
+          onChange={setDocType}
+          columns={3}
+          options={DOC_TYPES.map((d) => ({
+            id: d.id,
+            label: d.label,
+            hint: d.sub,
+          }))}
+        />
       </FormField>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -779,55 +700,16 @@ function PayoutStep({
   return (
     <div className="space-y-8">
       <FormField label="Метод виплати" required>
-        <div role="radiogroup" className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {[
-            { id: "card" as const, label: "Картка", sub: "Visa / MasterCard, миттєво" },
-            { id: "iban" as const, label: "IBAN", sub: "банківський рахунок, до 1 дня" },
-          ].map((m) => {
-            const active = method === m.id;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                onClick={() => setMethod(m.id)}
-                className={[
-                  "text-left rounded-[var(--radius-md)] border px-4 py-4 transition-all",
-                  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink",
-                  active
-                    ? "border-ink bg-ink text-paper"
-                    : "border-hairline bg-paper text-ink hover:border-ink",
-                ].join(" ")}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-display text-h3 leading-none">
-                    {m.label}
-                  </span>
-                  <span
-                    className={[
-                      "h-4 w-4 rounded-full border-2 flex items-center justify-center",
-                      active ? "border-paper bg-paper" : "border-hairline-strong",
-                    ].join(" ")}
-                    aria-hidden
-                  >
-                    {active && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-ink" />
-                    )}
-                  </span>
-                </div>
-                <p
-                  className={[
-                    "mt-2 text-caption leading-snug",
-                    active ? "text-paper/75" : "text-muted",
-                  ].join(" ")}
-                >
-                  {m.sub}
-                </p>
-              </button>
-            );
-          })}
-        </div>
+        <RadioCardGroup
+          value={method}
+          onChange={setMethod}
+          columns={2}
+          labelSize="lg"
+          options={[
+            { id: "card", label: "Картка", hint: "Visa / MasterCard, миттєво" },
+            { id: "iban", label: "IBAN", hint: "банківський рахунок, до 1 дня" },
+          ]}
+        />
       </FormField>
 
       {method === "card" ? (
@@ -868,24 +750,14 @@ function PayoutStep({
         </FormField>
       </div>
 
-      <label className="flex items-start gap-4 border border-hairline rounded-[var(--radius-md)] bg-canvas p-5 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={confirmPayout}
-          onChange={(e) => setConfirmPayout(e.target.checked)}
-          className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
-        />
-        <span className="min-w-0">
-          <span className="flex items-center gap-2 font-display text-body-lg text-ink leading-tight">
-            <ShieldCheck size={16} className="text-success" />
-            Я підтверджую, що рахунок належить мені
-          </span>
-          <span className="block text-caption text-muted mt-1 leading-relaxed">
-            Імʼя власника має співпадати з даними у документі. Виплати на чужі
-            рахунки заборонені.
-          </span>
-        </span>
-      </label>
+      <TermCheckbox
+        checked={confirmPayout}
+        onChange={setConfirmPayout}
+        title="Я підтверджую, що рахунок належить мені"
+        body="Імʼя власника має співпадати з даними у документі. Виплати на чужі рахунки заборонені."
+        icon={<ShieldCheck size={16} />}
+        className="p-5"
+      />
     </div>
   );
 }
@@ -1044,72 +916,38 @@ function SubmittedScreen({ onAgain }: { onAgain: () => void }) {
   return (
     <>
       <TopNav user={PROVIDER_USER} notificationsUnread={2} messagesUnread={6} />
-      <main className="mx-auto max-w-3xl px-4 md:px-6 py-20 md:py-32 text-center">
-        <span
-          className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-info-soft text-info mb-8"
-          aria-hidden
-        >
-          <ShieldCheck size={32} />
-        </span>
-        <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-3">
-          Документи надіслано
-        </p>
-        <h1 className="font-display text-h1 md:text-display text-ink leading-[0.98] tracking-tight">
-          На перевірці
-          <br />
-          <span className="text-ink-soft italic">до 24 годин</span>
-        </h1>
-        <p className="mt-6 text-body-lg text-ink-soft max-w-xl mx-auto leading-relaxed">
-          Ми сповістимо вас у чаті та поштою, як тільки буде результат. Поки
-          що ви можете створювати листинги та брати угоди — payout активується
-          після затвердження.
-        </p>
-
-        <div className="mt-8 inline-flex">
-          <KYCStatusBadge status="submitted" />
-        </div>
-
-        <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-          <Button variant="accent" size="lg">
-            До кабінету
-          </Button>
-          <Button variant="secondary" size="lg" onClick={onAgain}>
-            Розпочати спочатку
-          </Button>
-          <Button variant="ghost" size="lg" onClick={() => setReKycOpen(true)}>
-            Що з re-KYC?
-          </Button>
-        </div>
-
-        <ol className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
-          {[
-            { n: "01", l: "Перевірка документів", on: true, hint: "автоматична + ручна" },
-            { n: "02", l: "Звірка реквізитів", on: false, hint: "співпадіння імені" },
-            { n: "03", l: "Активація виплат", on: false, hint: "доступ до payout" },
-          ].map((s) => (
-            <li
-              key={s.n}
-              className={[
-                "rounded-[var(--radius-md)] border p-5",
-                s.on ? "border-ink bg-paper" : "border-hairline bg-canvas",
-              ].join(" ")}
-            >
-              <p className="font-mono text-micro uppercase tracking-[0.22em] text-accent mb-2">
-                Крок {s.n}
-              </p>
-              <p
-                className={[
-                  "font-display text-body-lg leading-tight",
-                  s.on ? "text-ink" : "text-muted",
-                ].join(" ")}
-              >
-                {s.l}
-              </p>
-              <p className="mt-1 text-caption text-muted">{s.hint}</p>
-            </li>
-          ))}
-        </ol>
-      </main>
+      <SuccessScreen
+        icon={<ShieldCheck size={32} />}
+        iconTone="info"
+        kicker="Документи надіслано"
+        title={
+          <>
+            На перевірці
+            <br />
+            <span className="text-ink-soft italic">до 24 годин</span>
+          </>
+        }
+        description="Ми сповістимо вас у чаті та поштою, як тільки буде результат. Поки що ви можете створювати листинги та брати угоди — payout активується після затвердження."
+        badge={<KYCStatusBadge status="submitted" />}
+        actions={
+          <>
+            <Button variant="accent" size="lg">
+              До кабінету
+            </Button>
+            <Button variant="secondary" size="lg" onClick={onAgain}>
+              Розпочати спочатку
+            </Button>
+            <Button variant="ghost" size="lg" onClick={() => setReKycOpen(true)}>
+              Що з re-KYC?
+            </Button>
+          </>
+        }
+        steps={[
+          { n: "01", label: "Перевірка документів", hint: "автоматична + ручна", active: true },
+          { n: "02", label: "Звірка реквізитів", hint: "співпадіння імені" },
+          { n: "03", label: "Активація виплат", hint: "доступ до payout" },
+        ]}
+      />
 
       <Modal
         open={reKycOpen}

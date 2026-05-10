@@ -30,6 +30,7 @@ import {
   ListingCard,
   type ListingCardData,
 } from "@/components/organisms/ListingCard";
+import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
 
 import { Breadcrumbs } from "@/components/ui/Breadcrumbs";
 import { Button } from "@/components/ui/Button";
@@ -198,20 +199,17 @@ export default function ListingDetailPage() {
           ]}
         />
 
-        {/* ============================================================
-            EDITORIAL HEADER — magazine spread treatment
-           ============================================================ */}
-        <header className="grid grid-cols-12 gap-x-6 gap-y-6 mb-10 md:mb-14">
-          <div className="col-span-12 lg:col-span-9">
-            <div className="flex flex-wrap items-center gap-3 mb-5">
-              <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
-                Послуга №&nbsp;
-                <span className="text-ink-soft">L-21847</span>
+        {/* EDITORIAL HEADER — magazine spread treatment */}
+        <EditorialPageHeader
+          align="start"
+          kicker={
+            <span className="flex flex-wrap items-center gap-3 normal-case tracking-[0.18em]">
+              <span>
+                Послуга №&nbsp;<span className="text-ink-soft">L-21847</span>
               </span>
               <span className="h-1 w-1 rounded-full bg-hairline-strong" aria-hidden />
-              <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
-                Опубліковано&nbsp;
-                <span className="text-ink-soft">3 травня 2026</span>
+              <span>
+                Опубліковано&nbsp;<span className="text-ink-soft">3 травня 2026</span>
               </span>
               <Badge tone="ink" size="sm" shape="square">
                 Топ-1%
@@ -220,25 +218,19 @@ export default function ListingDetailPage() {
                 <ShieldCheck size={10} className="mr-0.5" />
                 KYC
               </Badge>
-            </div>
-
-            <h1 className="font-display text-h1 md:text-display text-ink leading-[0.98] tracking-tight">
+            </span>
+          }
+          title={
+            <>
               Ремонт пральних машин
               <br />
               <span className="text-accent italic">Bosch · Siemens</span>
               <br />
               <span className="text-ink-soft">з виїздом по Києву</span>
-            </h1>
-
-            <p className="mt-6 text-body-lg text-ink-soft max-w-2xl leading-relaxed">
-              Сервісний центр з 2014 року. Діагностика безкоштовна, оригінальні
-              запчастини, гарантія на роботу — 12&nbsp;місяців. Працюємо
-              з фізичними та юридичними особами через ескроу.
-            </p>
-          </div>
-
-          {/* Right column — vital stats card */}
-          <aside className="col-span-12 lg:col-span-3">
+            </>
+          }
+          description="Сервісний центр з 2014 року. Діагностика безкоштовна, оригінальні запчастини, гарантія на роботу — 12 місяців. Працюємо з фізичними та юридичними особами через ескроу."
+          sidecar={
             <div className="border border-hairline rounded-[var(--radius-md)] bg-elevated p-5 grid grid-cols-2 lg:grid-cols-1 gap-4 lg:gap-3 h-full">
               <Stat label="Рейтинг">
                 <span className="font-display text-h2 text-ink leading-none">
@@ -262,8 +254,8 @@ export default function ListingDetailPage() {
                 </span>
               </Stat>
             </div>
-          </aside>
-        </header>
+          }
+        />
 
         {/* ============================================================
             HERO GALLERY  +  STICKY BOOKING CARD (2-col on lg)
