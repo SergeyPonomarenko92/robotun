@@ -161,7 +161,13 @@ export function useDeal(id: string | null | undefined): DealState {
 /* =====================================================================
    State transition actions — wraps POST /deals/:id/transition.
    ===================================================================== */
-export type DealAction = "accept" | "reject" | "cancel";
+export type DealAction =
+  | "accept"
+  | "reject"
+  | "cancel"
+  | "submit"
+  | "approve"
+  | "dispute";
 
 export async function transitionDeal(
   id: string,

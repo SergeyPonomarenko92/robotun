@@ -2,7 +2,14 @@ import { NextResponse } from "next/server";
 import { authorize } from "../../../_mock/store";
 import { dealsStore, projectDeal } from "../../../_mock/deals";
 
-const ACTIONS = ["accept", "reject", "cancel"] as const;
+const ACTIONS = [
+  "accept",
+  "reject",
+  "cancel",
+  "submit",
+  "approve",
+  "dispute",
+] as const;
 type Action = (typeof ACTIONS)[number];
 
 export async function POST(
@@ -29,7 +36,17 @@ export async function POST(
     );
   }
 
-  const result = dealsStore.transition(id, auth.user.id, action as Action);
+  // Demo backdoor: the seeded provider@robotun.dev user can act as provider
+  // on any deal, working around the synthetic listing-provider-ID seam in
+  // the mock listings catalog. Production backend has real FKs.
+  const demoActAsProvider = auth.user.email === "provider@robotun.dev";
+
+  const result = dealsStore.transition(
+    id,
+    auth.user.id,
+    action as Action,
+    demoActAsProvider
+  );
   if ("error" in result) {
     const status =
       result.error === "not_found"

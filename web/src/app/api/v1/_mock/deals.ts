@@ -104,33 +104,79 @@ export const dealsStore = {
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
   },
-  /** Module 3 §4.5 transitions (mock subset).
-   *  pending → active (provider accept)
-   *  pending → cancelled (provider reject OR client cancel)
-   *  Other transitions out of scope for the viewer wiring. */
+  /** Module 3 §4.5 transitions (mock — happy-path subset).
+   *  pending → active     (provider: accept)
+   *  pending → cancelled  (provider: reject  |  client: cancel)
+   *  active  → in_review  (provider: submit)
+   *  in_review → completed (client: approve)
+   *  in_review → disputed  (client: dispute)
+   *
+   *  Out of scope: mutual cancel (cancel-request handshake), 24h grace
+   *  dispute, admin resolve/ask-evidence/escalate, post-completed review.
+   *
+   *  Demo override: `demoActAsProvider` lets the seeded provider@robotun.dev
+   *  user drive any deal's provider role, since synthetic listing-provider
+   *  IDs (uuid5 from name) don't match real seeded user UUIDs. Real backend
+   *  has FK provider_id → users.id with no such bridge needed. */
   transition(
     id: string,
     callerId: string,
-    action: "accept" | "reject" | "cancel"
+    action: DealAction,
+    demoActAsProvider = false
   ): MockDeal | { error: TransitionError } {
     const d = db().get(id);
     if (!d) return { error: "not_found" };
 
-    if (action === "accept" || action === "reject") {
-      if (d.provider_id !== callerId) return { error: "forbidden" };
-      if (d.status !== "pending") return { error: "invalid_state" };
-      d.status = action === "accept" ? "active" : "cancelled";
-      return d;
+    const isProvider = d.provider_id === callerId || demoActAsProvider;
+    const isClient = d.client_id === callerId;
+
+    switch (action) {
+      case "accept":
+      case "reject":
+        if (!isProvider) return { error: "forbidden" };
+        if (d.status !== "pending") return { error: "invalid_state" };
+        d.status = action === "accept" ? "active" : "cancelled";
+        if (action === "accept" && demoActAsProvider) {
+          // Persist the demo override so subsequent provider-only actions
+          // (submit) work without needing the override flag again.
+          d.provider_id = callerId;
+        }
+        return d;
+
+      case "cancel":
+        if (!isClient) return { error: "forbidden" };
+        if (d.status !== "pending") return { error: "invalid_state" };
+        d.status = "cancelled";
+        return d;
+
+      case "submit":
+        if (!isProvider) return { error: "forbidden" };
+        if (d.status !== "active") return { error: "invalid_state" };
+        d.status = "in_review";
+        return d;
+
+      case "approve":
+        if (!isClient) return { error: "forbidden" };
+        if (d.status !== "in_review") return { error: "invalid_state" };
+        d.status = "completed";
+        return d;
+
+      case "dispute":
+        if (!isClient) return { error: "forbidden" };
+        if (d.status !== "in_review") return { error: "invalid_state" };
+        d.status = "disputed";
+        return d;
     }
-    if (action === "cancel") {
-      if (d.client_id !== callerId) return { error: "forbidden" };
-      if (d.status !== "pending") return { error: "invalid_state" };
-      d.status = "cancelled";
-      return d;
-    }
-    return { error: "invalid_state" };
   },
 };
+
+export type DealAction =
+  | "accept"
+  | "reject"
+  | "cancel"
+  | "submit"
+  | "approve"
+  | "dispute";
 
 /* =====================================================================
    Public projection (REST shape) — embeds party display info so /deals/:id

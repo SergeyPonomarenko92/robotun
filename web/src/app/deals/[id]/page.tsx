@@ -112,13 +112,22 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
   React.useEffect(() => setCurrent(deal), [deal]);
 
   // ---- transition handlers ----
+  const WIRED_ACTIONS: ReadonlyArray<DealAction> = [
+    "accept",
+    "reject",
+    "cancel",
+    "submit",
+    "approve",
+    "dispute",
+  ];
   const onAction = (id: string) => {
     setActionError(null);
-    if (id === "accept" || id === "reject" || id === "cancel") {
-      setPendingAction(id);
+    if ((WIRED_ACTIONS as ReadonlyArray<string>).includes(id)) {
+      setPendingAction(id as DealAction);
     } else {
-      // Other action ids belong to states beyond MVP wiring (dispute, submit
-      // for review, etc.) — out of scope for this round.
+      // cancel-request / dispute-grace / respond / evidence / resolve /
+      // ask-evidence / escalate / thank / review — depend on Modules 11/12/14
+      // and out of MVP scope here.
       setActionError(
         "Ця дія ще не пов'язана з бекендом — буде додано наступним кроком."
       );
@@ -324,54 +333,37 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
       </main>
 
       {/* Confirm action modal */}
-      <Modal
-        open={pendingAction !== null}
-        onOpenChange={(open) => !open && setPendingAction(null)}
-        title={
-          pendingAction === "accept"
-            ? "Прийняти угоду?"
-            : pendingAction === "reject"
-              ? "Відхилити угоду?"
-              : "Скасувати запит?"
-        }
-        description={
-          pendingAction === "accept"
-            ? "Підтверджуючи, ви беретесь виконати роботу за зазначеним брифом."
-            : pendingAction === "reject"
-              ? "Кошти повернуться клієнту негайно. Ця дія незворотна."
-              : "Кошти повернуться вам. Виконавець більше не побачить запит."
-        }
-        size="md"
-        footer={
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => setPendingAction(null)}
-              disabled={busy}
-            >
-              Назад
-            </Button>
-            <Button
-              variant={pendingAction === "accept" ? "accent" : "danger"}
-              loading={busy}
-              onClick={confirmAction}
-            >
-              {pendingAction === "accept"
-                ? "Так, прийняти"
-                : pendingAction === "reject"
-                  ? "Так, відхилити"
-                  : "Так, скасувати"}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-3 text-body text-ink-soft leading-relaxed">
-          <p>
-            Стан угоди оновиться миттєво для обох сторін. Усі дії зберігаються
-            у журналі змін.
-          </p>
-        </div>
-      </Modal>
+      {pendingAction && (
+        <Modal
+          open={true}
+          onOpenChange={(open) => !open && setPendingAction(null)}
+          title={ACTION_COPY[pendingAction].title}
+          description={ACTION_COPY[pendingAction].description}
+          size="md"
+          footer={
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => setPendingAction(null)}
+                disabled={busy}
+              >
+                Назад
+              </Button>
+              <Button
+                variant={ACTION_COPY[pendingAction].variant}
+                loading={busy}
+                onClick={confirmAction}
+              >
+                {ACTION_COPY[pendingAction].confirmLabel}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-3 text-body text-ink-soft leading-relaxed">
+            <p>{ACTION_COPY[pendingAction].body}</p>
+          </div>
+        </Modal>
+      )}
 
       <Footer />
       <MobileTabBar />
@@ -380,6 +372,60 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
 }
 
 /* ---------- helpers ---------- */
+
+const ACTION_COPY: Record<
+  DealAction,
+  {
+    title: string;
+    description: string;
+    body: string;
+    confirmLabel: string;
+    variant: "accent" | "danger";
+  }
+> = {
+  accept: {
+    title: "Прийняти угоду?",
+    description: "Підтверджуючи, ви беретесь виконати роботу за зазначеним брифом.",
+    body: "Стан перейде у «у роботі». Клієнт отримає сповіщення.",
+    confirmLabel: "Так, прийняти",
+    variant: "accent",
+  },
+  reject: {
+    title: "Відхилити угоду?",
+    description: "Кошти повернуться клієнту негайно. Ця дія незворотна.",
+    body: "Угода перейде у «скасовано». Клієнт отримає сповіщення з можливістю звернутись до іншого виконавця.",
+    confirmLabel: "Так, відхилити",
+    variant: "danger",
+  },
+  cancel: {
+    title: "Скасувати запит?",
+    description: "Кошти повернуться вам. Виконавець більше не побачить запит.",
+    body: "Угода перейде у «скасовано». Це можна зробити лише поки виконавець не прийняв.",
+    confirmLabel: "Так, скасувати",
+    variant: "danger",
+  },
+  submit: {
+    title: "Здати роботу на перевірку?",
+    description: "Угода перейде у «перевірка». У клієнта є 7 днів, щоб прийняти або відкрити спір.",
+    body: "Перед натисканням переконайтесь, що завантажили підтвердження виконання — клієнт побачить його у чаті.",
+    confirmLabel: "Так, здати",
+    variant: "accent",
+  },
+  approve: {
+    title: "Прийняти роботу?",
+    description: "Кошти переказуються виконавцю. Це остаточна дія.",
+    body: "Після підтвердження ви зможете залишити відгук. Якщо є зауваження — спершу обговоріть у чаті або відкрийте спір.",
+    confirmLabel: "Так, прийняти",
+    variant: "accent",
+  },
+  dispute: {
+    title: "Відкрити спір?",
+    description: "Кошти залишаються заблокованими до рішення модератора (до 14 днів).",
+    body: "Опишіть проблему та додайте докази (фото, скріни чату). У виконавця буде 3 дні на відповідь.",
+    confirmLabel: "Так, відкрити спір",
+    variant: "danger",
+  },
+};
 
 const URGENCY_LABEL: Record<Deal["urgency"], string> = {
   today: "Сьогодні",
