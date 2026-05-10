@@ -34,6 +34,38 @@ export type ListingProjection = {
   feed_base_score: number;
 };
 
+/** Detail projection — superset returned by GET /listings/:id (Module 5+7). */
+export type ListingDetailProjection = ListingProjection & {
+  description: string;
+  gallery: { id: string; url: string; alt: string; is_cover: boolean }[];
+  brand_tags: string[];
+  includes: string[];
+  excludes: string[];
+  faq: { q: string; a: string }[];
+  /** Стартовий-фінальний діапазон цін за діагностикою / типовою задачею. */
+  price_range_kopecks: { min: number; max: number };
+  warranty_months: number;
+  aggregate_rating: {
+    avg: number;
+    total: number;
+    /** {5: 248, 4: 52, 3: 14, 2: 4, 1: 2} */
+    distribution: Record<number, number>;
+  };
+  /** Top-3 published reviews; full pagination via /listings/:id/reviews. */
+  reviews_preview: {
+    id: string;
+    rating: number;
+    body: string;
+    created_at: string;
+    author: { display_name: string; avatar_url?: string };
+    deal_ref?: string;
+    reply?: { body: string; created_at: string };
+    status: "published";
+  }[];
+  related_ids: string[];
+  published_at: string;
+};
+
 const CATEGORIES = [
   { id: "rep-wash", label: "Ремонт побутової техніки", parent: "rep" },
   { id: "rep-fridge", label: "Холодильники", parent: "rep" },
@@ -198,6 +230,201 @@ export function listAllListings(): ListingProjection[] {
 
 export function findListing(id: string): ListingProjection | undefined {
   return listAllListings().find((l) => l.id === id);
+}
+
+/* =====================================================================
+   Detail synthesis — derived from base projection + deterministic seed.
+   Real backend returns this from a JOIN over listings + listing_media +
+   reviews_aggregate + reviews (Module 5/7). Mock just synthesizes.
+   ===================================================================== */
+
+const REVIEW_BODIES = [
+  "Зателефонували — приїхали через 40 хв. Замінили підшипники, дали гарантію на 6 місяців. Усе чисто, прибрали за собою. Рекомендую без вагань.",
+  "Діагностика безкоштовна — це чесно. Виявили зношений ТЕН, замінили того ж дня. Ескроу — вперше користувався, дуже зручно.",
+  "Ремонт зробили якісно, але запчастину чекали 3 дні. Майстер тримав у курсі — це плюс.",
+  "Швидко відреагували на запит, узгодили час, виконали в межах кошторису. Дякую за професіоналізм.",
+  "Все гаразд, але хотілось би коротший час відповіді на повторні питання.",
+];
+
+const REVIEWERS = [
+  { name: "Олена К.", avatar: 47 },
+  { name: "Андрій М.", avatar: 33 },
+  { name: "Наталія Ш.", avatar: 0 },
+  { name: "Тарас О.", avatar: 21 },
+  { name: "Ірина Д.", avatar: 49 },
+];
+
+const FAQ_TEMPLATES: Record<string, { q: string; a: string }[]> = {
+  default: [
+    {
+      q: "Чи виїжджаєте за межі міста?",
+      a: "Так, область — додатковий збір 100–300 ₴ залежно від відстані.",
+    },
+    {
+      q: "Скільки триває діагностика?",
+      a: "20–40 хвилин. Якщо не беретесь за ремонт — діагностика безкоштовна.",
+    },
+    {
+      q: "Що з гарантією?",
+      a: "12 місяців на роботу та оригінальні запчастини. Підтвердження — у деталях угоди.",
+    },
+  ],
+};
+
+const INCLUDES_BY_CAT: Record<string, string[]> = {
+  "rep-wash": [
+    "Виїзд та діагностика — безкоштовно",
+    "Заміна підшипників, ТЕНів, насосів",
+    "Прошивка модулів управління",
+    "Усунення протікань та засмічень",
+    "Заміна манжет, амортизаторів",
+    "Гарантія 12 міс. на роботу",
+  ],
+  "rep-fridge": [
+    "Виїзд та діагностика",
+    "Заправка фреоном",
+    "Заміна термодатчиків",
+    "Ремонт компресорів",
+    "Гарантія 12 міс.",
+  ],
+  default: [
+    "Виїзд та консультація",
+    "Робота та матеріали",
+    "Прибирання після виконання",
+    "Гарантія на роботу",
+  ],
+};
+
+function buildAggregateRating(
+  rating: number,
+  totalReviews: number
+): { avg: number; total: number; distribution: Record<number, number> } {
+  // Bell-ish distribution skewed by avg rating
+  const dist: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  let remaining = totalReviews;
+  for (let star = 5; star >= 1; star--) {
+    const weight =
+      star === 5
+        ? rating > 4.7
+          ? 0.78
+          : 0.55
+        : star === 4
+          ? rating > 4.5
+            ? 0.16
+            : 0.25
+          : star === 3
+            ? 0.05
+            : star === 2
+              ? 0.015
+              : 0.005;
+    const count =
+      star === 1 ? remaining : Math.round(totalReviews * weight);
+    dist[star] = Math.min(count, remaining);
+    remaining -= dist[star];
+  }
+  return { avg: Number(rating.toFixed(2)), total: totalReviews, distribution: dist };
+}
+
+export function projectListingDetail(
+  base: ListingProjection
+): ListingDetailProjection {
+  const h = hash(base.id);
+  const galleryCount = 4 + (h % 3); // 4..6
+  const gallerySeeds = [
+    "1581092335397-9583eb92d232",
+    "1581092580497-e0d23cbdf1dc",
+    "1558618666-fcd25c85cd64",
+    "1545173168-9f1947eebb7f",
+    "1607269512643-ec0c1d2c2b95",
+    "1604577415554-b0f4e4ed26be",
+  ];
+  const gallery = Array.from({ length: galleryCount }).map((_, i) => ({
+    id: `g${i}`,
+    url: `https://images.unsplash.com/photo-${gallerySeeds[(h + i) % gallerySeeds.length]}?w=1600&q=80`,
+    alt: `${base.title} — фото ${i + 1}`,
+    is_cover: i === 0,
+  }));
+
+  const totalReviews = base.provider.reviews_count;
+  const aggregate_rating = buildAggregateRating(
+    base.provider.avg_rating,
+    totalReviews
+  );
+
+  const previewCount = Math.min(3, totalReviews);
+  const reviews_preview = Array.from({ length: previewCount }).map((_, i) => {
+    const seed = h + i * 17;
+    const reviewer = REVIEWERS[seed % REVIEWERS.length];
+    const rating = i === 2 ? 4 : 5;
+    const created = new Date(Date.now() - (i + 1) * 7 * 24 * 60 * 60 * 1000);
+    const reply =
+      i === 0
+        ? {
+            body: `Дякуємо, ${reviewer.name.split(" ")[0]}! Раді, що все вдалося оперативно.`,
+            created_at: new Date(created.getTime() + 8 * 60 * 60 * 1000).toISOString(),
+          }
+        : undefined;
+    return {
+      id: `${base.id}-r${i}`,
+      rating,
+      body: REVIEW_BODIES[seed % REVIEW_BODIES.length],
+      created_at: created.toISOString(),
+      author: {
+        display_name: reviewer.name,
+        avatar_url:
+          reviewer.avatar > 0
+            ? `https://i.pravatar.cc/120?img=${reviewer.avatar}`
+            : undefined,
+      },
+      deal_ref: `DL-${(7000 + (seed % 999)).toString()}`,
+      reply,
+      status: "published" as const,
+    };
+  });
+
+  const includes =
+    INCLUDES_BY_CAT[base.category_id] ?? INCLUDES_BY_CAT.default;
+
+  // Related: 3 listings from the same category, excluding self.
+  const sameCat = listAllListings()
+    .filter((l) => l.category_id === base.category_id && l.id !== base.id)
+    .slice(0, 3);
+
+  const description =
+    base.category_id === "rep-wash"
+      ? "Ремонтуємо пральні машини всіх популярних брендів — Bosch, Siemens, AEG, Electrolux, LG, Samsung. Працюємо лише з оригінальними запчастинами. Майстри з досвідом 8+ років приїжджають з повним інструментом."
+      : `Виконуємо роботу швидко й якісно у місті ${base.city} та області. Безкоштовна діагностика, прозорий кошторис до старту, гарантія на роботу. Усі узгодження — через ескроу.`;
+
+  return {
+    ...base,
+    description,
+    gallery,
+    brand_tags:
+      base.category_id === "rep-wash"
+        ? ["Bosch", "Siemens", "AEG", "Electrolux", "LG", "Samsung", "Whirlpool"]
+        : [],
+    includes,
+    excludes:
+      base.category_id === "rep-wash"
+        ? [
+            "ремонт промислового обладнання",
+            "перевстановлення без виклику",
+            "онлайн-консультації без діагностики",
+          ]
+        : [],
+    faq: FAQ_TEMPLATES.default,
+    price_range_kopecks: {
+      min: base.price_from_kopecks,
+      max: base.price_from_kopecks * (3 + (h % 4)), // 3-6× the floor
+    },
+    warranty_months: 12,
+    aggregate_rating,
+    reviews_preview,
+    related_ids: sameCat.map((l) => l.id),
+    published_at: new Date(
+      Date.now() - (1 + (h % 14)) * 24 * 60 * 60 * 1000
+    ).toISOString(),
+  };
 }
 
 /* =====================================================================

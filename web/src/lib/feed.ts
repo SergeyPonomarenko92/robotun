@@ -2,6 +2,8 @@
 import * as React from "react";
 import { apiFetch, ApiError } from "./api";
 import type { ListingCardData } from "@/components/organisms/ListingCard";
+import type { ReviewCardData } from "@/components/organisms/ReviewCard";
+import type { GalleryItem } from "@/components/ui/AttachmentGallery";
 
 export type ListingProjection = {
   id: string;
@@ -56,6 +58,64 @@ function buildQueryString(filters: FeedFilters, cursor: string | null, limit: nu
   if (filters.kyc_only) p.set("kyc_only", "true");
   if (filters.q?.trim()) p.set("q", filters.q.trim());
   return p.toString();
+}
+
+export type ListingDetail = ListingProjection & {
+  description: string;
+  gallery: { id: string; url: string; alt: string; is_cover: boolean }[];
+  brand_tags: string[];
+  includes: string[];
+  excludes: string[];
+  faq: { q: string; a: string }[];
+  price_range_kopecks: { min: number; max: number };
+  warranty_months: number;
+  aggregate_rating: {
+    avg: number;
+    total: number;
+    distribution: Record<number, number>;
+  };
+  reviews_preview: {
+    id: string;
+    rating: number;
+    body: string;
+    created_at: string;
+    author: { display_name: string; avatar_url?: string };
+    deal_ref?: string;
+    reply?: { body: string; created_at: string };
+    status: "published";
+  }[];
+  related_ids: string[];
+  published_at: string;
+};
+
+/** Map review server projection → ReviewCard component's expected shape. */
+export function reviewToCard(r: ListingDetail["reviews_preview"][number]): ReviewCardData {
+  return {
+    id: r.id,
+    rating: r.rating,
+    body: r.body,
+    createdAt: r.created_at,
+    author: {
+      displayName: r.author.display_name,
+      avatarUrl: r.author.avatar_url,
+    },
+    dealRef: r.deal_ref,
+    reply: r.reply
+      ? { body: r.reply.body, createdAt: r.reply.created_at }
+      : undefined,
+    status: r.status,
+  };
+}
+
+export function detailGalleryToViewer(
+  d: ListingDetail
+): GalleryItem[] {
+  return d.gallery.map((g) => ({
+    id: g.id,
+    src: g.url,
+    alt: g.alt,
+    isCover: g.is_cover,
+  }));
 }
 
 /** Map server projection → ListingCard component's expected shape. */
@@ -177,4 +237,100 @@ export function useFeed(filters: FeedFilters, limit = 12) {
   }, [filterKey, limit]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { ...state, loadMore };
+}
+
+/* =====================================================================
+   Single listing detail hook — GET /listings/:id (Module 5).
+   ===================================================================== */
+
+type ListingDetailState = {
+  data: ListingDetail | null;
+  loading: boolean;
+  error: ApiError | Error | null;
+  notFound: boolean;
+};
+
+const DETAIL_INITIAL: ListingDetailState = {
+  data: null,
+  loading: true,
+  error: null,
+  notFound: false,
+};
+
+export function useListing(id: string | null | undefined): ListingDetailState {
+  const [state, setState] = React.useState<ListingDetailState>(DETAIL_INITIAL);
+
+  React.useEffect(() => {
+    if (!id) {
+      setState({ ...DETAIL_INITIAL, loading: false });
+      return;
+    }
+    let cancelled = false;
+    setState({ ...DETAIL_INITIAL, loading: true });
+    (async () => {
+      try {
+        const data = await apiFetch<ListingDetail>(
+          `/listings/${encodeURIComponent(id)}`
+        );
+        if (!cancelled) {
+          setState({ data, loading: false, error: null, notFound: false });
+        }
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setState({ data: null, loading: false, error: null, notFound: true });
+        } else {
+          setState({
+            data: null,
+            loading: false,
+            error: err as Error,
+            notFound: false,
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  return state;
+}
+
+/** Fetch multiple listings by ID (used for related/recommended). */
+export function useListingsByIds(ids: string[]): {
+  items: ListingProjection[];
+  loading: boolean;
+} {
+  const [items, setItems] = React.useState<ListingProjection[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const key = ids.join(",");
+
+  React.useEffect(() => {
+    if (ids.length === 0) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const results = await Promise.all(
+        ids.map((id) =>
+          apiFetch<ListingProjection>(`/listings/${encodeURIComponent(id)}`).catch(
+            () => null
+          )
+        )
+      );
+      if (cancelled) return;
+      setItems(results.filter((x): x is ListingProjection => !!x));
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return { items, loading };
 }
