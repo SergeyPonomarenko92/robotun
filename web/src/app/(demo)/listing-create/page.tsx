@@ -46,14 +46,50 @@ import { TermCheckbox } from "@/components/ui/TermCheckbox";
 import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
 import { WizardSheet } from "@/components/organisms/WizardSheet";
 import { WizardActionBar } from "@/components/organisms/WizardActionBar";
+import { SuccessScreen } from "@/components/organisms/SuccessScreen";
 import { Tooltip } from "@/components/ui/Tooltip";
+import { useRequireAuth } from "@/lib/auth";
+import {
+  createListing,
+  type CreateListingError,
+  type ListingDetail,
+} from "@/lib/listings";
+import { useRouter } from "next/navigation";
+import { Loader2 } from "lucide-react";
 
-const USER = {
+const USER_FALLBACK = {
   id: "u1",
   displayName: "Сергій П.",
   email: "aks74ym@gmail.com",
   kycVerified: true,
   hasProviderRole: true,
+};
+
+/** Map server `validation_failed.fields` keys → wizard step they belong to. */
+const FIELD_TO_STEP: Record<string, WizardStepId> = {
+  title: "basics",
+  description: "basics",
+  category_id: "basics",
+  city: "basics",
+  gallery: "media",
+  pricing_type: "pricing",
+  price_amount_kopecks: "pricing",
+};
+
+/** Human copy for server field codes. */
+const FIELD_ERROR_COPY: Record<string, string> = {
+  title_too_short: "Назва занадто коротка (мінімум 12 символів)",
+  title_too_long: "Назва задовга (максимум 120 символів)",
+  description_too_short: "Опис занадто короткий (мінімум 80 символів)",
+  description_too_long: "Опис задовгий (максимум 4000 символів)",
+  category_required: "Оберіть категорію 3-го рівня",
+  city_required: "Вкажіть місто",
+  pricing_type_invalid: "Оберіть модель ціни",
+  price_too_low: "Ціна нижча за допустиму (мін. 50 ₴)",
+  price_too_high: "Ціна перевищує допустиму",
+  gallery_required: "Додайте принаймні одну фотографію",
+  gallery_too_many: "Не більше 10 фотографій",
+  cover_required: "Позначте обкладинку",
 };
 
 const CATEGORIES: Category[] = [
@@ -139,10 +175,17 @@ const DESC_MAX = 2000;
 const DESC_MIN = 80;
 
 export default function ListingCreateWizard() {
+  const auth = useRequireAuth();
+  const router = useRouter();
   const [activeId, setActiveId] = React.useState<WizardStepId>("basics");
   const [visited, setVisited] = React.useState<Set<WizardStepId>>(
     new Set(["basics"])
   );
+
+  // ---------- submit lifecycle ----------
+  const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<CreateListingError | null>(null);
+  const [created, setCreated] = React.useState<ListingDetail | null>(null);
 
   // ---------- form state ----------
   const [title, setTitle] = React.useState(
@@ -245,6 +288,69 @@ export default function ListingCreateWizard() {
   };
   const back = () => idx > 0 && goto(STEPS_DATA[idx - 1].id);
 
+  // ---------- server field errors → merge into per-step errors ----------
+  if (submitError?.fields) {
+    for (const [field, code] of Object.entries(submitError.fields)) {
+      const step = FIELD_TO_STEP[field];
+      if (!step) continue;
+      const msg = FIELD_ERROR_COPY[code] ?? code;
+      const list = (errors[step] ??= []);
+      if (!list.includes(msg)) list.push(msg);
+    }
+  }
+
+  // ---------- submit ----------
+  const submit = async () => {
+    if (!allValid || submitting) return;
+    if (!category?.l3?.id) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    const result = await createListing({
+      title: title.trim(),
+      description: description.trim(),
+      category_id: category.l3.id,
+      category_path: {
+        l1: category.l1 ? { id: category.l1.id, name: category.l1.name } : undefined,
+        l2: category.l2 ? { id: category.l2.id, name: category.l2.name } : undefined,
+        l3: category.l3 ? { id: category.l3.id, name: category.l3.name } : undefined,
+      },
+      city: city.trim(),
+      tags,
+      pricing_type: priceModel,
+      price_amount_kopecks: priceKopecks!,
+      escrow_deposit: escrowDeposit,
+      response_sla_minutes: responseSlaMin,
+      gallery: gallery.map((g) => ({
+        src: g.src,
+        alt: g.alt,
+        is_cover: !!g.isCover,
+      })),
+    });
+    setSubmitting(false);
+    if (result.ok) {
+      setCreated(result.listing);
+    } else {
+      setSubmitError(result.error);
+      if (result.error.status === 401) {
+        router.replace(
+          `/login?next=${encodeURIComponent("/listing-create")}`
+        );
+        return;
+      }
+      // Jump to the first step that has field errors so the user sees them.
+      if (result.error.fields) {
+        for (const field of Object.keys(result.error.fields)) {
+          const step = FIELD_TO_STEP[field];
+          if (step) {
+            setActiveId(step);
+            setVisited((v) => new Set(v).add(step));
+            return;
+          }
+        }
+      }
+    }
+  };
+
   // ---------- file mock ----------
   const addFiles = (incoming: File[]) => {
     const uploaded: UploadedFile[] = incoming.map((f, i) => ({
@@ -284,17 +390,95 @@ export default function ListingCreateWizard() {
     category: category?.l2?.name,
     flags: tags.length ? tags.slice(0, 2) : undefined,
     provider: {
-      name: USER.displayName,
-      kycVerified: true,
-      avgRating: 4.9,
+      name: auth?.user.display_name ?? USER_FALLBACK.displayName,
+      kycVerified: auth?.user.kyc_status === "approved",
+      avgRating: 5.0,
       reviewsCount: 0,
       completedDealsCount: 0,
     },
   };
 
+  const topNavUser = auth
+    ? {
+        id: auth.user.id,
+        displayName: auth.user.display_name,
+        email: auth.user.email,
+        kycVerified: auth.user.kyc_status === "approved",
+        hasProviderRole: auth.user.has_provider_role,
+      }
+    : USER_FALLBACK;
+
+  if (!auth) {
+    return (
+      <main className="min-h-screen flex items-center justify-center">
+        <Loader2 size={20} className="animate-spin text-muted" />
+      </main>
+    );
+  }
+
+  if (created) {
+    return (
+      <>
+        <TopNav user={topNavUser} notificationsUnread={3} messagesUnread={12} />
+        <SuccessScreen
+          icon={<Check size={28} />}
+          iconTone="success"
+          kicker="Послугу опубліковано"
+          title={
+            <>
+              Готово —
+              <br />
+              <span className="text-accent italic">ваша послуга у стрічці</span>
+            </>
+          }
+          description="Клієнти вже бачать вашу картку у стрічці пошуку. За потреби ви можете відредагувати її у кабінеті виконавця."
+          badge={
+            <Badge tone="success" size="sm" shape="square">
+              Активна
+            </Badge>
+          }
+          actions={
+            <>
+              <Button
+                variant="accent"
+                onClick={() => router.push(`/listings/${created.id}`)}
+              >
+                Подивитись картку
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => router.push("/provider-dashboard")}
+              >
+                У кабінет
+              </Button>
+            </>
+          }
+          steps={[
+            {
+              n: "01",
+              label: "Перевірка модерацією",
+              hint: "У продакшен-режимі модерація триває до 24 год. У демо публікація миттєва.",
+            },
+            {
+              n: "02",
+              label: "Перші запити",
+              hint: "Клієнти зможуть створити угоду через ескроу — гроші тримаються до завершення.",
+            },
+            {
+              n: "03",
+              label: "Аналітика",
+              hint: "Перегляди та контакти зʼявляться у вкладці Послуги вашого кабінету.",
+            },
+          ]}
+        />
+        <Footer />
+      </>
+    );
+  }
+
   return (
     <>
-      <TopNav user={USER} notificationsUnread={3} messagesUnread={12} />
+      <TopNav user={topNavUser} notificationsUnread={3} messagesUnread={12} />
 
       <main className="mx-auto max-w-7xl px-4 md:px-6 pt-6 md:pt-10 pb-40 md:pb-32">
         <EditorialPageHeader
@@ -363,6 +547,15 @@ export default function ListingCreateWizard() {
 
           {/* ============ Step content ============ */}
           <section className="min-w-0">
+            {submitError && (
+              <div className="mb-4">
+                <InlineAlert tone="danger" title={submitError.message}>
+                  {submitError.fields
+                    ? "Кроки з помилками підсвічено в навігації — перевірте їх і спробуйте знову."
+                    : "Спробуйте ще раз через хвилину. Якщо проблема повториться — повідомте підтримку."}
+                </InlineAlert>
+              </div>
+            )}
             <WizardSheet
               index={idx + 1}
               title={STEPS_DATA[idx].label}
@@ -473,10 +666,17 @@ export default function ListingCreateWizard() {
             ) : (
               <Button
                 variant="accent"
-                rightIcon={<Check size={14} />}
-                disabled={!allValid}
+                rightIcon={
+                  submitting ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Check size={14} />
+                  )
+                }
+                disabled={!allValid || submitting}
+                onClick={submit}
               >
-                Опублікувати
+                {submitting ? "Публікуємо…" : "Опублікувати"}
               </Button>
             )}
           </>

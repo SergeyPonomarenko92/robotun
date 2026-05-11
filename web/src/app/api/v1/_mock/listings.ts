@@ -223,13 +223,82 @@ function generateListings(): ListingProjection[] {
 }
 
 let _cache: ListingProjection[] | null = null;
-export function listAllListings(): ListingProjection[] {
+function seededListings(): ListingProjection[] {
   if (!_cache) _cache = generateListings();
   return _cache;
 }
 
+/* =====================================================================
+   User-created listings store. Real backend persists to listings table
+   (spec §4.1); mock holds them in-memory and prepends to the public list
+   so they show up in feed + detail without changing the seed cache.
+
+   We keep the full ListingDetailProjection so projectListingDetail() can
+   return the user's own description/gallery/price/faq instead of falling
+   back to the synthesizer.
+   ===================================================================== */
+declare global {
+  // eslint-disable-next-line no-var
+  var __ROBOTUN_USER_LISTINGS__: Map<string, ListingDetailProjection> | undefined;
+}
+function userDb(): Map<string, ListingDetailProjection> {
+  if (!globalThis.__ROBOTUN_USER_LISTINGS__) {
+    globalThis.__ROBOTUN_USER_LISTINGS__ = new Map();
+  }
+  return globalThis.__ROBOTUN_USER_LISTINGS__;
+}
+
+export const userListingsStore = {
+  insert(detail: ListingDetailProjection): ListingDetailProjection {
+    userDb().set(detail.id, detail);
+    return detail;
+  },
+  find(id: string): ListingDetailProjection | undefined {
+    return userDb().get(id);
+  },
+  all(): ListingDetailProjection[] {
+    // Newest first — created via splice ordering not guaranteed by Map insertion
+    // on all runtimes; sort by published_at desc.
+    return Array.from(userDb().values()).sort(
+      (a, b) =>
+        new Date(b.published_at).getTime() -
+        new Date(a.published_at).getTime()
+    );
+  },
+};
+
+export function listAllListings(): ListingProjection[] {
+  // User-created listings appear first (newest), then seeded.
+  const userOnes = userListingsStore.all().map((d) => stripDetail(d));
+  return [...userOnes, ...seededListings()];
+}
+
+function stripDetail(d: ListingDetailProjection): ListingProjection {
+  // Discard detail-only fields, keep the summary shape.
+  const {
+    description: _d,
+    gallery: _g,
+    brand_tags: _b,
+    includes: _i,
+    excludes: _e,
+    faq: _f,
+    price_range_kopecks: _pr,
+    warranty_months: _w,
+    aggregate_rating: _a,
+    reviews_preview: _rp,
+    related_ids: _ri,
+    published_at: _p,
+    ...summary
+  } = d;
+  void _d; void _g; void _b; void _i; void _e; void _f; void _pr;
+  void _w; void _a; void _rp; void _ri; void _p;
+  return summary;
+}
+
 export function findListing(id: string): ListingProjection | undefined {
-  return listAllListings().find((l) => l.id === id);
+  const user = userListingsStore.find(id);
+  if (user) return stripDetail(user);
+  return seededListings().find((l) => l.id === id);
 }
 
 /* =====================================================================
@@ -328,6 +397,10 @@ function buildAggregateRating(
 export function projectListingDetail(
   base: ListingProjection
 ): ListingDetailProjection {
+  // User-created listings ship their own detail — return it verbatim.
+  const user = userListingsStore.find(base.id);
+  if (user) return user;
+
   const h = hash(base.id);
   const galleryCount = 4 + (h % 3); // 4..6
   const gallerySeeds = [

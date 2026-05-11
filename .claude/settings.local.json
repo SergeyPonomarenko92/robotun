@@ -48,7 +48,8 @@
       "Bash(curl -s -X POST http://localhost:3000/api/v1/auth/login -H 'content-type: application/json' -d '{\"email\":\"provider@robotun.dev\",\"password\":\"demo1234\"}')",
       "Bash(python3 -c \"import sys,json; print\\(json.loads\\(sys.stdin.read\\(\\)\\)['id']\\)\")",
       "Bash(curl -s -o /tmp/dashpage.html -w \"%{http_code}\" http://localhost:3000/provider-dashboard)",
-      "Bash(python3 -c \"import sys;html=sys.stdin.read\\(\\);print\\('size:',len\\(html\\)\\);import re;t=re.sub\\(r'<[^>]+>',' ',html\\);t=re.sub\\(r'\\\\s+',' ',t\\).strip\\(\\);print\\('text:',t[:500]\\)\")"
+      "Bash(python3 -c \"import sys;html=sys.stdin.read\\(\\);print\\('size:',len\\(html\\)\\);import re;t=re.sub\\(r'<[^>]+>',' ',html\\);t=re.sub\\(r'\\\\s+',' ',t\\).strip\\(\\);print\\('text:',t[:500]\\)\")",
+      "Bash(curl *)"
     ]
   }
 }
