@@ -45,6 +45,7 @@ import {
   projectionToCard,
   type ListingDetail,
 } from "@/lib/feed";
+import { useListingReviews } from "@/lib/reviews";
 
 export default function ListingDetailPage() {
   const params = useParams<{ id: string }>();
@@ -108,7 +109,12 @@ function ListingDetailView({ data }: { data: ListingDetail }) {
 
   const distribution: RatingDistribution = data.aggregate_rating.distribution;
   const totalReviews = data.aggregate_rating.total;
-  const reviewCards = data.reviews_preview.map(reviewToCard);
+  const reviews = useListingReviews(data.id, { limit: 8 });
+  // Show full paginated list once user starts; otherwise the preview from the
+  // detail projection (top-3) keeps initial paint fast.
+  const reviewCards = reviews.started
+    ? reviews.items.map(reviewToCard)
+    : data.reviews_preview.map(reviewToCard);
 
   const next = () => setActiveImage((i) => (i + 1) % data.gallery.length);
   const prev = () =>
@@ -579,13 +585,52 @@ function ListingDetailView({ data }: { data: ListingDetail }) {
               </div>
             )}
 
+            {reviews.started && reviews.loading && (
+              <div className="mt-8 flex items-center justify-center text-muted">
+                <Loader2 size={18} className="animate-spin" />
+              </div>
+            )}
+            {reviews.error && (
+              <div className="mt-8">
+                <ErrorState
+                  kind="server"
+                  variant="inline"
+                  description="Не вдалось завантажити відгуки."
+                  onRetry={() => reviews.start()}
+                />
+              </div>
+            )}
+
             <div className="mt-8 flex items-center justify-between">
               <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
-                Показано {reviewCards.length} з {totalReviews}
+                {reviews.started
+                  ? `Показано ${reviewCards.length} з ${reviews.total || totalReviews}`
+                  : `Показано ${reviewCards.length} з ${totalReviews}`}
               </span>
-              <Button variant="link" rightIcon={<ArrowRight size={14} />}>
-                Усі відгуки
-              </Button>
+              {!reviews.started ? (
+                <Button
+                  variant="link"
+                  rightIcon={<ArrowRight size={14} />}
+                  onClick={() => reviews.start()}
+                >
+                  Усі відгуки
+                </Button>
+              ) : reviews.nextCursor ? (
+                <Button
+                  variant="link"
+                  rightIcon={
+                    reviews.loadingMore ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <ArrowRight size={14} />
+                    )
+                  }
+                  onClick={reviews.loadMore}
+                  disabled={reviews.loadingMore}
+                >
+                  {reviews.loadingMore ? "Завантажуємо…" : "Ще відгуки"}
+                </Button>
+              ) : null}
             </div>
           </section>
         )}
