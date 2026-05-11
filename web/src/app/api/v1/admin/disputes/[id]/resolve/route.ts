@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authorize } from "../../../../_mock/store";
 import { resolveDispute, projectDeal } from "../../../../_mock/deals";
 import { consumeChallenge } from "../../../../_mock/mfa";
+import { logAdminAction } from "../../../../_mock/admin_audit";
 
 /**
  * POST /api/v1/admin/disputes/{id}/resolve — Module 14 §4 verdict.
@@ -49,6 +50,13 @@ export async function POST(
   if ("error" in mfa) {
     return NextResponse.json({ error: mfa.error }, { status: 403 });
   }
+  logAdminAction({
+    actor_admin_id: auth.user.id,
+    action: "mfa.challenge.consumed",
+    target_type: "deal",
+    target_id: id,
+    metadata: { challenge_id: mfa.id, purpose: "dispute.resolve" },
+  });
 
   const result = resolveDispute(id, auth.user.id, {
     verdict: body.verdict ?? "",
@@ -69,5 +77,24 @@ export async function POST(
           : 409;
     return NextResponse.json({ error: result.error }, { status });
   }
+  // Module 12 §4 — append-only audit row for the resolution itself.
+  // target_user_id denormalizes the affected party (favoured side) so the
+  // support-role timeline filter can find this row without a JOIN.
+  const favoured =
+    body.verdict === "release_to_provider"
+      ? result.deal.provider_id
+      : result.deal.client_id;
+  logAdminAction({
+    actor_admin_id: auth.user.id,
+    action: "dispute.resolved",
+    target_type: "deal",
+    target_id: result.deal.id,
+    target_user_id: favoured,
+    metadata: {
+      verdict: result.deal.dispute_resolution?.verdict ?? null,
+      reason: result.deal.dispute_resolution?.reason ?? null,
+      budget_kopecks: result.deal.budget_kopecks,
+    },
+  });
   return NextResponse.json(projectDeal(result.deal));
 }

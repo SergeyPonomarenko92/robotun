@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorize } from "../../../_mock/store";
 import { createChallenge } from "../../../_mock/mfa";
+import { logAdminAction } from "../../../_mock/admin_audit";
 
 /**
  * POST /api/v1/admin/mfa/challenge
@@ -21,6 +22,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const challenge = createChallenge(auth.user.id);
+  logAdminAction({
+    actor_admin_id: auth.user.id,
+    action: "mfa.challenge.issued",
+    metadata: { challenge_id: challenge.id, expires_at: challenge.expires_at },
+  });
   return NextResponse.json({
     id: challenge.id,
     expires_at: challenge.expires_at,
