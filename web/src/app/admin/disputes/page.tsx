@@ -17,8 +17,10 @@ import { useRouter } from "next/navigation";
 import {
   useDisputedDeals,
   resolveDispute,
+  createMfaChallenge,
   type Deal,
   type DisputeReason,
+  type MfaChallenge,
 } from "@/lib/deals";
 
 const REASON_LABELS: Record<DisputeReason, string> = {
@@ -250,23 +252,58 @@ function ResolveModal({
   onClose: () => void;
   onResolved: () => void;
 }) {
+  type Step = "verdict" | "mfa";
+  const [step, setStep] = React.useState<Step>("verdict");
   const [verdict, setVerdict] = React.useState<"refund_client" | "release_to_provider">(
     "release_to_provider"
   );
   const [reason, setReason] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
+  const [challenge, setChallenge] = React.useState<MfaChallenge | null>(null);
+  const [code, setCode] = React.useState("");
 
-  const submit = async () => {
+  const startMfa = async () => {
     if (busy || reason.trim().length < 10) return;
     setBusy(true);
     setErr(null);
-    const result = await resolveDispute(deal.id, { verdict, reason });
+    const result = await createMfaChallenge();
+    setBusy(false);
+    if (result.ok) {
+      setChallenge(result.challenge);
+      setCode("");
+      setStep("mfa");
+    } else {
+      setErr(result.error.message);
+    }
+  };
+  const submit = async () => {
+    if (busy || !challenge || code.length !== 6) return;
+    setBusy(true);
+    setErr(null);
+    const result = await resolveDispute(deal.id, {
+      verdict,
+      reason,
+      mfa_challenge_id: challenge.id,
+      mfa_code: code,
+    });
     setBusy(false);
     if (result.ok) {
       onResolved();
     } else {
       setErr(result.error.message);
+      // MFA-class errors: reset challenge so user re-requests cleanly.
+      const c = result.error.code;
+      if (c && c.startsWith("mfa_")) {
+        if (
+          c === "mfa_expired" ||
+          c === "mfa_consumed" ||
+          c === "mfa_not_found"
+        ) {
+          setChallenge(null);
+          setStep("verdict");
+        }
+      }
     }
   };
 
@@ -274,28 +311,111 @@ function ResolveModal({
     <Modal
       open={true}
       onOpenChange={(open) => !open && onClose()}
-      title="Винести рішення по диспуту"
-      description={`Угода ${deal.id.slice(0, 8).toUpperCase()} · ${deal.listing_title_snapshot}`}
+      title={
+        step === "verdict"
+          ? "Винести рішення по диспуту"
+          : "Підтвердьте дію кодом MFA"
+      }
+      description={
+        step === "verdict"
+          ? `Угода ${deal.id.slice(0, 8).toUpperCase()} · ${deal.listing_title_snapshot}`
+          : "Цей крок захищає закриття диспуту від випадкових і ворожих дій."
+      }
       size="lg"
       footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
-            Назад
-          </Button>
-          <Button
-            variant={verdict === "refund_client" ? "danger" : "accent"}
-            loading={busy}
-            onClick={submit}
-            disabled={reason.trim().length < 10}
-          >
-            {verdict === "refund_client"
-              ? "Підтвердити повернення клієнту"
-              : "Підтвердити виплату виконавцю"}
-          </Button>
-        </>
+        step === "verdict" ? (
+          <>
+            <Button variant="secondary" onClick={onClose} disabled={busy}>
+              Назад
+            </Button>
+            <Button
+              variant={verdict === "refund_client" ? "danger" : "accent"}
+              loading={busy}
+              onClick={startMfa}
+              disabled={reason.trim().length < 10}
+            >
+              Далі — MFA
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setStep("verdict");
+                setErr(null);
+              }}
+              disabled={busy}
+            >
+              Назад
+            </Button>
+            <Button
+              variant={verdict === "refund_client" ? "danger" : "accent"}
+              loading={busy}
+              onClick={submit}
+              disabled={code.length !== 6}
+            >
+              {verdict === "refund_client"
+                ? "Підтвердити повернення клієнту"
+                : "Підтвердити виплату виконавцю"}
+            </Button>
+          </>
+        )
       }
     >
-      <div className="space-y-5">
+      {step === "mfa" && challenge ? (
+        <div className="space-y-5">
+          <div className="border border-warning/40 bg-warning-soft/30 rounded-[var(--radius-sm)] p-4 flex items-start gap-3">
+            <ShieldCheck size={16} className="text-warning shrink-0 mt-0.5" />
+            <div className="text-caption text-ink-soft leading-relaxed">
+              <p>
+                У проді: відкрийте свою TOTP-програму та введіть поточний 6-значний код.
+                Код одноразовий, дійсний 5 хвилин.
+              </p>
+              <p className="mt-1 text-muted">
+                Demo: код також показано нижче, щоб не блокувати показ flow.
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-[var(--radius-sm)] border border-hairline bg-canvas p-4 text-center">
+            <p className="font-mono text-micro uppercase tracking-[0.18em] text-muted mb-2">
+              Demo-код
+            </p>
+            <p className="font-display text-display text-ink leading-none tracking-[0.25em] tabular-nums">
+              {challenge.code}
+            </p>
+            <p className="text-caption text-muted-soft mt-2">
+              Дійсний до{" "}
+              {new Date(challenge.expires_at).toLocaleTimeString("uk-UA")}
+            </p>
+          </div>
+
+          <label className="block">
+            <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+              Введіть 6-значний код
+            </span>
+            <input
+              value={code}
+              onChange={(e) =>
+                setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+              }
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              placeholder="000000"
+              className="mt-2 w-full rounded-[var(--radius-sm)] border border-hairline bg-paper px-4 py-3 font-display text-h2 text-ink tracking-[0.25em] tabular-nums text-center focus:outline-none focus:border-accent placeholder:text-muted-soft"
+            />
+          </label>
+
+          {err && (
+            <InlineAlert tone="danger" title="MFA не пройдено">
+              {err}
+            </InlineAlert>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <button
             type="button"
@@ -356,9 +476,10 @@ function ResolveModal({
         {err && <InlineAlert tone="danger" title="Не вдалось закрити диспут">{err}</InlineAlert>}
 
         <p className="text-caption text-muted-soft leading-relaxed">
-          У проді тут вимагається MFA challenge (Module 12 §SEC-006). Мок пропускає цей крок.
+          Наступний крок — підтвердження MFA-кодом (Module 12 §SEC-006).
         </p>
-      </div>
+        </div>
+      )}
     </Modal>
   );
 }

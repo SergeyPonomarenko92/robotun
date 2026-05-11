@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorize } from "../../../../_mock/store";
 import { resolveDispute, projectDeal } from "../../../../_mock/deals";
+import { consumeChallenge } from "../../../../_mock/mfa";
 
 /**
  * POST /api/v1/admin/disputes/{id}/resolve — Module 14 §4 verdict.
@@ -27,11 +28,26 @@ export async function POST(
   }
   const { id } = await ctx.params;
 
-  let body: { verdict?: string; reason?: string };
+  let body: {
+    verdict?: string;
+    reason?: string;
+    mfa_challenge_id?: string;
+    mfa_code?: string;
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
+  }
+
+  // Module 12 §SEC-006 MFA gate.
+  const mfa = consumeChallenge({
+    adminId: auth.user.id,
+    challengeId: body.mfa_challenge_id ?? null,
+    code: body.mfa_code ?? null,
+  });
+  if ("error" in mfa) {
+    return NextResponse.json({ error: mfa.error }, { status: 403 });
   }
 
   const result = resolveDispute(id, auth.user.id, {

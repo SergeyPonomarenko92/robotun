@@ -423,13 +423,51 @@ export async function submitDisputeEvidence(
 export type ResolveDisputeInput = {
   verdict: "refund_client" | "release_to_provider";
   reason: string;
+  mfa_challenge_id: string;
+  mfa_code: string;
 };
+
+export type MfaChallenge = {
+  id: string;
+  expires_at: string;
+  /** Demo-only — real backend won't echo the code. */
+  code?: string;
+};
+
+export async function createMfaChallenge(): Promise<
+  { ok: true; challenge: MfaChallenge } | { ok: false; error: { message: string; status: number } }
+> {
+  try {
+    const challenge = await apiFetch<MfaChallenge>("/admin/mfa/challenge", {
+      method: "POST",
+    });
+    return { ok: true, challenge };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      return {
+        ok: false,
+        error: {
+          message:
+            e.status === 403
+              ? "Лише адміністратор може запитати MFA"
+              : "Не вдалось згенерувати код підтвердження",
+          status: e.status,
+        },
+      };
+    }
+    return {
+      ok: false,
+      error: { message: "Не вдалось підключитись", status: 0 },
+    };
+  }
+}
 
 export async function resolveDispute(
   dealId: string,
   input: ResolveDisputeInput
 ): Promise<
-  { ok: true; deal: Deal } | { ok: false; error: { message: string; status: number } }
+  | { ok: true; deal: Deal }
+  | { ok: false; error: { message: string; status: number; code?: string } }
 > {
   try {
     const deal = await apiFetch<Deal>(
@@ -440,19 +478,30 @@ export async function resolveDispute(
   } catch (e) {
     if (e instanceof ApiError) {
       const body = e.body as { error?: string } | null;
+      const code = body?.error;
+      const mfaCopy: Record<string, string> = {
+        mfa_missing: "Спочатку отримайте код підтвердження",
+        mfa_not_found: "Код підтвердження не знайдено — згенеруйте новий",
+        mfa_expired: "Код підтвердження прострочений",
+        mfa_consumed: "Код вже використано — згенеруйте новий",
+        mfa_wrong_admin: "Код не належить вашій сесії",
+        mfa_code_invalid: "Невірний код підтвердження",
+      };
       const message =
         e.status === 401
           ? "Потрібно увійти знову"
-          : e.status === 403
-            ? "Лише адміністратор може закривати диспут"
-            : e.status === 404
-              ? "Угоду не знайдено"
-              : body?.error === "validation_failed"
-                ? "Перевірте поля форми"
-                : body?.error === "invalid_state"
-                  ? "Угода вже не в диспуті"
-                  : "Сервіс тимчасово недоступний";
-      return { ok: false, error: { message, status: e.status } };
+          : e.status === 403 && code && code in mfaCopy
+            ? mfaCopy[code]
+            : e.status === 403
+              ? "Лише адміністратор може закривати диспут"
+              : e.status === 404
+                ? "Угоду не знайдено"
+                : code === "validation_failed"
+                  ? "Перевірте поля форми"
+                  : code === "invalid_state"
+                    ? "Угода вже не в диспуті"
+                    : "Сервіс тимчасово недоступний";
+      return { ok: false, error: { message, status: e.status, code } };
     }
     return {
       ok: false,
