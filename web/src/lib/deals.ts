@@ -37,6 +37,9 @@ export type Deal = {
   hold_id: string;
   created_at: string;
   listing_title_snapshot: string;
+  cancel_requested_by_client_at: string | null;
+  cancel_requested_by_provider_at: string | null;
+  cancel_request_reason: string | null;
   client: DealParty;
   provider: DealParty;
 };
@@ -283,6 +286,52 @@ export type DealAction =
   | "submit"
   | "approve"
   | "dispute";
+
+/* =====================================================================
+   Mutual cancel handshake — POST /deals/:id/cancel-request.
+   ===================================================================== */
+export type CancelRequestAction = "request" | "revoke";
+
+export async function cancelRequest(
+  id: string,
+  action: CancelRequestAction,
+  reason?: string
+): Promise<
+  { ok: true; deal: Deal } | { ok: false; error: { message: string; status: number } }
+> {
+  try {
+    const deal = await apiFetch<Deal>(
+      `/deals/${encodeURIComponent(id)}/cancel-request`,
+      {
+        method: "POST",
+        body: JSON.stringify({ action, reason }),
+      }
+    );
+    return { ok: true, deal };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const body = e.body as { error?: string } | null;
+      const code = body?.error;
+      const message =
+        e.status === 401
+          ? "Потрібно увійти знову"
+          : e.status === 403
+            ? "Ви не сторона цієї угоди"
+            : e.status === 404
+              ? "Угоду не знайдено"
+              : code === "no_active_request"
+                ? "Запит вже скасовано"
+                : code === "invalid_state"
+                  ? "Скасування можливе тільки під час виконання угоди"
+                  : "Сервіс тимчасово недоступний";
+      return { ok: false, error: { message, status: e.status } };
+    }
+    return {
+      ok: false,
+      error: { message: "Не вдалось підключитись", status: 0 },
+    };
+  }
+}
 
 export async function transitionDeal(
   id: string,

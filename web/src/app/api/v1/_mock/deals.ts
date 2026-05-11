@@ -46,6 +46,15 @@ export type MockDeal = {
   /** Денормалізований заголовок listing на момент створення — для
    *  client-side card preview без додаткового JOIN. */
   listing_title_snapshot: string;
+
+  /** Module 3 §REQ-009 / PAT-003 — mutual cancel from `active`.
+   *  Each party records its consent independently; when both are set the
+   *  transition() helper flips status to 'cancelled' atomically. Requests
+   *  lapse after 48h (CON-010 / spec §4.5). Spec stores ISO timestamps
+   *  in two columns; mock mirrors that. */
+  cancel_requested_by_client_at: string | null;
+  cancel_requested_by_provider_at: string | null;
+  cancel_request_reason: string | null;
 };
 
 declare global {
@@ -74,7 +83,20 @@ export type TransitionError =
   | "invalid_state";
 
 export const dealsStore = {
-  insert(input: Omit<MockDeal, "id" | "status" | "created_at" | "fee_kopecks" | "total_held_kopecks" | "hold_id">): MockDeal {
+  insert(
+    input: Omit<
+      MockDeal,
+      | "id"
+      | "status"
+      | "created_at"
+      | "fee_kopecks"
+      | "total_held_kopecks"
+      | "hold_id"
+      | "cancel_requested_by_client_at"
+      | "cancel_requested_by_provider_at"
+      | "cancel_request_reason"
+    >
+  ): MockDeal {
     const fee = Math.round(input.budget_kopecks * PLATFORM_FEE_BPS / 10_000);
     const deal: MockDeal = {
       ...input,
@@ -84,6 +106,9 @@ export const dealsStore = {
       fee_kopecks: fee,
       total_held_kopecks: input.budget_kopecks + fee,
       hold_id: "hold_" + uuid().replace(/-/g, "").slice(0, 16),
+      cancel_requested_by_client_at: null,
+      cancel_requested_by_provider_at: null,
+      cancel_request_reason: null,
     };
     db().set(deal.id, deal);
     return deal;
@@ -196,6 +221,114 @@ export type DealAction =
   | "approve"
   | "dispute";
 
+export type CancelRequestAction = "request" | "revoke";
+
+export type CancelRequestError =
+  | "not_found"
+  | "forbidden"
+  | "invalid_state"
+  | "no_active_request";
+
+const CANCEL_REQUEST_TTL_MS = 48 * 60 * 60 * 1000;
+
+/** Returns true if the timestamp is set AND inside the 48h window. */
+function isLiveCancelTimestamp(iso: string | null): boolean {
+  if (!iso) return false;
+  return Date.now() - new Date(iso).getTime() < CANCEL_REQUEST_TTL_MS;
+}
+
+/** Read effective request state, expiring lapsed timestamps in-place.
+ *  Real backend does this via the idx_deals_cancel_expiry sweep job (§4.11);
+ *  mock just clears on read so the UI never sees a stale 48h+ request. */
+function reapExpiredCancel(d: MockDeal): void {
+  if (
+    d.cancel_requested_by_client_at &&
+    !isLiveCancelTimestamp(d.cancel_requested_by_client_at)
+  ) {
+    d.cancel_requested_by_client_at = null;
+  }
+  if (
+    d.cancel_requested_by_provider_at &&
+    !isLiveCancelTimestamp(d.cancel_requested_by_provider_at)
+  ) {
+    d.cancel_requested_by_provider_at = null;
+  }
+  if (
+    !d.cancel_requested_by_client_at &&
+    !d.cancel_requested_by_provider_at
+  ) {
+    d.cancel_request_reason = null;
+  }
+}
+
+/** Module 3 §REQ-009 — mutual cancel from `active` (PAT-003).
+ *  request: caller records their consent column; if the other party's column
+ *  is already non-null (within TTL), atomically flip status='cancelled'.
+ *  revoke: caller clears their own column; allowed only while status='active'
+ *  and caller's column is set.
+ *
+ *  Returns the updated deal on success, or an error code. Reason is captured
+ *  only on the first 'request' call (overwritten if both clear and re-request).
+ *
+ *  Demo override `demoActAsProvider` mirrors transition()'s widening. */
+export function cancelRequestTransition(
+  id: string,
+  callerId: string,
+  action: CancelRequestAction,
+  reason: string | null,
+  demoActAsProvider = false
+): MockDeal | { error: CancelRequestError } {
+  const d = db().get(id);
+  if (!d) return { error: "not_found" };
+
+  reapExpiredCancel(d);
+
+  const isClient = d.client_id === callerId;
+  const isProvider = d.provider_id === callerId || demoActAsProvider;
+  if (!isClient && !isProvider) return { error: "forbidden" };
+
+  if (action === "request") {
+    if (d.status !== "active") return { error: "invalid_state" };
+    const nowIso = new Date().toISOString();
+    if (isClient) {
+      d.cancel_requested_by_client_at = nowIso;
+    } else {
+      d.cancel_requested_by_provider_at = nowIso;
+      if (demoActAsProvider) d.provider_id = callerId;
+    }
+    if (reason && !d.cancel_request_reason) {
+      d.cancel_request_reason = reason.slice(0, 500);
+    }
+    // Atomic transition when both sides agree.
+    if (
+      d.cancel_requested_by_client_at &&
+      d.cancel_requested_by_provider_at
+    ) {
+      d.status = "cancelled";
+    }
+    return d;
+  }
+
+  // revoke
+  if (d.status !== "active") return { error: "invalid_state" };
+  const mine = isClient
+    ? d.cancel_requested_by_client_at
+    : d.cancel_requested_by_provider_at;
+  if (!mine) return { error: "no_active_request" };
+  if (isClient) {
+    d.cancel_requested_by_client_at = null;
+  } else {
+    d.cancel_requested_by_provider_at = null;
+  }
+  if (
+    !d.cancel_requested_by_client_at &&
+    !d.cancel_requested_by_provider_at
+  ) {
+    d.cancel_request_reason = null;
+  }
+  return d;
+}
+
 /* =====================================================================
    Public projection (REST shape) — embeds party display info so /deals/:id
    can render DealHeader without a separate users JOIN. Real backend would
@@ -273,6 +406,9 @@ export function projectDeal(d: MockDeal) {
     hold_id: d.hold_id,
     created_at: d.created_at,
     listing_title_snapshot: d.listing_title_snapshot,
+    cancel_requested_by_client_at: d.cancel_requested_by_client_at,
+    cancel_requested_by_provider_at: d.cancel_requested_by_provider_at,
+    cancel_request_reason: d.cancel_request_reason,
     /** Embedded party display blocks (Module 3 spec leaves this to projection
      *  layer — keeping read-side denormalized avoids a JOIN in the hot path). */
     client: embedClient(d.client_id),

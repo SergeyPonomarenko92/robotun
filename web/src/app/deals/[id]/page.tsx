@@ -31,9 +31,11 @@ import { useRequireAuth } from "@/lib/auth";
 import {
   useDeal,
   transitionDeal,
+  cancelRequest,
   type Deal,
   type DealAction,
 } from "@/lib/deals";
+import { AlertTriangle } from "lucide-react";
 
 export default function DealPage() {
   const auth = useRequireAuth("/login");
@@ -107,6 +109,23 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
   const [busy, setBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [current, setCurrent] = React.useState<Deal>(deal);
+  const [cancelReqOpen, setCancelReqOpen] = React.useState(false);
+  const [cancelReason, setCancelReason] = React.useState("");
+
+  // ---- mutual cancel derived state ----
+  const myCancelTs =
+    role === "client"
+      ? current.cancel_requested_by_client_at
+      : role === "provider"
+        ? current.cancel_requested_by_provider_at
+        : null;
+  const counterCancelTs =
+    role === "client"
+      ? current.cancel_requested_by_provider_at
+      : role === "provider"
+        ? current.cancel_requested_by_client_at
+        : null;
+  const counterCancelLabel = role === "client" ? "Виконавець" : "Клієнт";
 
   // Keep local state in sync if parent refetches
   React.useEffect(() => setCurrent(deal), [deal]);
@@ -122,15 +141,55 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
   ];
   const onAction = (id: string) => {
     setActionError(null);
+    if (id === "cancel-request") {
+      setCancelReason("");
+      setCancelReqOpen(true);
+      return;
+    }
     if ((WIRED_ACTIONS as ReadonlyArray<string>).includes(id)) {
       setPendingAction(id as DealAction);
     } else {
-      // cancel-request / dispute-grace / respond / evidence / resolve /
-      // ask-evidence / escalate / thank / review — depend on Modules 11/12/14
-      // and out of MVP scope here.
+      // dispute-grace / respond / evidence / resolve / ask-evidence /
+      // escalate / thank / review — depend on Modules 11/12/14 and out
+      // of MVP scope here.
       setActionError(
         "Ця дія ще не пов'язана з бекендом — буде додано наступним кроком."
       );
+    }
+  };
+  const submitCancelRequest = async () => {
+    if (busy) return;
+    setBusy(true);
+    const result = await cancelRequest(current.id, "request", cancelReason);
+    setBusy(false);
+    if (result.ok) {
+      setCurrent(result.deal);
+      setCancelReqOpen(false);
+    } else {
+      setActionError(result.error.message);
+      setCancelReqOpen(false);
+    }
+  };
+  const revokeCancelRequest = async () => {
+    if (busy) return;
+    setBusy(true);
+    const result = await cancelRequest(current.id, "revoke");
+    setBusy(false);
+    if (result.ok) {
+      setCurrent(result.deal);
+    } else {
+      setActionError(result.error.message);
+    }
+  };
+  const agreeToCancel = async () => {
+    if (busy) return;
+    setBusy(true);
+    const result = await cancelRequest(current.id, "request");
+    setBusy(false);
+    if (result.ok) {
+      setCurrent(result.deal);
+    } else {
+      setActionError(result.error.message);
     }
   };
   const confirmAction = async () => {
@@ -210,6 +269,72 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
           <div className="mb-6">
             <InlineAlert tone="warning" title="Дію не виконано">
               {actionError}
+            </InlineAlert>
+          </div>
+        )}
+
+        {/* Counterparty has requested cancellation — caller can agree */}
+        {current.status === "active" && counterCancelTs && !myCancelTs && (
+          <div className="mb-6">
+            <InlineAlert
+              tone="warning"
+              title={`${counterCancelLabel} запитує скасування угоди`}
+              action={
+                <div className="flex gap-2">
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    loading={busy}
+                    onClick={agreeToCancel}
+                  >
+                    Погодитись скасуванням
+                  </Button>
+                </div>
+              }
+            >
+              {current.cancel_request_reason ? (
+                <>
+                  Причина: <span className="text-ink">«{current.cancel_request_reason}»</span>.
+                  Підтвердіть, щоб припинити угоду; кошти повернуться клієнту.
+                  Запит чинний до{" "}
+                  {new Date(
+                    new Date(counterCancelTs).getTime() +
+                      48 * 60 * 60 * 1000
+                  ).toLocaleString("uk-UA")}
+                  .
+                </>
+              ) : (
+                <>
+                  Інша сторона ініціювала припинення без причини. Якщо ви також
+                  бажаєте скасувати — підтвердіть; інакше запит діятиме 48 годин.
+                </>
+              )}
+            </InlineAlert>
+          </div>
+        )}
+
+        {/* Caller has requested cancellation — counterparty hasn't agreed yet */}
+        {current.status === "active" && myCancelTs && !counterCancelTs && (
+          <div className="mb-6">
+            <InlineAlert
+              tone="info"
+              title="Очікуємо згоди контрагента на скасування"
+              action={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  loading={busy}
+                  onClick={revokeCancelRequest}
+                >
+                  Скасувати запит
+                </Button>
+              }
+            >
+              Запит діятиме до{" "}
+              {new Date(
+                new Date(myCancelTs).getTime() + 48 * 60 * 60 * 1000
+              ).toLocaleString("uk-UA")}
+              . Якщо контрагент не погодиться — угода залишається в роботі.
             </InlineAlert>
           </div>
         )}
@@ -331,6 +456,58 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
           </aside>
         </div>
       </main>
+
+      {/* Cancel-request reason modal */}
+      {cancelReqOpen && (
+        <Modal
+          open={true}
+          onOpenChange={(open) => !open && setCancelReqOpen(false)}
+          title="Запросити скасування угоди?"
+          description="Скасування з активної угоди потребує згоди обох сторін. Якщо ви ініціатор — інша сторона побачить ваш запит."
+          size="md"
+          footer={
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => setCancelReqOpen(false)}
+                disabled={busy}
+              >
+                Назад
+              </Button>
+              <Button
+                variant="danger"
+                loading={busy}
+                onClick={submitCancelRequest}
+              >
+                Надіслати запит
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 p-3 rounded-[var(--radius-sm)] bg-warning-soft/50 border border-warning/30">
+              <AlertTriangle size={16} className="text-warning shrink-0 mt-0.5" />
+              <p className="text-caption text-ink-soft leading-relaxed">
+                Якщо інша сторона погодиться — угода перейде в «скасовано», а
+                кошти повернуться клієнту. Якщо ні — запит закінчиться через 48 год.
+              </p>
+            </div>
+            <label className="block">
+              <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+                Причина (опційно, до 500 символів)
+              </span>
+              <textarea
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                maxLength={500}
+                rows={4}
+                placeholder="Що сталося? Допоможе іншій стороні швидше зрозуміти контекст."
+                className="mt-2 w-full rounded-[var(--radius-sm)] border border-hairline bg-paper px-3 py-2 text-body text-ink leading-relaxed focus:outline-none focus:border-accent placeholder:text-muted-soft resize-none"
+              />
+            </label>
+          </div>
+        </Modal>
+      )}
 
       {/* Confirm action modal */}
       {pendingAction && (
