@@ -24,9 +24,9 @@ import { FormField } from "@/components/ui/FormField";
 import { Input } from "@/components/ui/Input";
 import {
   CategoryPicker,
-  type Category,
   type CategoryPath,
 } from "@/components/ui/CategoryPicker";
+import { useCategories } from "@/lib/categories";
 import { MoneyInput, MoneyDisplay } from "@/components/ui/MoneyInput";
 import {
   FileUploader,
@@ -92,58 +92,6 @@ const FIELD_ERROR_COPY: Record<string, string> = {
   cover_required: "Позначте обкладинку",
 };
 
-const CATEGORIES: Category[] = [
-  {
-    id: "el",
-    name: "Електрика",
-    children: [
-      {
-        id: "el-house",
-        name: "Домашня електрика",
-        children: [
-          { id: "el-wiring", name: "Заміна проводки" },
-          { id: "el-socket", name: "Заміна розеток" },
-          { id: "el-light", name: "Встановлення світильників" },
-        ],
-      },
-    ],
-  },
-  {
-    id: "rep",
-    name: "Ремонт побутової техніки",
-    children: [
-      {
-        id: "rep-wash",
-        name: "Пральні машини",
-        children: [
-          { id: "rep-wash-bosch", name: "Bosch / Siemens" },
-          { id: "rep-wash-lg", name: "LG / Samsung" },
-          { id: "rep-wash-other", name: "Інші бренди" },
-        ],
-      },
-      {
-        id: "rep-fridge",
-        name: "Холодильники",
-        children: [{ id: "rep-fridge-all", name: "Всі бренди" }],
-      },
-    ],
-  },
-  {
-    id: "clean",
-    name: "Прибирання",
-    children: [
-      {
-        id: "clean-flat",
-        name: "Квартири",
-        children: [
-          { id: "clean-flat-reg", name: "Регулярне" },
-          { id: "clean-flat-deep", name: "Генеральне" },
-        ],
-      },
-    ],
-  },
-];
-
 const PRESET_TAGS = [
   "виїзд",
   "гарантія",
@@ -177,6 +125,7 @@ const DESC_MIN = 80;
 export default function ListingCreateWizard() {
   const auth = useRequireAuth();
   const router = useRouter();
+  const categoriesState = useCategories();
   const [activeId, setActiveId] = React.useState<WizardStepId>("basics");
   const [visited, setVisited] = React.useState<Set<WizardStepId>>(
     new Set(["basics"])
@@ -576,6 +525,7 @@ export default function ListingCreateWizard() {
                     setTags={setTags}
                     tagDraft={tagDraft}
                     setTagDraft={setTagDraft}
+                    categoriesState={categoriesState}
                   />
                 )}
 
@@ -729,6 +679,7 @@ function BasicsStep({
   setTags,
   tagDraft,
   setTagDraft,
+  categoriesState,
 }: {
   title: string;
   setTitle: (v: string) => void;
@@ -742,6 +693,7 @@ function BasicsStep({
   setTags: (v: string[]) => void;
   tagDraft: string;
   setTagDraft: (v: string) => void;
+  categoriesState: ReturnType<typeof useCategories>;
 }) {
   const toggleTag = (t: string) =>
     setTags(tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t]);
@@ -778,11 +730,19 @@ function BasicsStep({
           required
           helper="3 рівні. Кінцева категорія допомагає клієнту знайти вас."
         >
-          <CategoryPicker
-            categories={CATEGORIES}
-            value={category}
-            onChange={setCategory}
-          />
+          {categoriesState.loading ? (
+            <div className="h-12 rounded-[var(--radius-md)] border border-hairline bg-paper animate-pulse" />
+          ) : categoriesState.error ? (
+            <InlineAlert tone="danger" title="Не вдалось завантажити категорії">
+              Спробуйте оновити сторінку.
+            </InlineAlert>
+          ) : (
+            <CategoryPicker
+              categories={categoriesState.data ?? []}
+              value={category}
+              onChange={setCategory}
+            />
+          )}
         </FormField>
       </div>
 
