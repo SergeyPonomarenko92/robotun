@@ -2,6 +2,65 @@
 import * as React from "react";
 import { apiFetch, ApiError } from "./api";
 
+export type Payout = {
+  id: string;
+  user_id: string;
+  amount_kopecks: number;
+  status: "requested" | "processing" | "paid" | "failed";
+  method_last4: string;
+  created_at: string;
+  paid_at: string | null;
+};
+
+export type PayoutError = {
+  message: string;
+  code:
+    | "amount_invalid"
+    | "amount_below_min"
+    | "insufficient_funds"
+    | "kyc_not_approved"
+    | "payout_disabled"
+    | "network"
+    | "unknown";
+  status: number;
+};
+
+export async function requestPayout(
+  amountKopecks: number
+): Promise<{ ok: true; payout: Payout } | { ok: false; error: PayoutError }> {
+  try {
+    const payout = await apiFetch<Payout>("/payouts", {
+      method: "POST",
+      body: JSON.stringify({ amount_kopecks: amountKopecks }),
+    });
+    return { ok: true, payout };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const body = e.body as { error?: string } | null;
+      const code = (body?.error ?? "unknown") as PayoutError["code"];
+      const message =
+        code === "amount_below_min"
+          ? "Мінімальна сума виплати — 50 ₴"
+          : code === "amount_invalid"
+            ? "Невірна сума"
+            : code === "insufficient_funds"
+              ? "Недостатньо доступних коштів"
+              : code === "kyc_not_approved"
+                ? "Спочатку пройдіть верифікацію KYC"
+                : code === "payout_disabled"
+                  ? "Виплати для вашого облікового запису вимкнено"
+                  : e.status === 401
+                    ? "Потрібно увійти знову"
+                    : "Сервіс тимчасово недоступний";
+      return { ok: false, error: { message, code, status: e.status } };
+    }
+    return {
+      ok: false,
+      error: { message: "Не вдалось підключитись", code: "network", status: 0 },
+    };
+  }
+}
+
 export type WalletBalance = {
   available_kopecks: number;
   held_kopecks: number;

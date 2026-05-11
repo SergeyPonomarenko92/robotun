@@ -148,6 +148,122 @@ function listingTitleSnap(deal: {
   );
 }
 
+/* =====================================================================
+   Payout — provider requests withdrawal from `available`.
+   Real backend gates via Module 4 KYC + Module 11 KYC-gate (same-TX JOIN
+   on provider_profiles + kyc_verifications). Mock checks the in-memory
+   MockUser flags.
+   ===================================================================== */
+
+export type PayoutStatus = "requested" | "processing" | "paid" | "failed";
+
+export type MockPayout = {
+  id: string;
+  user_id: string;
+  amount_kopecks: number;
+  status: PayoutStatus;
+  /** Last 4 digits of the bound payout method — fake for demo. */
+  method_last4: string;
+  created_at: string;
+  paid_at: string | null;
+};
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __ROBOTUN_PAYOUTS__: Map<string, MockPayout> | undefined;
+}
+function payoutDb(): Map<string, MockPayout> {
+  if (!globalThis.__ROBOTUN_PAYOUTS__) {
+    globalThis.__ROBOTUN_PAYOUTS__ = new Map();
+  }
+  return globalThis.__ROBOTUN_PAYOUTS__;
+}
+
+const PAYOUT_MIN_KOPECKS = 5000; // 50 ₴
+
+export type PayoutError =
+  | "amount_invalid"
+  | "amount_below_min"
+  | "insufficient_funds"
+  | "kyc_not_approved"
+  | "payout_disabled";
+
+export function requestPayout(
+  user: {
+    id: string;
+    kyc_status: string;
+    payout_enabled: boolean;
+  },
+  amountKopecks: number
+): MockPayout | { error: PayoutError } {
+  if (!Number.isInteger(amountKopecks) || amountKopecks <= 0) {
+    return { error: "amount_invalid" };
+  }
+  if (amountKopecks < PAYOUT_MIN_KOPECKS) {
+    return { error: "amount_below_min" };
+  }
+  if (user.kyc_status !== "approved") {
+    return { error: "kyc_not_approved" };
+  }
+  if (!user.payout_enabled) {
+    return { error: "payout_disabled" };
+  }
+  const bal = balanceFor(user.id);
+  if (amountKopecks > bal.available_kopecks) {
+    return { error: "insufficient_funds" };
+  }
+
+  const payout: MockPayout = {
+    id: uuid(),
+    user_id: user.id,
+    amount_kopecks: amountKopecks,
+    status: "requested",
+    method_last4: "3829",
+    created_at: new Date().toISOString(),
+    paid_at: null,
+  };
+  payoutDb().set(payout.id, payout);
+
+  // Move funds from available -> pending_payout.
+  post({
+    user_id: user.id,
+    bucket: "available",
+    amount_kopecks: -amountKopecks,
+    kind: "payout_request",
+    payout_id: payout.id,
+    memo: `Виплата запитана · ····${payout.method_last4}`,
+  });
+  post({
+    user_id: user.id,
+    bucket: "pending_payout",
+    amount_kopecks: amountKopecks,
+    kind: "payout_request",
+    payout_id: payout.id,
+    memo: `Очікує виплати · ····${payout.method_last4}`,
+  });
+
+  return payout;
+}
+
+/** Demo PSP completion — moves pending_payout -> 0 (cleared, paid).
+ *  Not exposed via REST in MVP, available for fixture scripts. */
+export function completePayout(payoutId: string): MockPayout | null {
+  const p = payoutDb().get(payoutId);
+  if (!p) return null;
+  if (p.status !== "requested" && p.status !== "processing") return p;
+  p.status = "paid";
+  p.paid_at = new Date().toISOString();
+  post({
+    user_id: p.user_id,
+    bucket: "pending_payout",
+    amount_kopecks: -p.amount_kopecks,
+    kind: "payout_paid",
+    payout_id: p.id,
+    memo: `Виплата на ····${p.method_last4} зарахована`,
+  });
+  return p;
+}
+
 export const paymentHooks = {
   /** provider: held += net (capture target). client side is PSP pre-auth — not modelled. */
   onDealAccepted(deal: {

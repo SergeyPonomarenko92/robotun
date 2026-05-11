@@ -48,7 +48,15 @@ import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader"
 import { useRequireAuth } from "@/lib/auth";
 import { useMyDeals } from "@/lib/deals";
 import type { Deal } from "@/lib/deals";
-import { useWallet, useTransactions, type Transaction } from "@/lib/payments";
+import {
+  useWallet,
+  useTransactions,
+  requestPayout,
+  type Transaction,
+} from "@/lib/payments";
+import { Modal } from "@/components/ui/Modal";
+import { MoneyInput } from "@/components/ui/MoneyInput";
+import { InlineAlert } from "@/components/ui/InlineAlert";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Loader2 } from "lucide-react";
@@ -278,6 +286,26 @@ export default function ProviderDashboardPage() {
   const dealsState = useMyDeals({ role: "provider", limit: 20 });
   const wallet = useWallet();
   const transactions = useTransactions({ limit: 5 });
+  const [payoutOpen, setPayoutOpen] = React.useState(false);
+  const [payoutAmount, setPayoutAmount] = React.useState<number | null>(null);
+  const [payoutError, setPayoutError] = React.useState<string | null>(null);
+  const [payoutBusy, setPayoutBusy] = React.useState(false);
+
+  const submitPayout = async () => {
+    if (!payoutAmount || payoutBusy) return;
+    setPayoutBusy(true);
+    setPayoutError(null);
+    const result = await requestPayout(payoutAmount);
+    setPayoutBusy(false);
+    if (result.ok) {
+      setPayoutOpen(false);
+      setPayoutAmount(null);
+      wallet.refresh();
+      transactions.refresh();
+    } else {
+      setPayoutError(result.error.message);
+    }
+  };
 
   if (!auth) {
     // Loading or redirecting — show a minimal frame
@@ -454,8 +482,11 @@ export default function ProviderDashboardPage() {
                   heldKopecks: wallet.data.held_kopecks,
                   pendingPayoutKopecks: wallet.data.pending_payout_kopecks,
                 }}
-                onPayout={() => {}}
-                onTopUp={() => {}}
+                onPayout={() => {
+                  setPayoutAmount(wallet.data?.available_kopecks ?? null);
+                  setPayoutError(null);
+                  setPayoutOpen(true);
+                }}
               />
             )}
 
@@ -495,6 +526,79 @@ export default function ProviderDashboardPage() {
 
       <Footer />
       <MobileTabBar messagesUnread={6} />
+
+      {payoutOpen && (
+        <Modal
+          open={true}
+          onOpenChange={(open) => {
+            if (!open) {
+              setPayoutOpen(false);
+              setPayoutError(null);
+            }
+          }}
+          title="Запросити виплату"
+          description="Кошти підуть на привʼязаний рахунок. Зазвичай надходять протягом 1 робочого дня."
+          size="md"
+          footer={
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => setPayoutOpen(false)}
+                disabled={payoutBusy}
+              >
+                Назад
+              </Button>
+              <Button
+                variant="accent"
+                loading={payoutBusy}
+                onClick={submitPayout}
+                disabled={
+                  !payoutAmount ||
+                  payoutAmount < 5000 ||
+                  (wallet.data
+                    ? payoutAmount > wallet.data.available_kopecks
+                    : true)
+                }
+              >
+                Підтвердити
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex items-baseline justify-between">
+              <span className="text-caption text-muted">
+                Доступно для виплати
+              </span>
+              <span className="font-display text-h3 text-ink font-mono tabular-nums">
+                <MoneyDisplay kopecks={wallet.data?.available_kopecks ?? 0} />
+              </span>
+            </div>
+            <label className="block">
+              <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+                Сума виплати
+              </span>
+              <div className="mt-2">
+                <MoneyInput
+                  valueKopecks={payoutAmount}
+                  onChangeKopecks={setPayoutAmount}
+                  placeholder="0 ₴"
+                  minKopecks={5000}
+                  maxKopecks={wallet.data?.available_kopecks}
+                />
+              </div>
+              <p className="text-caption text-muted mt-1.5">
+                Мінімум 50 ₴. Метод виплати: ····3829
+              </p>
+            </label>
+            {payoutError && (
+              <InlineAlert tone="danger" title="Не вдалось створити виплату">
+                {payoutError}
+              </InlineAlert>
+            )}
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
