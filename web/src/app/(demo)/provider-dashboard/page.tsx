@@ -46,6 +46,10 @@ import { Tooltip } from "@/components/ui/Tooltip";
 import { Menu, MenuTrigger, MenuContent, MenuItem } from "@/components/ui/Menu";
 import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
 import { useRequireAuth } from "@/lib/auth";
+import { useMyDeals } from "@/lib/deals";
+import type { Deal } from "@/lib/deals";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
 import { Loader2 } from "lucide-react";
 
 const PROVIDER_USER = {
@@ -58,63 +62,35 @@ const PROVIDER_USER = {
 
 type Period = "week" | "month" | "all";
 
-type DealRow = {
-  id: string;
-  status: DealStatus;
-  title: string;
-  client: { name: string; avatarUrl?: string };
-  priceKopecks: number;
-  createdAt: string;
-  deadlineHint: string;
-};
+function dealDeadlineHint(deal: Deal): string {
+  // Cheap heuristic — server doesn't ship a precomputed hint for every
+  // status yet. Real backend can return e.g. `auto_complete_at` or
+  // `dispute_deadline_at` for the relevant statuses.
+  switch (deal.status) {
+    case "pending":
+      return "очікує підтвердження";
+    case "active":
+      return deal.urgency === "today"
+        ? "сьогодні"
+        : deal.urgency === "tomorrow"
+          ? "до завтра"
+          : deal.urgency === "week"
+            ? "цього тижня"
+            : "за домовленістю";
+    case "in_review":
+      return "клієнт перевіряє";
+    case "completed":
+      return "завершено";
+    case "disputed":
+      return "відкрито диспут";
+    case "cancelled":
+      return "скасовано";
+  }
+}
 
-const DEALS: DealRow[] = [
-  {
-    id: "DL-7421",
-    status: "in_review",
-    title: "Ремонт Bosch Maxx 6 — заміна підшипників",
-    client: { name: "Олена К.", avatarUrl: "https://i.pravatar.cc/120?img=47" },
-    priceKopecks: 95000,
-    createdAt: "2026-05-08",
-    deadlineHint: "автозавершення через 4 дні 12 год",
-  },
-  {
-    id: "DL-7438",
-    status: "active",
-    title: "Підключення посудомийки Siemens — виїзд",
-    client: { name: "Андрій М.", avatarUrl: "https://i.pravatar.cc/120?img=33" },
-    priceKopecks: 60000,
-    createdAt: "2026-05-09",
-    deadlineHint: "узгоджено на 11 травня, 14:00",
-  },
-  {
-    id: "DL-7440",
-    status: "pending",
-    title: "Заміна ТЕНа в LG TwinWash",
-    client: { name: "Наталія Ш." },
-    priceKopecks: 75000,
-    createdAt: "2026-05-10",
-    deadlineHint: "очікує підтвердження — 23 год",
-  },
-  {
-    id: "DL-7404",
-    status: "completed",
-    title: "Bosch Serie 6 — діагностика та чистка",
-    client: { name: "Тарас О.", avatarUrl: "https://i.pravatar.cc/120?img=21" },
-    priceKopecks: 45000,
-    createdAt: "2026-05-02",
-    deadlineHint: "завершено 4 травня",
-  },
-  {
-    id: "DL-7398",
-    status: "disputed",
-    title: "Siemens iQ500 — повторний ремонт",
-    client: { name: "Ірина Д." },
-    priceKopecks: 120000,
-    createdAt: "2026-04-28",
-    deadlineHint: "розгляд: подайте докази до 13 травня",
-  },
-];
+function shortDealId(id: string): string {
+  return `DL-${id.slice(0, 5).toUpperCase()}`;
+}
 
 type ListingRow = {
   id: string;
@@ -298,6 +274,7 @@ const KPIS: {
 export default function ProviderDashboardPage() {
   const [period, setPeriod] = React.useState<Period>("month");
   const auth = useRequireAuth();
+  const dealsState = useMyDeals({ role: "provider", limit: 20 });
 
   if (!auth) {
     // Loading or redirecting — show a minimal frame
@@ -405,7 +382,10 @@ export default function ProviderDashboardPage() {
           <section className="min-w-0">
             <Tabs defaultValue="deals">
               <TabsList>
-                <TabsTrigger value="deals" count={5}>
+                <TabsTrigger
+                  value="deals"
+                  count={dealsState.loading ? undefined : dealsState.total}
+                >
                   Угоди
                 </TabsTrigger>
                 <TabsTrigger value="listings" count={LISTINGS.length}>
@@ -417,19 +397,7 @@ export default function ProviderDashboardPage() {
               </TabsList>
 
               <TabsContent value="deals">
-                <div className="space-y-3 mt-2">
-                  {DEALS.map((d) => (
-                    <DealCard key={d.id} deal={d} />
-                  ))}
-                </div>
-                <div className="mt-6 flex items-center justify-end">
-                  <Button
-                    variant="link"
-                    rightIcon={<ChevronRight size={14} />}
-                  >
-                    Усі угоди (32)
-                  </Button>
-                </div>
+                <DealsTabContent state={dealsState} />
               </TabsContent>
 
               <TabsContent value="listings">
@@ -597,7 +565,78 @@ export default function ProviderDashboardPage() {
    Local components
    =========================================================== */
 
-function DealCard({ deal }: { deal: DealRow }) {
+function DealsTabContent({
+  state,
+}: {
+  state: ReturnType<typeof useMyDeals>;
+}) {
+  if (state.loading) {
+    return (
+      <div className="space-y-3 mt-2" aria-busy="true" aria-live="polite">
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className="border border-hairline rounded-[var(--radius-md)] bg-paper h-[96px] md:h-[104px] animate-pulse"
+          />
+        ))}
+      </div>
+    );
+  }
+  if (state.error) {
+    return (
+      <div className="mt-2">
+        <ErrorState
+          kind="server"
+          variant="inline"
+          description="Не вдалось завантажити список угод. Спробуйте оновити."
+          onRetry={state.refresh}
+        />
+      </div>
+    );
+  }
+  if (state.items.length === 0) {
+    return (
+      <div className="mt-2">
+        <EmptyState
+          numeral="00"
+          size="sm"
+          title="Ще немає угод"
+          description="Коли клієнт відправить замовлення на одну з ваших послуг, воно зʼявиться тут — спочатку як «очікує підтвердження»."
+          primaryAction={
+            <Button variant="accent" leftIcon={<Plus size={14} />}>
+              Нова послуга
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+  return (
+    <>
+      <div className="space-y-3 mt-2">
+        {state.items.map((d) => (
+          <DealCard key={d.id} deal={d} />
+        ))}
+      </div>
+      {state.nextCursor && (
+        <div className="mt-6 flex items-center justify-end">
+          <Button
+            variant="link"
+            rightIcon={<ChevronRight size={14} />}
+            onClick={state.loadMore}
+            disabled={state.loadingMore}
+          >
+            {state.loadingMore
+              ? "Завантаження…"
+              : `Ще угоди (${state.total - state.items.length})`}
+          </Button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function DealCard({ deal }: { deal: Deal }) {
   const [expanded, setExpanded] = React.useState(deal.status === "in_review");
 
   const statusTone =
@@ -624,6 +663,9 @@ function DealCard({ deal }: { deal: DealRow }) {
               ? "диспут"
               : "скасовано";
 
+  const deadlineHint = dealDeadlineHint(deal);
+  const shortId = shortDealId(deal.id);
+
   return (
     <article className="border border-hairline rounded-[var(--radius-md)] bg-paper overflow-hidden">
       <button
@@ -633,35 +675,35 @@ function DealCard({ deal }: { deal: DealRow }) {
         aria-expanded={expanded}
       >
         <Avatar
-          src={deal.client.avatarUrl}
-          alt={deal.client.name}
+          src={deal.client.avatar_url}
+          alt={deal.client.display_name}
           size="md"
           className="hidden md:block"
         />
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className="font-mono text-micro tracking-[0.18em] text-muted">
-              {deal.id}
+              {shortId}
             </span>
             <Badge tone={statusTone} size="sm" shape="square">
               {statusLabel}
             </Badge>
           </div>
           <h4 className="font-display text-body-lg text-ink leading-tight truncate">
-            {deal.title}
+            {deal.listing_title_snapshot}
           </h4>
           <p className="text-caption text-muted mt-0.5 truncate">
-            {deal.client.name} · {deal.deadlineHint}
+            {deal.client.display_name} · {deadlineHint}
           </p>
         </div>
         <div className="text-right hidden md:block shrink-0">
           <MoneyDisplay
-            kopecks={deal.priceKopecks}
+            kopecks={deal.budget_kopecks}
             emphasize
             className="font-display text-h3 text-ink leading-none"
           />
           <p className="font-mono text-micro tracking-[0.18em] text-muted mt-1">
-            від {new Date(deal.createdAt).toLocaleDateString("uk-UA", { day: "numeric", month: "short" })}
+            від {new Date(deal.created_at).toLocaleDateString("uk-UA", { day: "numeric", month: "short" })}
           </p>
         </div>
         <ChevronRight
@@ -681,67 +723,28 @@ function DealCard({ deal }: { deal: DealRow }) {
               <AlertTriangle size={16} className="text-danger shrink-0 mt-0.5" />
               <div className="min-w-0">
                 <p className="text-body text-ink leading-tight">
-                  Подайте докази до 13 травня
+                  Відкрито диспут — підготуйте докази
                 </p>
                 <p className="text-caption text-ink-soft mt-1">
-                  Інакше угода може бути вирішена на користь клієнта.
+                  Деталі та можливі дії — на сторінці угоди.
                 </p>
               </div>
             </div>
           )}
           <div className="flex flex-wrap gap-2">
-            {deal.status === "pending" && (
-              <>
-                <Button variant="accent" size="sm" leftIcon={<CheckCircle2 size={14} />}>
-                  Прийняти
-                </Button>
-                <Button variant="secondary" size="sm">
-                  Запропонувати корективи
-                </Button>
-                <Button variant="ghost" size="sm">
-                  Відхилити
-                </Button>
-              </>
-            )}
-            {deal.status === "active" && (
-              <>
-                <Button variant="accent" size="sm">
-                  Здати на перевірку
-                </Button>
-                <Button variant="secondary" size="sm">
-                  Чат
-                </Button>
-              </>
-            )}
-            {deal.status === "in_review" && (
-              <>
-                <Button variant="secondary" size="sm">
-                  Чат з клієнтом
-                </Button>
-                <Button variant="ghost" size="sm">
-                  Доступ до файлів
-                </Button>
-              </>
-            )}
+            <Button
+              variant="accent"
+              size="sm"
+              onClick={() => {
+                window.location.href = `/deals/${deal.id}`;
+              }}
+            >
+              Відкрити угоду
+            </Button>
             {deal.status === "completed" && (
-              <>
-                <Button variant="secondary" size="sm">
-                  Запросити відгук
-                </Button>
-                <Button variant="ghost" size="sm">
-                  Завантажити інвойс
-                </Button>
-              </>
-            )}
-            {deal.status === "disputed" && (
-              <>
-                <Button variant="accent" size="sm">
-                  Завантажити докази
-                </Button>
-                <Button variant="secondary" size="sm">
-                  Відкрити обговорення
-                </Button>
-              </>
+              <Button variant="ghost" size="sm">
+                Завантажити інвойс
+              </Button>
             )}
           </div>
         </div>

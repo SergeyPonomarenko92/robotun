@@ -159,6 +159,121 @@ export function useDeal(id: string | null | undefined): DealState {
 }
 
 /* =====================================================================
+   useMyDeals — list hook for the caller's own deals (provider-dashboard,
+   client "my deals" view). Wraps GET /users/me/deals with role + status
+   filters and cursor pagination.
+   ===================================================================== */
+export type MyDealsFilters = {
+  role?: "client" | "provider" | "any";
+  status?: DealStatus[];
+  limit?: number;
+};
+
+type MyDealsState = {
+  items: Deal[];
+  total: number;
+  nextCursor: string | null;
+  loading: boolean;
+  loadingMore: boolean;
+  error: Error | null;
+};
+
+const MY_DEALS_INITIAL: MyDealsState = {
+  items: [],
+  total: 0,
+  nextCursor: null,
+  loading: true,
+  loadingMore: false,
+  error: null,
+};
+
+export function useMyDeals(filters: MyDealsFilters = {}) {
+  const { role = "any", status, limit = 20 } = filters;
+  const statusKey = status?.slice().sort().join(",") ?? "";
+  const [state, setState] = React.useState<MyDealsState>(MY_DEALS_INITIAL);
+  const [refreshTick, setRefreshTick] = React.useState(0);
+
+  const buildQuery = React.useCallback(
+    (cursor?: string | null) => {
+      const qs = new URLSearchParams();
+      if (role && role !== "any") qs.set("role", role);
+      if (status && status.length) qs.set("status", status.join(","));
+      qs.set("limit", String(limit));
+      if (cursor) qs.set("cursor", cursor);
+      return qs.toString();
+    },
+    [role, statusKey, limit] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setState(MY_DEALS_INITIAL);
+    (async () => {
+      try {
+        const data = await apiFetch<{
+          items: Deal[];
+          next_cursor: string | null;
+          total: number;
+        }>(`/users/me/deals?${buildQuery(null)}`);
+        if (cancelled) return;
+        setState({
+          items: data.items,
+          total: data.total,
+          nextCursor: data.next_cursor,
+          loading: false,
+          loadingMore: false,
+          error: null,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setState({
+          items: [],
+          total: 0,
+          nextCursor: null,
+          loading: false,
+          loadingMore: false,
+          error: err as Error,
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [buildQuery, refreshTick]);
+
+  const loadMore = React.useCallback(async () => {
+    setState((s) =>
+      s.loading || s.loadingMore || !s.nextCursor
+        ? s
+        : { ...s, loadingMore: true }
+    );
+    try {
+      const cursor = state.nextCursor;
+      if (!cursor) return;
+      const data = await apiFetch<{
+        items: Deal[];
+        next_cursor: string | null;
+        total: number;
+      }>(`/users/me/deals?${buildQuery(cursor)}`);
+      setState((s) => ({
+        ...s,
+        items: [...s.items, ...data.items],
+        nextCursor: data.next_cursor,
+        loadingMore: false,
+      }));
+    } catch (err) {
+      setState((s) => ({ ...s, loadingMore: false, error: err as Error }));
+    }
+  }, [buildQuery, state.nextCursor]);
+
+  const refresh = React.useCallback(() => {
+    setRefreshTick((t) => t + 1);
+  }, []);
+
+  return { ...state, loadMore, refresh };
+}
+
+/* =====================================================================
    State transition actions — wraps POST /deals/:id/transition.
    ===================================================================== */
 export type DealAction =

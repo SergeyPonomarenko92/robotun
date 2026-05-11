@@ -104,6 +104,24 @@ export const dealsStore = {
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
   },
+  /** "My deals" list for a caller: deals where caller is client OR provider.
+   *  Demo override: a seeded provider user (whose UUID does not match any
+   *  synthetic listing.provider_id) cannot otherwise see pending deals it
+   *  hasn't accepted yet. Pass `demoActAsProvider=true` to widen the result
+   *  to ALL deals — mirrors the override in `transition()`. Real backend has
+   *  a real FK and does not need this. */
+  forCaller(callerId: string, demoActAsProvider = false): MockDeal[] {
+    const all = Array.from(db().values());
+    const filtered = demoActAsProvider
+      ? all
+      : all.filter(
+          (d) => d.client_id === callerId || d.provider_id === callerId
+        );
+    return filtered.sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+  },
   /** Module 3 §4.5 transitions (mock — happy-path subset).
    *  pending → active     (provider: accept)
    *  pending → cancelled  (provider: reject  |  client: cancel)
