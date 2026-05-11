@@ -1,0 +1,145 @@
+"use client";
+import * as React from "react";
+import { apiFetch, ApiError } from "./api";
+
+export type WalletBalance = {
+  available_kopecks: number;
+  held_kopecks: number;
+  pending_payout_kopecks: number;
+};
+
+export type LedgerKind =
+  | "hold"
+  | "capture"
+  | "fee"
+  | "refund"
+  | "payout_request"
+  | "payout_paid";
+
+export type Transaction = {
+  id: string;
+  user_id: string;
+  bucket: "held" | "available" | "pending_payout";
+  amount_kopecks: number;
+  kind: LedgerKind;
+  created_at: string;
+  deal_id?: string;
+  payout_id?: string;
+  memo: string;
+};
+
+/** Single-fetch wallet hook. Re-runs only when `refreshTick` changes. */
+export function useWallet(): {
+  data: WalletBalance | null;
+  loading: boolean;
+  error: Error | null;
+  refresh: () => void;
+} {
+  const [state, setState] = React.useState<{
+    data: WalletBalance | null;
+    loading: boolean;
+    error: Error | null;
+  }>({ data: null, loading: true, error: null });
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    apiFetch<WalletBalance>("/users/me/wallet")
+      .then((data) => {
+        if (!cancelled) setState({ data, loading: false, error: null });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) {
+          setState({ data: null, loading: false, error: err });
+        } else {
+          setState({ data: null, loading: false, error: err as Error });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tick]);
+  return { ...state, refresh: () => setTick((t) => t + 1) };
+}
+
+/** Recent operations list with cursor pagination. */
+export function useTransactions(opts: { limit?: number } = {}) {
+  const { limit = 10 } = opts;
+  const [state, setState] = React.useState<{
+    items: Transaction[];
+    total: number;
+    nextCursor: string | null;
+    loading: boolean;
+    loadingMore: boolean;
+    error: Error | null;
+  }>({
+    items: [],
+    total: 0,
+    nextCursor: null,
+    loading: true,
+    loadingMore: false,
+    error: null,
+  });
+  const [tick, setTick] = React.useState(0);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    apiFetch<{
+      items: Transaction[];
+      next_cursor: string | null;
+      total: number;
+    }>(`/users/me/transactions?limit=${limit}`)
+      .then((data) => {
+        if (cancelled) return;
+        setState({
+          items: data.items,
+          total: data.total,
+          nextCursor: data.next_cursor,
+          loading: false,
+          loadingMore: false,
+          error: null,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setState({
+          items: [],
+          total: 0,
+          nextCursor: null,
+          loading: false,
+          loadingMore: false,
+          error: err as Error,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [limit, tick]);
+
+  const loadMore = React.useCallback(async () => {
+    setState((s) =>
+      s.loading || s.loadingMore || !s.nextCursor
+        ? s
+        : { ...s, loadingMore: true }
+    );
+    try {
+      const data = await apiFetch<{
+        items: Transaction[];
+        next_cursor: string | null;
+        total: number;
+      }>(`/users/me/transactions?limit=${limit}&cursor=${encodeURIComponent(state.nextCursor!)}`);
+      setState((s) => ({
+        ...s,
+        items: [...s.items, ...data.items],
+        nextCursor: data.next_cursor,
+        loadingMore: false,
+      }));
+    } catch (err) {
+      setState((s) => ({ ...s, loadingMore: false, error: err as Error }));
+    }
+  }, [limit, state.nextCursor]);
+
+  return { ...state, loadMore, refresh: () => setTick((t) => t + 1) };
+}

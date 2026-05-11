@@ -48,6 +48,7 @@ import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader"
 import { useRequireAuth } from "@/lib/auth";
 import { useMyDeals } from "@/lib/deals";
 import type { Deal } from "@/lib/deals";
+import { useWallet, useTransactions, type Transaction } from "@/lib/payments";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Loader2 } from "lucide-react";
@@ -275,6 +276,8 @@ export default function ProviderDashboardPage() {
   const [period, setPeriod] = React.useState<Period>("month");
   const auth = useRequireAuth();
   const dealsState = useMyDeals({ role: "provider", limit: 20 });
+  const wallet = useWallet();
+  const transactions = useTransactions({ limit: 5 });
 
   if (!auth) {
     // Loading or redirecting — show a minimal frame
@@ -442,86 +445,21 @@ export default function ProviderDashboardPage() {
 
           {/* RIGHT: rail */}
           <aside className="space-y-6">
-            <WalletCard
-              data={{
-                availableKopecks: 420000,
-                heldKopecks: 280000,
-                pendingPayoutKopecks: 90000,
-              }}
-              onPayout={() => {}}
-              onTopUp={() => {}}
-            />
+            {wallet.loading || !wallet.data ? (
+              <div className="border border-hairline rounded-[var(--radius-md)] bg-paper h-[200px] animate-pulse" />
+            ) : (
+              <WalletCard
+                data={{
+                  availableKopecks: wallet.data.available_kopecks,
+                  heldKopecks: wallet.data.held_kopecks,
+                  pendingPayoutKopecks: wallet.data.pending_payout_kopecks,
+                }}
+                onPayout={() => {}}
+                onTopUp={() => {}}
+              />
+            )}
 
-            {/* Recent transactions */}
-            <section className="border border-hairline rounded-[var(--radius-md)] bg-paper">
-              <header className="px-5 py-4 border-b border-hairline flex items-center justify-between">
-                <h3 className="font-display text-body-lg text-ink leading-none">
-                  Останні операції
-                </h3>
-                <Button variant="link" size="sm">
-                  Усі
-                </Button>
-              </header>
-              <ul className="divide-y divide-hairline">
-                {[
-                  {
-                    label: "Виплата на ····3829",
-                    sub: "6 травня · payout",
-                    amount: -420000,
-                    icon: <ArrowUpRight size={14} />,
-                    tone: "neutral" as const,
-                  },
-                  {
-                    label: "Угода DL-7404 завершена",
-                    sub: "4 травня · capture",
-                    amount: 45000,
-                    icon: <CheckCircle2 size={14} />,
-                    tone: "success" as const,
-                  },
-                  {
-                    label: "Холд по DL-7438",
-                    sub: "3 травня · hold",
-                    amount: 60000,
-                    icon: <TrendingUp size={14} />,
-                    tone: "warning" as const,
-                  },
-                ].map((t, i) => (
-                  <li
-                    key={i}
-                    className="px-5 py-3 flex items-center gap-3"
-                  >
-                    <span
-                      className={[
-                        "h-7 w-7 inline-flex items-center justify-center rounded-[var(--radius-sm)] shrink-0",
-                        t.tone === "success"
-                          ? "bg-success-soft text-success"
-                          : t.tone === "warning"
-                            ? "bg-warning-soft text-warning"
-                            : "bg-canvas text-ink-soft",
-                      ].join(" ")}
-                      aria-hidden
-                    >
-                      {t.icon}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-body text-ink leading-tight truncate">
-                        {t.label}
-                      </p>
-                      <p className="text-caption text-muted">{t.sub}</p>
-                    </div>
-                    <div
-                      className={[
-                        "font-mono tabular-nums text-body shrink-0",
-                        t.amount > 0 ? "text-success" : "text-ink-soft",
-                      ].join(" ")}
-                    >
-                      {t.amount > 0 ? "+" : ""}
-                      <MoneyDisplay kopecks={Math.abs(t.amount)} />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
+            <TransactionsCard state={transactions} />
 
             {/* Notifications */}
             <section className="border border-hairline rounded-[var(--radius-md)] bg-paper overflow-hidden">
@@ -633,6 +571,128 @@ function DealsTabContent({
         </div>
       )}
     </>
+  );
+}
+
+function TransactionsCard({
+  state,
+}: {
+  state: ReturnType<typeof useTransactions>;
+}) {
+  return (
+    <section className="border border-hairline rounded-[var(--radius-md)] bg-paper">
+      <header className="px-5 py-4 border-b border-hairline flex items-center justify-between">
+        <h3 className="font-display text-body-lg text-ink leading-none">
+          Останні операції
+        </h3>
+        {state.nextCursor && !state.loading && (
+          <Button
+            variant="link"
+            size="sm"
+            onClick={state.loadMore}
+            disabled={state.loadingMore}
+          >
+            {state.loadingMore ? "…" : "Ще"}
+          </Button>
+        )}
+      </header>
+      {state.loading ? (
+        <ul className="divide-y divide-hairline">
+          {[0, 1, 2].map((i) => (
+            <li
+              key={i}
+              className="px-5 py-3 h-[64px] animate-pulse bg-paper"
+            />
+          ))}
+        </ul>
+      ) : state.error ? (
+        <div className="p-5">
+          <ErrorState
+            kind="server"
+            variant="inline"
+            description="Не вдалось завантажити операції."
+            onRetry={state.refresh}
+          />
+        </div>
+      ) : state.items.length === 0 ? (
+        <div className="p-6 text-center">
+          <p className="text-caption text-muted leading-relaxed">
+            Ще немає операцій. Вони зʼявляться, коли клієнти підтверджуватимуть
+            угоди та виплатиме платформа.
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-hairline">
+          {state.items.map((t) => (
+            <TransactionRow key={t.id} t={t} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function TransactionRow({ t }: { t: Transaction }) {
+  const tone =
+    t.kind === "capture"
+      ? "success"
+      : t.kind === "hold"
+        ? "warning"
+        : t.kind === "refund"
+          ? "danger"
+          : "neutral";
+  const icon =
+    t.kind === "capture" ? (
+      <CheckCircle2 size={14} />
+    ) : t.kind === "hold" ? (
+      <TrendingUp size={14} />
+    ) : t.kind === "refund" ? (
+      <AlertTriangle size={14} />
+    ) : (
+      <ArrowUpRight size={14} />
+    );
+  const created = new Date(t.created_at).toLocaleDateString("uk-UA", {
+    day: "numeric",
+    month: "short",
+  });
+  const signed = t.amount_kopecks;
+  return (
+    <li className="px-5 py-3 flex items-center gap-3">
+      <span
+        className={[
+          "h-7 w-7 inline-flex items-center justify-center rounded-[var(--radius-sm)] shrink-0",
+          tone === "success"
+            ? "bg-success-soft text-success"
+            : tone === "warning"
+              ? "bg-warning-soft text-warning"
+              : tone === "danger"
+                ? "bg-danger-soft text-danger"
+                : "bg-canvas text-ink-soft",
+        ].join(" ")}
+        aria-hidden
+      >
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-body text-ink leading-tight truncate">{t.memo}</p>
+        <p className="text-caption text-muted">
+          {created} · {t.kind} · {t.bucket}
+        </p>
+      </div>
+      <div
+        className={[
+          "font-mono tabular-nums text-body shrink-0",
+          signed > 0
+            ? "text-success"
+            : signed < 0
+              ? "text-ink-soft"
+              : "text-ink-soft",
+        ].join(" ")}
+      >
+        {signed > 0 ? "+" : signed < 0 ? "−" : ""}
+        <MoneyDisplay kopecks={Math.abs(signed)} />
+      </div>
+    </li>
   );
 }
 

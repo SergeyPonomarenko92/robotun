@@ -8,6 +8,8 @@
  * 'active'. KYC required for payout (Module 4), NOT for deal creation.
  */
 
+import { paymentHooks } from "./payments";
+
 export type DealStatus =
   | "pending"
   | "active"
@@ -179,10 +181,13 @@ export const dealsStore = {
         if (!isProvider) return { error: "forbidden" };
         if (d.status !== "pending") return { error: "invalid_state" };
         d.status = action === "accept" ? "active" : "cancelled";
-        if (action === "accept" && demoActAsProvider) {
-          // Persist the demo override so subsequent provider-only actions
-          // (submit) work without needing the override flag again.
-          d.provider_id = callerId;
+        if (action === "accept") {
+          if (demoActAsProvider) {
+            // Persist the demo override so subsequent provider-only actions
+            // (submit) work without needing the override flag again.
+            d.provider_id = callerId;
+          }
+          paymentHooks.onDealAccepted(d);
         }
         return d;
 
@@ -190,6 +195,7 @@ export const dealsStore = {
         if (!isClient) return { error: "forbidden" };
         if (d.status !== "pending") return { error: "invalid_state" };
         d.status = "cancelled";
+        // From pending: never had a hold (provider hadn't accepted yet).
         return d;
 
       case "submit":
@@ -202,6 +208,7 @@ export const dealsStore = {
         if (!isClient) return { error: "forbidden" };
         if (d.status !== "in_review") return { error: "invalid_state" };
         d.status = "completed";
+        paymentHooks.onDealCompleted(d);
         return d;
 
       case "dispute":
@@ -305,6 +312,9 @@ export function cancelRequestTransition(
       d.cancel_requested_by_provider_at
     ) {
       d.status = "cancelled";
+      // Hold was created on accept (status transitioned pending->active);
+      // mutual cancel from active → release it.
+      paymentHooks.onDealRefunded({ ...d, hadHold: true });
     }
     return d;
   }
