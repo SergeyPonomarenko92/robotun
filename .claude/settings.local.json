@@ -32,7 +32,21 @@
       "Bash(curl -s -o /dev/null -w \"HTTP=%{http_code}\\\\n\" http://localhost:3000/feed)",
       "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=3')",
       "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=3&city=%D0%9A%D0%B8%D1%97%D0%B2&kyc_only=true')",
-      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" 'http://localhost:3000/api/v1/feed?cursor=garbage')"
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" 'http://localhost:3000/api/v1/feed?cursor=garbage')",
+      "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=1')",
+      "Bash(curl -s -o /dev/null -w \"HTTP=%{http_code}\\\\n\" \"http://localhost:3000/listings/nope\")",
+      "Bash(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/__TRACKED_VAR__)",
+      "Bash(curl -s -X POST http://localhost:3000/api/v1/auth/login -H 'content-type: application/json' -d '{\"email\":\"client@robotun.dev\",\"password\":\"demo1234\"}')",
+      "Bash(curl -s -H \"authorization: Bearer $\\(curl -s -X POST http://localhost:3000/api/v1/auth/login -H 'content-type: application/json' -d '{\"email\":\"client@robotun.dev\",\"password\":\"demo1234\"}')",
+      "Bash(python3 -c 'import sys, json; d=json.loads\\(sys.stdin.read\\(\\)\\); print\\(\"client embed:\", d.get\\(\"client\"\\)\\); print\\(\"provider embed:\", d.get\\(\"provider\"\\)\\)')",
+      "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=15')",
+      "Bash(python3 -c ' *)",
+      "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=12')",
+      "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=2')",
+      "Bash(python3 -c \"import sys,json; d=json.loads\\(sys.stdin.read\\(\\)\\); [print\\(i, l['provider']['name'][:30]\\) for i,l in enumerate\\(d['items']\\)]\")",
+      "Bash(curl -s 'http://localhost:3000/api/v1/feed?limit=50')",
+      "Bash(curl -s -X POST http://localhost:3000/api/v1/auth/login -H 'content-type: application/json' -d '{\"email\":\"provider@robotun.dev\",\"password\":\"demo1234\"}')",
+      "Bash(python3 -c \"import sys,json; print\\(json.loads\\(sys.stdin.read\\(\\)\\)['id']\\)\")"
     ]
   }
 }

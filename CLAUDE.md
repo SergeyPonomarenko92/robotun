@@ -13,25 +13,40 @@ Established decisions (do not re-litigate without cause):
 
 ## Subagents
 
-Two project-scoped subagents live in [`.claude/agents/`](./.claude/agents/):
+Project-scoped subagents live in [`.claude/agents/`](./.claude/agents/):
 
+**Spec track** (backend / system design):
 - **`architect`** — proposes design decisions (schemas, APIs, state machines). Output is `[DECISION]` blocks.
 - **`critic`** — adversarial review of ARCHITECT proposals. Output is `[RISK]` blocks + a verdict (`ACCEPT` / `ACCEPT WITH REFINEMENTS` / `REJECT`). Read-only tools by design.
+
+**Frontend track** (UI/UX implementation):
+- **`fe-designer`** — Senior Design Engineer / lead designer. Proposes UI/UX solutions: layouts, components, interactions, copy. Output is `[PROPOSAL]` blocks with production-ready TSX/Tailwind. **MUST activate the `frontend-design` skill** before producing a proposal.
+- **`fe-critic`** — Senior FE Engineer / UX-risk analyst. Adversarial review of FE-DESIGNER proposals. Output is `[RISK]` blocks (and optional `[COUNTER-PROPOSAL]` blocks) + a verdict (`ACCEPT` / `ACCEPT WITH REFINEMENTS` / `REJECT`). Read-only tools by design. Has access to the same `frontend-design` skill as a shared principles base.
+
+Both FE agents — and the coordinator — share access to the `frontend-design` skill in [`.claude/skills/frontend-design/`](./.claude/skills/frontend-design/). The skill is the canonical source for design methodology; `fe-designer` invokes it on every task, `fe-critic` invokes it on every review, and the coordinator invokes it when implementing the chosen decision.
 
 ### Orchestration protocol
 
 Subagents do not talk to each other — each invocation is isolated and returns one message to the coordinator (the main session). The coordinator relays context between them.
 
-For every new spec module, run this loop:
+**Spec loop** — for every new spec module:
 
 1. **Propose** — call `architect` with the module scope and project context. Capture its `[DECISION]` blocks verbatim.
 2. **Critique** — call `critic` with the **full ARCHITECT output pasted verbatim** into the prompt (subagents start cold, no shared history). Capture `[RISK]` blocks and the verdict.
 3. **Refine** — only if verdict is `REJECT` or `ACCEPT WITH REFINEMENTS`. Call `architect` again with both the original proposal and the critique, asking it to refine *only the flagged decisions*.
 4. **Finalize** — the coordinator synthesizes the final `[DECISION]` + `[RISK]` set and calls `/create-specification`.
 
+**Frontend loop** — for every FE step (new page / new component / non-trivial UI refactor):
+
+1. **Propose** — call `fe-designer` with the step scope, the targeted spec module(s), and links to existing components to reuse. Capture `[PROPOSAL]` blocks verbatim.
+2. **Critique** — call `fe-critic` with the **full FE-DESIGNER output pasted verbatim**. Capture `[RISK]` (and `[COUNTER-PROPOSAL]`) blocks + verdict.
+3. **Decide** — the coordinator (main session) reads both, chooses the best path (accept proposal, accept with selected refinements, or accept a counter-proposal), and states the chosen decision explicitly before implementing.
+4. **Implement** — the coordinator writes the code itself (subagents do not implement). Smoke test + commit + push per the auto-commit feedback memory.
+5. **Next step** — coordinator delegates the next FE step back to `fe-designer` with context from the previous decision. Loop.
+
 **Stopping rule:** stop at `ACCEPT`, or at `ACCEPT WITH REFINEMENTS` once every flagged risk has a matching refinement. Hard cap: two refinement rounds — if it still hasn't converged, escalate to the user rather than looping further.
 
-**Tradeoff acknowledged:** passing ARCHITECT's full output into CRITIC's prompt costs tokens but preserves independent judgment. The coordinator must NOT summarize or pre-filter the proposal before handing it to CRITIC.
+**Tradeoff acknowledged:** passing the proposer's full output into the critic's prompt costs tokens but preserves independent judgment. The coordinator must NOT summarize or pre-filter the proposal before handing it to the critic.
 
 ## Spec workflow
 
