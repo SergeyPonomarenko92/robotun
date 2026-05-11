@@ -245,12 +245,30 @@ export function requestPayout(
   return payout;
 }
 
+/** List all payouts (admin view), newest first. Real backend would
+ *  enforce admin role; mock just returns the rows. */
+export function listAllPayouts(): MockPayout[] {
+  return Array.from(payoutDb().values()).sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+}
+
+export function findPayout(payoutId: string): MockPayout | null {
+  return payoutDb().get(payoutId) ?? null;
+}
+
+export type CompletePayoutError = "not_found" | "already_paid" | "failed_terminal";
+
 /** Demo PSP completion — moves pending_payout -> 0 (cleared, paid).
- *  Not exposed via REST in MVP, available for fixture scripts. */
-export function completePayout(payoutId: string): MockPayout | null {
+ *  Idempotent: returns already_paid if already paid. */
+export function completePayout(
+  payoutId: string
+): MockPayout | { error: CompletePayoutError } {
   const p = payoutDb().get(payoutId);
-  if (!p) return null;
-  if (p.status !== "requested" && p.status !== "processing") return p;
+  if (!p) return { error: "not_found" };
+  if (p.status === "paid") return { error: "already_paid" };
+  if (p.status === "failed") return { error: "failed_terminal" };
   p.status = "paid";
   p.paid_at = new Date().toISOString();
   post({

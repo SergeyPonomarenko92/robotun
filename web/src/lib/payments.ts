@@ -25,6 +25,83 @@ export type PayoutError = {
   status: number;
 };
 
+export type AdminPayoutRow = Payout & {
+  payee: { id: string; display_name: string; avatar_url?: string };
+};
+
+export function useAdminPayouts() {
+  const [state, setState] = React.useState<{
+    items: AdminPayoutRow[];
+    total: number;
+    loading: boolean;
+    error: Error | null;
+  }>({ items: [], total: 0, loading: true, error: null });
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    apiFetch<{ items: AdminPayoutRow[]; total: number }>("/admin/payouts")
+      .then((d) => {
+        if (!cancelled)
+          setState({ items: d.items, total: d.total, loading: false, error: null });
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setState({ items: [], total: 0, loading: false, error: err as Error });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tick]);
+  return { ...state, refresh: () => setTick((t) => t + 1) };
+}
+
+export async function completePayout(
+  payoutId: string,
+  mfa: { mfa_challenge_id: string; mfa_code: string }
+): Promise<
+  | { ok: true; payout: Payout }
+  | { ok: false; error: { message: string; status: number; code?: string } }
+> {
+  try {
+    const payout = await apiFetch<Payout>(
+      `/admin/payouts/${encodeURIComponent(payoutId)}/complete`,
+      { method: "POST", body: JSON.stringify(mfa) }
+    );
+    return { ok: true, payout };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const body = e.body as { error?: string } | null;
+      const code = body?.error;
+      const mfaCopy: Record<string, string> = {
+        mfa_missing: "Спочатку отримайте код підтвердження",
+        mfa_not_found: "Код підтвердження не знайдено",
+        mfa_expired: "Код підтвердження прострочений",
+        mfa_consumed: "Код вже використано",
+        mfa_wrong_admin: "Код не належить вашій сесії",
+        mfa_code_invalid: "Невірний код підтвердження",
+      };
+      const message =
+        e.status === 403 && code && code in mfaCopy
+          ? mfaCopy[code]
+          : e.status === 403
+            ? "Лише адміністратор може закривати виплати"
+            : code === "already_paid"
+              ? "Виплату вже зараховано"
+              : code === "failed_terminal"
+                ? "Виплата у фінальному стані «помилка», її не можна закрити"
+                : e.status === 404
+                  ? "Виплату не знайдено"
+                  : "Сервіс тимчасово недоступний";
+      return { ok: false, error: { message, status: e.status, code } };
+    }
+    return {
+      ok: false,
+      error: { message: "Не вдалось підключитись", status: 0 },
+    };
+  }
+}
+
 export async function requestPayout(
   amountKopecks: number
 ): Promise<{ ok: true; payout: Payout } | { ok: false; error: PayoutError }> {
