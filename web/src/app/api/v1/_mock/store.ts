@@ -88,6 +88,20 @@ function bootstrap() {
       mfa_enrolled: true,
       ver: 1,
     },
+    {
+      email: "admin@robotun.dev",
+      password: "demo1234",
+      display_name: "Admin · Robotun",
+      avatar_url: "https://i.pravatar.cc/120?img=15",
+      email_verified: true,
+      status: "active",
+      roles: ["admin"],
+      kyc_status: "none",
+      payout_enabled: false,
+      has_provider_role: false,
+      mfa_enrolled: true,
+      ver: 1,
+    },
   ];
   for (const u of seed) {
     const id = uuid();

@@ -40,8 +40,34 @@ export type Deal = {
   cancel_requested_by_client_at: string | null;
   cancel_requested_by_provider_at: string | null;
   cancel_request_reason: string | null;
+  dispute_evidence_client: DealEvidence | null;
+  dispute_evidence_provider: DealEvidence | null;
+  dispute_evidence_visibility: "open" | "redacted" | "revealed";
+  dispute_resolution: DealResolution | null;
   client: DealParty;
   provider: DealParty;
+};
+
+export type DisputeReason =
+  | "not_delivered"
+  | "partial_work"
+  | "wrong_quality"
+  | "out_of_scope"
+  | "client_withdrew"
+  | "other";
+
+export type DealEvidence = {
+  reason: DisputeReason;
+  statement: string;
+  attachment_ids: string[];
+  submitted_at: string;
+};
+
+export type DealResolution = {
+  verdict: "refund_client" | "release_to_provider";
+  resolver_admin_id: string;
+  reason: string;
+  resolved_at: string;
 };
 
 export type CreateDealInput = {
@@ -331,6 +357,136 @@ export async function cancelRequest(
       error: { message: "Не вдалось підключитись", status: 0 },
     };
   }
+}
+
+/* =====================================================================
+   Module 14 — dispute evidence + admin resolution.
+   ===================================================================== */
+
+export type SubmitEvidenceInput = {
+  reason: DisputeReason;
+  statement: string;
+  attachment_ids?: string[];
+};
+
+export type SubmitEvidenceError = {
+  message: string;
+  fields?: Record<string, string>;
+  status: number;
+};
+
+export async function submitDisputeEvidence(
+  dealId: string,
+  input: SubmitEvidenceInput
+): Promise<
+  | { ok: true; deal: Deal }
+  | { ok: false; error: SubmitEvidenceError }
+> {
+  try {
+    const deal = await apiFetch<Deal>(
+      `/deals/${encodeURIComponent(dealId)}/dispute-evidence`,
+      { method: "POST", body: JSON.stringify(input) }
+    );
+    return { ok: true, deal };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const body = e.body as
+        | { error?: string; fields?: Record<string, string> }
+        | null;
+      const code = body?.error;
+      const message =
+        e.status === 401
+          ? "Потрібно увійти знову"
+          : e.status === 403
+            ? "Ви не сторона цієї угоди"
+            : e.status === 404
+              ? "Угоду не знайдено"
+              : code === "already_submitted"
+                ? "Ви вже надіслали свої свідчення"
+                : code === "invalid_state"
+                  ? "Угода не у стані диспуту"
+                  : code === "validation_failed"
+                    ? "Перевірте поля форми"
+                    : "Сервіс тимчасово недоступний";
+      return {
+        ok: false,
+        error: { message, fields: body?.fields, status: e.status },
+      };
+    }
+    return {
+      ok: false,
+      error: { message: "Не вдалось підключитись", status: 0 },
+    };
+  }
+}
+
+export type ResolveDisputeInput = {
+  verdict: "refund_client" | "release_to_provider";
+  reason: string;
+};
+
+export async function resolveDispute(
+  dealId: string,
+  input: ResolveDisputeInput
+): Promise<
+  { ok: true; deal: Deal } | { ok: false; error: { message: string; status: number } }
+> {
+  try {
+    const deal = await apiFetch<Deal>(
+      `/admin/disputes/${encodeURIComponent(dealId)}/resolve`,
+      { method: "POST", body: JSON.stringify(input) }
+    );
+    return { ok: true, deal };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const body = e.body as { error?: string } | null;
+      const message =
+        e.status === 401
+          ? "Потрібно увійти знову"
+          : e.status === 403
+            ? "Лише адміністратор може закривати диспут"
+            : e.status === 404
+              ? "Угоду не знайдено"
+              : body?.error === "validation_failed"
+                ? "Перевірте поля форми"
+                : body?.error === "invalid_state"
+                  ? "Угода вже не в диспуті"
+                  : "Сервіс тимчасово недоступний";
+      return { ok: false, error: { message, status: e.status } };
+    }
+    return {
+      ok: false,
+      error: { message: "Не вдалось підключитись", status: 0 },
+    };
+  }
+}
+
+/** Admin queue list. */
+export function useDisputedDeals() {
+  const [state, setState] = React.useState<{
+    items: Deal[];
+    total: number;
+    loading: boolean;
+    error: Error | null;
+  }>({ items: [], total: 0, loading: true, error: null });
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true }));
+    apiFetch<{ items: Deal[]; total: number }>("/admin/disputes")
+      .then((d) => {
+        if (!cancelled)
+          setState({ items: d.items, total: d.total, loading: false, error: null });
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setState({ items: [], total: 0, loading: false, error: err as Error });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tick]);
+  return { ...state, refresh: () => setTick((t) => t + 1) };
 }
 
 export async function transitionDeal(

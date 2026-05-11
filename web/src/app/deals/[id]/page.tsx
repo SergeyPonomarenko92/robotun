@@ -32,10 +32,12 @@ import {
   useDeal,
   transitionDeal,
   cancelRequest,
+  submitDisputeEvidence,
   type Deal,
   type DealAction,
+  type DisputeReason,
 } from "@/lib/deals";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ScrollText, Gavel } from "lucide-react";
 
 export default function DealPage() {
   const auth = useRequireAuth("/login");
@@ -310,6 +312,18 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
                 </>
               )}
             </InlineAlert>
+          </div>
+        )}
+
+        {/* Dispute panel — appears once deal hits 'disputed' until resolution */}
+        {current.status === "disputed" && role !== "admin" && (
+          <div className="mb-10">
+            <DisputePanel
+              deal={current}
+              role={role}
+              onSubmitted={setCurrent}
+              onError={setActionError}
+            />
           </div>
         )}
 
@@ -685,6 +699,207 @@ function PartyCard({
           </Badge>
         )}
       </div>
+    </div>
+  );
+}
+
+const REASON_LABELS: Record<DisputeReason, string> = {
+  not_delivered: "Послугу не надано",
+  partial_work: "Виконано частково",
+  wrong_quality: "Якість не відповідає опису",
+  out_of_scope: "Виконано не те, що домовлялись",
+  client_withdrew: "Клієнт відмовився прийняти",
+  other: "Інше",
+};
+
+function DisputePanel({
+  deal,
+  role,
+  onSubmitted,
+  onError,
+}: {
+  deal: Deal;
+  role: "client" | "provider";
+  onSubmitted: (d: Deal) => void;
+  onError: (msg: string | null) => void;
+}) {
+  const myEvidence =
+    role === "client" ? deal.dispute_evidence_client : deal.dispute_evidence_provider;
+  const counterEvidence =
+    role === "client" ? deal.dispute_evidence_provider : deal.dispute_evidence_client;
+  const counterLabel = role === "client" ? "Виконавець" : "Клієнт";
+
+  const [reason, setReason] = React.useState<DisputeReason>("partial_work");
+  const [statement, setStatement] = React.useState("");
+  const [fields, setFields] = React.useState<Record<string, string> | null>(null);
+  const [busy, setBusy] = React.useState(false);
+
+  const submit = async () => {
+    if (busy) return;
+    onError(null);
+    setBusy(true);
+    const result = await submitDisputeEvidence(deal.id, {
+      reason,
+      statement,
+    });
+    setBusy(false);
+    if (result.ok) {
+      onSubmitted(result.deal);
+      setFields(null);
+    } else {
+      setFields(result.error.fields ?? null);
+      if (!result.error.fields) onError(result.error.message);
+    }
+  };
+
+  return (
+    <article className="border border-hairline rounded-[var(--radius-md)] bg-paper overflow-hidden">
+      <header className="px-5 md:px-6 py-4 border-b border-hairline flex items-center gap-2">
+        <Gavel size={14} className="text-danger" />
+        <h2 className="font-display text-body-lg text-ink leading-none">
+          Диспут відкрито
+        </h2>
+        <span className="ml-auto font-mono text-micro uppercase tracking-[0.18em] text-muted">
+          обидві сторони подають докази
+        </span>
+      </header>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-hairline">
+        <EvidenceSlot
+          title="Ваша позиція"
+          you
+          evidence={myEvidence}
+          formArea={
+            !myEvidence ? (
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+                    Причина
+                  </span>
+                  <select
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value as DisputeReason)}
+                    className="mt-2 w-full rounded-[var(--radius-sm)] border border-hairline bg-paper px-3 py-2 text-body text-ink focus:outline-none focus:border-accent"
+                  >
+                    {(Object.keys(REASON_LABELS) as DisputeReason[]).map((r) => (
+                      <option key={r} value={r}>
+                        {REASON_LABELS[r]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+                    Опис ситуації (30–4000)
+                  </span>
+                  <textarea
+                    value={statement}
+                    onChange={(e) => setStatement(e.target.value)}
+                    rows={5}
+                    maxLength={4000}
+                    placeholder="Опишіть факти своєї версії: коли, де, що сталося, як спробували вирішити."
+                    className={[
+                      "mt-2 w-full rounded-[var(--radius-sm)] border bg-paper px-3 py-2 text-body text-ink resize-none focus:outline-none placeholder:text-muted-soft",
+                      fields?.statement
+                        ? "border-danger focus:border-danger"
+                        : "border-hairline focus:border-accent",
+                    ].join(" ")}
+                  />
+                  <p className="mt-1 text-caption text-muted">
+                    {statement.length} / 4000
+                  </p>
+                  {fields?.statement && (
+                    <p className="mt-1 text-caption text-danger">
+                      {fields.statement === "statement_too_short"
+                        ? "Мінімум 30 символів"
+                        : "Опис задовгий"}
+                    </p>
+                  )}
+                </label>
+                <Button
+                  variant="danger"
+                  loading={busy}
+                  onClick={submit}
+                  disabled={statement.trim().length < 30}
+                >
+                  Надіслати свідчення
+                </Button>
+              </div>
+            ) : null
+          }
+        />
+        <EvidenceSlot
+          title={`Позиція: ${counterLabel}`}
+          evidence={
+            deal.dispute_evidence_visibility === "redacted" && counterEvidence
+              ? null
+              : counterEvidence
+          }
+          redactedHint={
+            !counterEvidence
+              ? `${counterLabel} ще не надав свідчень. Спливає протягом 3 днів — інакше адмін перейде до рішення без них.`
+              : deal.dispute_evidence_visibility === "redacted"
+                ? `${counterLabel} вже надав свідчення. Вони відкриються після того, як ви теж їх надішлете, або через 3 дні.`
+                : undefined
+          }
+        />
+      </div>
+
+      <footer className="px-5 md:px-6 py-4 border-t border-hairline flex items-center gap-2">
+        <ScrollText size={14} className="text-muted" />
+        <p className="text-caption text-muted leading-relaxed">
+          Адміністратор отримає обидві позиції і визначить, як розподілити
+          ескроу. Рішення завершує угоду.
+        </p>
+      </footer>
+    </article>
+  );
+}
+
+function EvidenceSlot({
+  title,
+  evidence,
+  formArea,
+  redactedHint,
+  you,
+}: {
+  title: string;
+  evidence?: Deal["dispute_evidence_client"];
+  formArea?: React.ReactNode;
+  redactedHint?: string;
+  you?: boolean;
+}) {
+  return (
+    <div className="p-5 md:p-6">
+      <div className="flex items-baseline justify-between mb-4">
+        <h3 className="font-display text-body-lg text-ink leading-none">
+          {title}
+        </h3>
+        {you && (
+          <span className="font-mono text-micro uppercase tracking-[0.18em] text-accent">
+            ви
+          </span>
+        )}
+      </div>
+      {evidence ? (
+        <>
+          <p className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+            {REASON_LABELS[evidence.reason]}
+          </p>
+          <p className="mt-3 text-body text-ink-soft leading-relaxed whitespace-pre-line">
+            {evidence.statement}
+          </p>
+          <p className="mt-3 text-caption text-muted">
+            Надіслано {new Date(evidence.submitted_at).toLocaleString("uk-UA")}
+          </p>
+        </>
+      ) : formArea ? (
+        formArea
+      ) : (
+        <p className="text-caption text-muted leading-relaxed">
+          {redactedHint ?? "Очікуємо свідчення."}
+        </p>
+      )}
     </div>
   );
 }
