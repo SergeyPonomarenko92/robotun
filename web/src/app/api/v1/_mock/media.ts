@@ -39,6 +39,7 @@ export type MockMediaObject = {
   deleted_at: string | null;
   created_at: string;
   dispute_evidence_id: string | null;
+  listing_id: string | null;
 };
 
 declare global {
@@ -174,6 +175,7 @@ export function initiateUpload(params: {
     deleted_at: null,
     created_at,
     dispute_evidence_id: null,
+    listing_id: null,
   });
   return {
     ok: true,
@@ -252,12 +254,30 @@ export type StreamResult =
 
 export function streamBlob(
   media_id: string,
-  caller_user_id: string,
+  caller_user_id: string | null,
   isAdmin = false
 ): StreamResult {
   const obj = mediaStore.objects.get(media_id);
   if (!obj || obj.status === "deleted") return { ok: false, error: "not_found" };
-  const authorized = isAdmin || obj.uploader_user_id === caller_user_id;
+  // Per-purpose authorization (spec §4.5.3):
+  //  listing_cover/listing_gallery → public iff listing.status='active'; mock
+  //    treats them as public regardless (listings in mock are immediately
+  //    active). Real backend joins listings.status before serving.
+  //  avatar → public.
+  //  dispute_evidence / listing_attachment / kyc_document → owner-only
+  //    (admin allowed for dispute_evidence; KYC reviewer in Step 3).
+  let authorized: boolean;
+  if (
+    obj.purpose === "listing_cover" ||
+    obj.purpose === "listing_gallery" ||
+    obj.purpose === "avatar"
+  ) {
+    authorized = true;
+  } else {
+    authorized =
+      isAdmin ||
+      (caller_user_id !== null && obj.uploader_user_id === caller_user_id);
+  }
   if (!authorized) return { ok: false, error: "not_found" };
   const buffer = mediaStore.blobs.get(media_id);
   if (!buffer) return { ok: false, error: "blob_missing" };
@@ -313,5 +333,38 @@ export function backfillDisputeEvidenceFk(ids: readonly string[], dispute_eviden
   for (const id of ids) {
     const obj = mediaStore.objects.get(id);
     if (obj) obj.dispute_evidence_id = dispute_evidence_id;
+  }
+}
+
+/**
+ * Validate listing-bound attachments (cover OR gallery purpose accepted).
+ * Wired from POST /listings. Mirrors spec §4.1.1 listing media ownership +
+ * purpose contract.
+ */
+export function validateListingAttachments(
+  ids: readonly string[],
+  caller_user_id: string
+): AttachmentValidation {
+  const invalid: string[] = [];
+  for (const id of ids) {
+    const obj = mediaStore.objects.get(id);
+    if (
+      !obj ||
+      obj.uploader_user_id !== caller_user_id ||
+      (obj.purpose !== "listing_gallery" && obj.purpose !== "listing_cover") ||
+      obj.status !== "ready"
+    ) {
+      invalid.push(id);
+    }
+  }
+  if (invalid.length > 0) return { valid: false, invalid_ids: invalid };
+  return { valid: true };
+}
+
+/** Listing-id back-fill on each media row after the listing row is inserted. */
+export function backfillListingIdFk(ids: readonly string[], listing_id: string) {
+  for (const id of ids) {
+    const obj = mediaStore.objects.get(id);
+    if (obj) obj.listing_id = listing_id;
   }
 }

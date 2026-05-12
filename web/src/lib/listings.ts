@@ -19,7 +19,7 @@ export type CreateListingInput = {
   price_amount_kopecks: number;
   escrow_deposit?: boolean;
   response_sla_minutes?: number;
-  gallery: { src: string; alt?: string; is_cover?: boolean }[];
+  gallery: { media_id: string; alt?: string; is_cover?: boolean }[];
 };
 
 export type ListingDetail = {

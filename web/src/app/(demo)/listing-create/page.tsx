@@ -28,10 +28,8 @@ import {
 } from "@/components/ui/CategoryPicker";
 import { useCategories } from "@/lib/categories";
 import { MoneyInput, MoneyDisplay } from "@/components/ui/MoneyInput";
-import {
-  FileUploader,
-  type UploadedFile,
-} from "@/components/ui/FileUploader";
+import { FileUploader } from "@/components/ui/FileUploader";
+import { useUploader, getMediaStreamUrl } from "@/lib/media";
 import {
   AttachmentGallery,
   type GalleryItem,
@@ -90,6 +88,8 @@ const FIELD_ERROR_COPY: Record<string, string> = {
   gallery_required: "Додайте принаймні одну фотографію",
   gallery_too_many: "Не більше 10 фотографій",
   cover_required: "Позначте обкладинку",
+  gallery_invalid: "Перевірте додані файли",
+  invalid_attachments: "Один або кілька файлів недійсні — видаліть та додайте знову",
 };
 
 const PRESET_TAGS = [
@@ -152,25 +152,46 @@ export default function ListingCreateWizard() {
   const [tags, setTags] = React.useState<string[]>(["виїзд", "гарантія"]);
   const [tagDraft, setTagDraft] = React.useState("");
 
-  const [files, setFiles] = React.useState<UploadedFile[]>([]);
-  const [gallery, setGallery] = React.useState<GalleryItem[]>([
-    {
-      id: "g1",
-      src: "https://images.unsplash.com/photo-1581092335397-9583eb92d232?w=800&q=70",
-      alt: "Майстер з пральною машиною",
-      isCover: true,
-    },
-    {
-      id: "g2",
-      src: "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=70",
-      alt: "Сервіс",
-    },
-    {
-      id: "g3",
-      src: "https://images.unsplash.com/photo-1581092580497-e0d23cbdf1dc?w=800&q=70",
-      alt: "Інструмент",
-    },
-  ]);
+  // Gallery is derived from the uploader: each successfully-uploaded file
+  // becomes a GalleryItem keyed by its localId. We track cover + order locally
+  // since the uploader is a pure primitive.
+  const uploader = useUploader({ purpose: "listing_gallery", maxFiles: 10 });
+  const [coverLocalId, setCoverLocalId] = React.useState<string | null>(null);
+  const [order, setOrder] = React.useState<string[]>([]);
+
+  // Keep the local order array in sync with uploader.files: append new ids,
+  // drop removed ones. Cover auto-elects the first ready file if none picked.
+  React.useEffect(() => {
+    const presentIds = new Set(uploader.files.map((f) => f.id));
+    setOrder((prev) => {
+      const cleaned = prev.filter((id) => presentIds.has(id));
+      const appended = uploader.files
+        .map((f) => f.id)
+        .filter((id) => !cleaned.includes(id));
+      return [...cleaned, ...appended];
+    });
+    if (coverLocalId && !presentIds.has(coverLocalId)) {
+      setCoverLocalId(null);
+    }
+  }, [uploader.files, coverLocalId]);
+
+  const gallery: GalleryItem[] = React.useMemo(() => {
+    const byId = new Map(uploader.files.map((f) => [f.id, f]));
+    const out: GalleryItem[] = [];
+    for (const localId of order) {
+      const f = byId.get(localId);
+      if (!f || f.status !== "ready") continue;
+      const mid = uploader.getMediaId(localId);
+      if (!mid) continue;
+      out.push({
+        id: localId,
+        src: getMediaStreamUrl(mid),
+        alt: f.file.name,
+        isCover: localId === coverLocalId,
+      });
+    }
+    return out;
+  }, [uploader, order, coverLocalId]);
 
   const [priceModel, setPriceModel] = React.useState<PriceModel>("visit");
   const [priceKopecks, setPriceKopecks] = React.useState<number | null>(32000);
@@ -194,7 +215,10 @@ export default function ListingCreateWizard() {
   {
     const e: string[] = [];
     if (gallery.length < 1) e.push("Потрібна щонайменше 1 фотографія");
-    if (!gallery.some((g) => g.isCover)) e.push("Позначте обкладинку");
+    else if (!gallery.some((g) => g.isCover))
+      e.push("Позначте обкладинку");
+    if (uploader.uploading) e.push("Зачекайте завершення завантаження");
+    if (uploader.hasErrors) e.push("Видаліть файли з помилкою");
     if (e.length) errors.media = e;
   }
   {
@@ -269,11 +293,13 @@ export default function ListingCreateWizard() {
       price_amount_kopecks: priceKopecks!,
       escrow_deposit: escrowDeposit,
       response_sla_minutes: responseSlaMin,
-      gallery: gallery.map((g) => ({
-        src: g.src,
-        alt: g.alt,
-        is_cover: !!g.isCover,
-      })),
+      gallery: gallery
+        .map((g) => {
+          const mid = uploader.getMediaId(g.id);
+          if (!mid) return null;
+          return { media_id: mid, alt: g.alt, is_cover: !!g.isCover };
+        })
+        .filter((g): g is { media_id: string; alt: string; is_cover: boolean } => g !== null),
     });
     setSubmitting(false);
     if (result.ok) {
@@ -300,22 +326,13 @@ export default function ListingCreateWizard() {
     }
   };
 
-  // ---------- file mock ----------
-  const addFiles = (incoming: File[]) => {
-    const uploaded: UploadedFile[] = incoming.map((f, i) => ({
-      id: `f-${Date.now()}-${i}`,
-      file: f,
-      status: "ready",
-      progress: 100,
-    }));
-    setFiles((prev) => [...prev, ...uploaded].slice(0, 10));
-    const galleryNext: GalleryItem[] = incoming.map((f, i) => ({
-      id: `g-${Date.now()}-${i}`,
-      src: URL.createObjectURL(f),
-      alt: f.name,
-    }));
-    setGallery((prev) => [...prev, ...galleryNext].slice(0, 10));
+  // Gallery / cover handlers — proxy through to uploader + local state.
+  const setCover = (localId: string) => setCoverLocalId(localId);
+  const removeFile = (localId: string) => {
+    uploader.removeFile(localId);
+    if (coverLocalId === localId) setCoverLocalId(null);
   };
+  const reorder = (next: GalleryItem[]) => setOrder(next.map((g) => g.id));
 
   // ---------- preview data ----------
   const previewData: ListingCardData = {
@@ -531,11 +548,11 @@ export default function ListingCreateWizard() {
 
                 {activeId === "media" && (
                   <MediaStep
-                    files={files}
-                    setFiles={setFiles}
-                    addFiles={addFiles}
+                    uploader={uploader}
                     gallery={gallery}
-                    setGallery={setGallery}
+                    onSetCover={setCover}
+                    onRemove={removeFile}
+                    onReorder={reorder}
                   />
                 )}
 
@@ -833,17 +850,17 @@ function BasicsStep({
 }
 
 function MediaStep({
-  files,
-  setFiles,
-  addFiles,
+  uploader,
   gallery,
-  setGallery,
+  onSetCover,
+  onRemove,
+  onReorder,
 }: {
-  files: UploadedFile[];
-  setFiles: React.Dispatch<React.SetStateAction<UploadedFile[]>>;
-  addFiles: (f: File[]) => void;
+  uploader: ReturnType<typeof useUploader>;
   gallery: GalleryItem[];
-  setGallery: React.Dispatch<React.SetStateAction<GalleryItem[]>>;
+  onSetCover: (id: string) => void;
+  onRemove: (id: string) => void;
+  onReorder: (next: GalleryItem[]) => void;
 }) {
   return (
     <div className="space-y-8">
@@ -854,17 +871,22 @@ function MediaStep({
             required
             helper="JPG / PNG / WebP, до 10 файлів. Перше — обкладинка."
           >
-            <FileUploader
-              accept="image/*"
-              multiple
-              maxFiles={10}
-              maxSizeBytes={10 * 1024 * 1024}
-              files={files}
-              onFilesAdd={addFiles}
-              onRemove={(id) =>
-                setFiles((prev) => prev.filter((f) => f.id !== id))
-              }
-            />
+            <div>
+              <FileUploader
+                accept={uploader.accept}
+                multiple
+                maxFiles={10}
+                maxSizeBytes={uploader.maxSizeBytes}
+                files={uploader.files}
+                onFilesAdd={uploader.addFiles}
+                onRemove={onRemove}
+              />
+              {uploader.hasErrors && (
+                <p className="mt-2 text-caption text-warning">
+                  Файли з помилкою не будуть надіслані. Видаліть їх та повторіть.
+                </p>
+              )}
+            </div>
           </FormField>
         </div>
 
@@ -906,11 +928,9 @@ function MediaStep({
         <AttachmentGallery
           items={gallery}
           maxItems={10}
-          onRemove={(id) => setGallery((g) => g.filter((x) => x.id !== id))}
-          onSetCover={(id) =>
-            setGallery((g) => g.map((x) => ({ ...x, isCover: x.id === id })))
-          }
-          onReorder={setGallery}
+          onRemove={onRemove}
+          onSetCover={onSetCover}
+          onReorder={onReorder}
           emptyHint="Завантажте фото вище — вони з'являться тут."
         />
       </div>

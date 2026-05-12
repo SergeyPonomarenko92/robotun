@@ -4,6 +4,10 @@ import {
   userListingsStore,
   type ListingDetailProjection,
 } from "../_mock/listings";
+import {
+  validateListingAttachments,
+  backfillListingIdFk,
+} from "../_mock/media";
 
 /**
  * POST /api/v1/listings — create a listing.
@@ -31,7 +35,7 @@ type CreateListingBody = {
   price_amount_kopecks?: number;
   escrow_deposit?: boolean;
   response_sla_minutes?: number;
-  gallery?: { src: string; alt?: string; is_cover?: boolean }[];
+  gallery?: { media_id: string; alt?: string; is_cover?: boolean }[];
 };
 
 const TITLE_MIN = 12;
@@ -101,10 +105,22 @@ export async function POST(req: Request) {
   if (gallery.length < 1) fields.gallery = "gallery_required";
   else if (gallery.length > 10) fields.gallery = "gallery_too_many";
   else if (!gallery.some((g) => g.is_cover)) fields.gallery = "cover_required";
+  else if (gallery.some((g) => !g.media_id || typeof g.media_id !== "string"))
+    fields.gallery = "gallery_invalid";
 
   if (Object.keys(fields).length > 0) {
     return NextResponse.json(
       { error: "validation_failed", fields },
+      { status: 400 }
+    );
+  }
+
+  // Attachment ownership / purpose / status check against the media store.
+  const mediaIds = gallery.map((g) => g.media_id);
+  const v = validateListingAttachments(mediaIds, auth.user.id);
+  if (!v.valid) {
+    return NextResponse.json(
+      { error: "validation_failed", fields: { gallery: "invalid_attachments" } },
       { status: 400 }
     );
   }
@@ -115,8 +131,9 @@ export async function POST(req: Request) {
     body.category_path?.l2?.name ??
     body.category_path?.l3?.name ??
     "Інше";
-  const coverSrc =
-    gallery.find((g) => g.is_cover)?.src ?? gallery[0].src;
+  const coverItem = gallery.find((g) => g.is_cover) ?? gallery[0];
+  const streamUrlFor = (mid: string) => `/api/v1/media/${mid}/stream`;
+  const coverSrc = streamUrlFor(coverItem.media_id);
 
   const detail: ListingDetailProjection = {
     id,
@@ -146,7 +163,7 @@ export async function POST(req: Request) {
     description,
     gallery: gallery.map((g, i) => ({
       id: `g${i}`,
-      url: g.src,
+      url: streamUrlFor(g.media_id),
       alt: g.alt ?? title,
       is_cover: !!g.is_cover,
     })),
@@ -172,6 +189,7 @@ export async function POST(req: Request) {
   };
 
   userListingsStore.insert(detail);
+  backfillListingIdFk(mediaIds, id);
 
   return NextResponse.json(detail, { status: 201 });
 }

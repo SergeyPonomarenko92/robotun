@@ -29,6 +29,15 @@ const MAX_BYTES_BY_PURPOSE: Record<MediaPurpose, number> = {
   dispute_evidence: 10 * 1024 * 1024,
 };
 
+/**
+ * Canonical stream URL for a media object. Public for listing_cover /
+ * listing_gallery / avatar purposes (anonymous fetch OK); requires Bearer
+ * for private purposes (dispute_evidence / kyc_document / listing_attachment).
+ */
+export function getMediaStreamUrl(mediaId: string): string {
+  return `/api/v1/media/${encodeURIComponent(mediaId)}/stream`;
+}
+
 export type UploaderOpts = {
   purpose: MediaPurpose;
   /** Hard cap. Overrides spec default if passed lower. */
@@ -49,6 +58,9 @@ export type UploaderState = {
   addFiles: (newFiles: File[]) => Promise<void>;
   removeFile: (localId: string) => void;
   reset: () => void;
+  /** Lookup the server media_id for a given local file id (returns null if
+   *  the upload hasn't completed or the localId is unknown). */
+  getMediaId: (localId: string) => string | null;
 };
 
 type InitiateResponse = {
@@ -230,6 +242,11 @@ export function useUploader(opts: UploaderOpts): UploaderState {
   const uploading = files.some((f) => f.status === "uploading");
   const hasErrors = files.some((f) => f.status === "error");
 
+  const getMediaId = React.useCallback(
+    (localId: string) => localToMediaRef.current.get(localId) ?? null,
+    []
+  );
+
   return {
     files,
     mediaIds,
@@ -240,5 +257,6 @@ export function useUploader(opts: UploaderOpts): UploaderState {
     addFiles,
     removeFile,
     reset,
+    getMediaId,
   };
 }
