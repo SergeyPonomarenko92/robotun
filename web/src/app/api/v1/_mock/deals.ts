@@ -9,6 +9,7 @@
  */
 
 import { paymentHooks } from "./payments";
+import { validateAttachments, backfillDisputeEvidenceFk } from "./media";
 
 export type DealStatus =
   | "pending"
@@ -124,6 +125,19 @@ export function submitDisputeEvidence(
     return { error: "validation_failed", fields };
   }
 
+  // Validate attachment ownership + purpose + status against the media store.
+  // Per spec §4.1.2: uploader_user_id is the auth anchor for dispute_evidence
+  // (owner_user_id is NULL until FK back-filled below).
+  if (attachments.length > 0) {
+    const v = validateAttachments(attachments, callerId, "dispute_evidence");
+    if (!v.valid) {
+      return {
+        error: "validation_failed",
+        fields: { attachment_ids: "invalid_attachments" },
+      };
+    }
+  }
+
   const slot = isClient ? "dispute_evidence_client" : "dispute_evidence_provider";
   if (d[slot]) return { error: "already_submitted" };
 
@@ -133,6 +147,11 @@ export function submitDisputeEvidence(
     attachment_ids: attachments,
     submitted_at: new Date().toISOString(),
   };
+  // Back-fill dispute_evidence_id FK on each media row (spec §4.1.2 — FK is
+  // only legitimate after the evidence row exists).
+  if (attachments.length > 0) {
+    backfillDisputeEvidenceFk(attachments, `${d.id}:${slot}`);
+  }
   if (isProvider && demoActAsProvider) d.provider_id = callerId;
   return { ok: true, deal: d };
 }

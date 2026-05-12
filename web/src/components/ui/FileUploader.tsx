@@ -48,11 +48,11 @@ export function FileUploader({
 
   function handleFiles(list: FileList | null) {
     if (!list || disabled || reachedCap) return;
+    // Slice to cap but do NOT filter oversize files — the orchestrating hook
+    // (e.g. useUploader) creates per-file 'error' chips so the user sees
+    // explicit "файл задавеликий" feedback instead of silent drop.
     const arr = Array.from(list).slice(0, remainingSlots);
-    const filtered = maxSizeBytes
-      ? arr.filter((f) => f.size <= maxSizeBytes)
-      : arr;
-    if (filtered.length > 0) onFilesAdd?.(filtered);
+    if (arr.length > 0) onFilesAdd?.(arr);
   }
 
   return (
@@ -109,7 +109,11 @@ export function FileUploader({
       </button>
 
       {files.length > 0 && (
-        <ul className="flex flex-col gap-2">
+        <ul
+          className="flex flex-col gap-2"
+          aria-live="polite"
+          aria-atomic="false"
+        >
           {files.map((f) => (
             <li key={f.id}>
               <AttachmentChip

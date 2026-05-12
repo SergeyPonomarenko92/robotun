@@ -38,6 +38,8 @@ import {
   type DisputeReason,
 } from "@/lib/deals";
 import { AlertTriangle, ScrollText, Gavel } from "lucide-react";
+import { FileUploader } from "@/components/ui/FileUploader";
+import { useUploader } from "@/lib/media";
 
 export default function DealPage() {
   const auth = useRequireAuth("/login");
@@ -734,18 +736,28 @@ function DisputePanel({
   const [fields, setFields] = React.useState<Record<string, string> | null>(null);
   const [busy, setBusy] = React.useState(false);
 
+  const uploader = useUploader({ purpose: "dispute_evidence", maxFiles: 5 });
+
+  const canSubmit =
+    !busy &&
+    !uploader.uploading &&
+    !uploader.hasErrors &&
+    statement.trim().length >= 30;
+
   const submit = async () => {
-    if (busy) return;
+    if (!canSubmit) return;
     onError(null);
     setBusy(true);
     const result = await submitDisputeEvidence(deal.id, {
       reason,
       statement,
+      attachment_ids: uploader.mediaIds,
     });
     setBusy(false);
     if (result.ok) {
       onSubmitted(result.deal);
       setFields(null);
+      uploader.reset();
     } else {
       setFields(result.error.fields ?? null);
       if (!result.error.fields) onError(result.error.message);
@@ -816,13 +828,46 @@ function DisputePanel({
                     </p>
                   )}
                 </label>
+
+                <div>
+                  <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted block mb-2">
+                    Докази (не обов&apos;язково)
+                  </span>
+                  <FileUploader
+                    accept={uploader.accept}
+                    multiple
+                    maxFiles={5}
+                    maxSizeBytes={uploader.maxSizeBytes}
+                    hint="Зображення та PDF, до 5 файлів"
+                    files={uploader.files}
+                    onFilesAdd={uploader.addFiles}
+                    onRemove={uploader.removeFile}
+                    disabled={busy}
+                  />
+                  {fields?.attachment_ids && (
+                    <p className="mt-1.5 text-caption text-danger">
+                      {fields.attachment_ids === "invalid_attachments"
+                        ? "Один або кілька файлів недійсні. Видаліть та спробуйте знову."
+                        : fields.attachment_ids === "too_many_attachments"
+                          ? "Максимум 5 файлів"
+                          : "Перевірте додані файли"}
+                    </p>
+                  )}
+                  {uploader.hasErrors && (
+                    <p className="mt-1.5 text-caption text-warning">
+                      Файли з помилкою не будуть надіслані. Видаліть їх та повторіть.
+                    </p>
+                  )}
+                </div>
+
                 <Button
                   variant="danger"
                   loading={busy}
                   onClick={submit}
-                  disabled={statement.trim().length < 30}
+                  disabled={!canSubmit}
+                  aria-disabled={!canSubmit}
                 >
-                  Надіслати свідчення
+                  {uploader.uploading ? "Завантаження…" : "Надіслати свідчення"}
                 </Button>
               </div>
             ) : null
