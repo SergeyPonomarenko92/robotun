@@ -1,9 +1,7 @@
 "use client";
 import * as React from "react";
-import { Loader2, Banknote, ShieldCheck, CheckCircle2 } from "lucide-react";
+import { Banknote, ShieldCheck, CheckCircle2 } from "lucide-react";
 
-import { TopNav } from "@/components/organisms/TopNav";
-import { Footer } from "@/components/organisms/Footer";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
@@ -11,10 +9,8 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { Avatar } from "@/components/ui/Avatar";
 import { MoneyDisplay } from "@/components/ui/MoneyInput";
-import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
+import { AdminShell } from "@/components/organisms/AdminShell";
 
-import { useRequireAuth } from "@/lib/auth";
-import { useRouter } from "next/navigation";
 import {
   useAdminPayouts,
   completePayout as completePayoutApi,
@@ -42,62 +38,36 @@ const STATUS_LABEL: Record<AdminPayoutRow["status"], string> = {
 };
 
 export default function AdminPayoutsPage() {
-  const auth = useRequireAuth("/login");
-  const router = useRouter();
   const list = useAdminPayouts();
   const [active, setActive] = React.useState<AdminPayoutRow | null>(null);
-
-  React.useEffect(() => {
-    if (auth && !auth.user.roles.includes("admin")) router.replace("/");
-  }, [auth, router]);
-
-  if (!auth || (auth && !auth.user.roles.includes("admin"))) {
-    return (
-      <main className="min-h-screen flex items-center justify-center">
-        <Loader2 size={20} className="animate-spin text-muted" />
-      </main>
-    );
-  }
 
   const pending = list.items.filter(
     (p) => p.status === "requested" || p.status === "processing"
   );
 
   return (
-    <>
-      <TopNav
-        user={{
-          id: auth.user.id,
-          displayName: auth.user.display_name,
-          email: auth.user.email,
-          kycVerified: false,
-          hasProviderRole: false,
-        }}
-      />
-      <main className="mx-auto max-w-6xl px-4 md:px-6 pt-6 md:pt-10 pb-20">
-        <EditorialPageHeader
-          kicker="Module 11 · admin"
-          title={
-            <>
-              Черга
-              <br />
-              <span className="text-accent italic">виплат</span>
-            </>
-          }
-          description={
-            list.loading
-              ? "Завантажуємо чергу…"
-              : pending.length === 0
-                ? "Усі виплати зараховано — зараз нічого розбирати."
-                : `Очікують підтвердження: ${pending.length}. Закриття вимагає MFA-коду.`
-          }
-          sidecar={
-            <Badge tone="danger" size="sm" shape="square">
-              admin · MFA
-            </Badge>
-          }
-        />
-
+    <AdminShell
+      kicker="Module 11 · admin"
+      title={
+        <>
+          Черга
+          <br />
+          <span className="text-accent italic">виплат</span>
+        </>
+      }
+      description={
+        list.loading
+          ? "Завантажуємо чергу…"
+          : pending.length === 0
+            ? "Усі виплати зараховано — зараз нічого розбирати."
+            : `Очікують підтвердження: ${pending.length}. Закриття вимагає MFA-коду.`
+      }
+      sidecar={
+        <Badge tone="danger" size="sm" shape="square">
+          admin · MFA
+        </Badge>
+      }
+    >
         {list.error && (
           <div className="mb-6">
             <ErrorState
@@ -143,7 +113,6 @@ export default function AdminPayoutsPage() {
             ))}
           </ul>
         )}
-      </main>
 
       {active && (
         <CompleteModal
@@ -155,9 +124,7 @@ export default function AdminPayoutsPage() {
           }}
         />
       )}
-
-      <Footer />
-    </>
+    </AdminShell>
   );
 }
 

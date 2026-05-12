@@ -1,15 +1,11 @@
 "use client";
 import * as React from "react";
-import { Loader2, KeyRound, Gavel, Banknote, ShieldCheck } from "lucide-react";
+import { KeyRound, Gavel, Banknote, ShieldCheck } from "lucide-react";
 
-import { TopNav } from "@/components/organisms/TopNav";
-import { Footer } from "@/components/organisms/Footer";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { ErrorState } from "@/components/ui/ErrorState";
-import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
-import { useRequireAuth } from "@/lib/auth";
-import { useRouter } from "next/navigation";
+import { AdminShell } from "@/components/organisms/AdminShell";
 import { useAdminAudit, type AdminAction } from "@/lib/admin_audit";
 
 const ACTION_LABELS: Record<AdminAction["action"], string> = {
@@ -37,82 +33,56 @@ const ACTION_TONES: Record<
 };
 
 export default function AdminAuditPage() {
-  const auth = useRequireAuth("/login");
-  const router = useRouter();
   const [filter, setFilter] = React.useState<"" | "mfa." | "dispute.">("");
   const audit = useAdminAudit({ limit: 30, actionPrefix: filter || undefined });
 
-  React.useEffect(() => {
-    if (auth && !auth.user.roles.includes("admin")) router.replace("/");
-  }, [auth, router]);
-
-  if (!auth || (auth && !auth.user.roles.includes("admin"))) {
-    return (
-      <main className="min-h-screen flex items-center justify-center">
-        <Loader2 size={20} className="animate-spin text-muted" />
-      </main>
-    );
-  }
-
   return (
-    <>
-      <TopNav
-        user={{
-          id: auth.user.id,
-          displayName: auth.user.display_name,
-          email: auth.user.email,
-          kycVerified: false,
-          hasProviderRole: false,
-        }}
-      />
-      <main className="mx-auto max-w-6xl px-4 md:px-6 pt-6 md:pt-10 pb-20">
-        <EditorialPageHeader
-          kicker="Module 12 · admin_actions"
-          title={
-            <>
-              Append-only
-              <br />
-              <span className="text-accent italic">audit log</span>
-            </>
-          }
-          description={
-            audit.loading
-              ? "Завантажуємо журнал…"
-              : `Усього записів: ${audit.total}. Кожна сильна дія адміністратора залишає рядок — UPDATE/DELETE заборонено на рівні БД (REVOKE).`
-          }
-          sidecar={
-            <div
-              role="tablist"
-              aria-label="Фільтр"
-              className="inline-flex border border-hairline rounded-[var(--radius-pill)] bg-paper p-1"
+    <AdminShell
+      kicker="Module 12 · admin_actions"
+      title={
+        <>
+          Append-only
+          <br />
+          <span className="text-accent italic">audit log</span>
+        </>
+      }
+      description={
+        audit.loading
+          ? "Завантажуємо журнал…"
+          : `Усього записів: ${audit.total}. Кожна сильна дія адміністратора залишає рядок — UPDATE/DELETE заборонено на рівні БД (REVOKE).`
+      }
+      sidecar={
+        <div
+          role="tablist"
+          aria-label="Фільтр"
+          className="inline-flex border border-hairline rounded-[var(--radius-pill)] bg-paper p-1"
+        >
+          {(
+            [
+              { id: "", label: "усе" },
+              { id: "mfa.", label: "MFA" },
+              { id: "dispute.", label: "Disputes" },
+            ] as { id: typeof filter; label: string }[]
+          ).map((b) => (
+            <button
+              key={b.id || "all"}
+              type="button"
+              role="tab"
+              aria-selected={filter === b.id}
+              onClick={() => setFilter(b.id)}
+              className={[
+                "px-4 h-8 rounded-[var(--radius-pill)] text-caption transition-colors",
+                filter === b.id
+                  ? "bg-ink text-paper"
+                  : "text-muted hover:text-ink",
+              ].join(" ")}
             >
-              {(
-                [
-                  { id: "", label: "усе" },
-                  { id: "mfa.", label: "MFA" },
-                  { id: "dispute.", label: "Disputes" },
-                ] as { id: typeof filter; label: string }[]
-              ).map((b) => (
-                <button
-                  key={b.id || "all"}
-                  type="button"
-                  role="tab"
-                  aria-selected={filter === b.id}
-                  onClick={() => setFilter(b.id)}
-                  className={[
-                    "px-4 h-8 rounded-[var(--radius-pill)] text-caption transition-colors",
-                    filter === b.id
-                      ? "bg-ink text-paper"
-                      : "text-muted hover:text-ink",
-                  ].join(" ")}
-                >
-                  {b.label}
-                </button>
-              ))}
-            </div>
-          }
-        />
-
+              {b.label}
+            </button>
+          ))}
+        </div>
+      }
+    >
         {audit.error && (
           <div className="mb-6">
             <ErrorState
@@ -164,9 +134,7 @@ export default function AdminAuditPage() {
             </Button>
           </div>
         )}
-      </main>
-      <Footer />
-    </>
+    </AdminShell>
   );
 }
 

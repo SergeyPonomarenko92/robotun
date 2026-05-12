@@ -1,19 +1,15 @@
 "use client";
 import * as React from "react";
-import { Gavel, Loader2, ShieldCheck, ScrollText, ArrowRight } from "lucide-react";
+import { Gavel, ShieldCheck, ScrollText, ArrowRight } from "lucide-react";
 
-import { TopNav } from "@/components/organisms/TopNav";
-import { Footer } from "@/components/organisms/Footer";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { MoneyDisplay } from "@/components/ui/MoneyInput";
-import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader";
+import { AdminShell } from "@/components/organisms/AdminShell";
 
-import { useRequireAuth } from "@/lib/auth";
-import { useRouter } from "next/navigation";
 import {
   useDisputedDeals,
   resolveDispute,
@@ -33,62 +29,32 @@ const REASON_LABELS: Record<DisputeReason, string> = {
 };
 
 export default function AdminDisputesPage() {
-  const auth = useRequireAuth("/login");
-  const router = useRouter();
   const queue = useDisputedDeals();
   const [active, setActive] = React.useState<Deal | null>(null);
 
-  // Hard gate: not admin → bounce to home with an inline note (router.replace
-  // happens after first render so the gate effect is fine here too).
-  React.useEffect(() => {
-    if (auth && !auth.user.roles.includes("admin")) {
-      router.replace("/");
-    }
-  }, [auth, router]);
-
-  if (!auth || (auth && !auth.user.roles.includes("admin"))) {
-    return (
-      <main className="min-h-screen flex items-center justify-center">
-        <Loader2 size={20} className="animate-spin text-muted" />
-      </main>
-    );
-  }
-
   return (
-    <>
-      <TopNav
-        user={{
-          id: auth.user.id,
-          displayName: auth.user.display_name,
-          email: auth.user.email,
-          kycVerified: false,
-          hasProviderRole: false,
-        }}
-      />
-      <main className="mx-auto max-w-6xl px-4 md:px-6 pt-6 md:pt-10 pb-20">
-        <EditorialPageHeader
-          kicker="Module 14 · admin"
-          title={
-            <>
-              Черга
-              <br />
-              <span className="text-accent italic">диспутів</span>
-            </>
-          }
-          description={
-            queue.loading
-              ? "Завантажуємо актуальний список…"
-              : queue.total === 0
-                ? "Зараз диспутів немає — все спокійно."
-                : `Активних: ${queue.total}. Розгляд завершує угоду і визначає, куди йдуть кошти.`
-          }
-          sidecar={
-            <Badge tone="danger" size="sm" shape="square">
-              admin · MFA очікується у проді
-            </Badge>
-          }
-        />
-
+    <AdminShell
+      kicker="Module 14 · admin"
+      title={
+        <>
+          Черга
+          <br />
+          <span className="text-accent italic">диспутів</span>
+        </>
+      }
+      description={
+        queue.loading
+          ? "Завантажуємо актуальний список…"
+          : queue.total === 0
+            ? "Зараз диспутів немає — все спокійно."
+            : `Активних: ${queue.total}. Розгляд завершує угоду і визначає, куди йдуть кошти.`
+      }
+      sidecar={
+        <Badge tone="danger" size="sm" shape="square">
+          admin · MFA очікується у проді
+        </Badge>
+      }
+    >
         {queue.error && (
           <div className="mb-6">
             <ErrorState
@@ -126,7 +92,6 @@ export default function AdminDisputesPage() {
             ))}
           </div>
         )}
-      </main>
 
       {active && (
         <ResolveModal
@@ -138,9 +103,7 @@ export default function AdminDisputesPage() {
           }}
         />
       )}
-
-      <Footer />
-    </>
+    </AdminShell>
   );
 }
 
