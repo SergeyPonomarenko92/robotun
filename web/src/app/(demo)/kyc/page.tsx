@@ -28,10 +28,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { Tooltip } from "@/components/ui/Tooltip";
-import {
-  FileUploader,
-  type UploadedFile,
-} from "@/components/ui/FileUploader";
+import { FileUploader } from "@/components/ui/FileUploader";
+import { useUploader } from "@/lib/media";
 import { Modal } from "@/components/ui/Modal";
 import { RadioCardGroup } from "@/components/ui/RadioCardGroup";
 import { TermCheckbox } from "@/components/ui/TermCheckbox";
@@ -75,8 +73,16 @@ export default function KYCPage() {
 
   // doc
   const [docType, setDocType] = React.useState<DocType>("id_card");
-  const [docFront, setDocFront] = React.useState<UploadedFile[]>([]);
-  const [docBack, setDocBack] = React.useState<UploadedFile[]>([]);
+  const docFrontUploader = useUploader({
+    purpose: "kyc_document",
+    maxFiles: 1,
+    endpoint: "kyc",
+  });
+  const docBackUploader = useUploader({
+    purpose: "kyc_document",
+    maxFiles: 1,
+    endpoint: "kyc",
+  });
   const [legalName, setLegalName] = React.useState("Олександр Петренко");
   const [taxId, setTaxId] = React.useState("3284756291");
 
@@ -96,9 +102,14 @@ export default function KYCPage() {
   const errors: Partial<Record<StepId, string[]>> = {};
   {
     const e: string[] = [];
-    if (!docFront.length) e.push("Додайте лицьову сторону документа");
-    if (docType === "id_card" && !docBack.length)
+    if (docFrontUploader.mediaIds.length === 0)
+      e.push("Додайте лицьову сторону документа");
+    if (docType === "id_card" && docBackUploader.mediaIds.length === 0)
       e.push("Додайте зворотню сторону ID-картки");
+    if (docFrontUploader.uploading || docBackUploader.uploading)
+      e.push("Зачекайте завершення завантаження");
+    if (docFrontUploader.hasErrors || docBackUploader.hasErrors)
+      e.push("Видаліть файли з помилкою");
     if (legalName.trim().length < 4) e.push("ПІБ — мінімум 4 символи");
     if (!/^\d{10}$/.test(taxId)) e.push("ІПН — рівно 10 цифр");
     if (e.length) errors.doc = e;
@@ -149,18 +160,6 @@ export default function KYCPage() {
     if (idx < STEPS_DATA.length - 1) goto(STEPS_DATA[idx + 1].id);
   };
   const back = () => idx > 0 && goto(STEPS_DATA[idx - 1].id);
-
-  const addUploaded = (
-    setter: React.Dispatch<React.SetStateAction<UploadedFile[]>>
-  ) => (incoming: File[]) => {
-    const uploaded: UploadedFile[] = incoming.map((f, i) => ({
-      id: `f-${Date.now()}-${i}`,
-      file: f,
-      status: "ready",
-      progress: 100,
-    }));
-    setter((prev) => [...prev, ...uploaded].slice(0, 1));
-  };
 
   // selfie liveness mock
   React.useEffect(() => {
@@ -258,16 +257,8 @@ export default function KYCPage() {
                   <DocStep
                     docType={docType}
                     setDocType={setDocType}
-                    docFront={docFront}
-                    addFront={addUploaded(setDocFront)}
-                    removeFront={(id) =>
-                      setDocFront((p) => p.filter((f) => f.id !== id))
-                    }
-                    docBack={docBack}
-                    addBack={addUploaded(setDocBack)}
-                    removeBack={(id) =>
-                      setDocBack((p) => p.filter((f) => f.id !== id))
-                    }
+                    frontUploader={docFrontUploader}
+                    backUploader={docBackUploader}
                     legalName={legalName}
                     setLegalName={setLegalName}
                     taxId={taxId}
@@ -370,12 +361,8 @@ export default function KYCPage() {
 function DocStep({
   docType,
   setDocType,
-  docFront,
-  addFront,
-  removeFront,
-  docBack,
-  addBack,
-  removeBack,
+  frontUploader,
+  backUploader,
   legalName,
   setLegalName,
   taxId,
@@ -383,12 +370,8 @@ function DocStep({
 }: {
   docType: DocType;
   setDocType: (v: DocType) => void;
-  docFront: UploadedFile[];
-  addFront: (f: File[]) => void;
-  removeFront: (id: string) => void;
-  docBack: UploadedFile[];
-  addBack: (f: File[]) => void;
-  removeBack: (id: string) => void;
+  frontUploader: ReturnType<typeof useUploader>;
+  backUploader: ReturnType<typeof useUploader>;
   legalName: string;
   setLegalName: (v: string) => void;
   taxId: string;
@@ -413,15 +396,15 @@ function DocStep({
         <FormField
           label="Лицьова сторона"
           required
-          helper="JPG / PNG / PDF, до 10 МБ"
+          helper="JPG / PNG / PDF, до 20 МБ. Перевірка ClamAV ~2 сек."
         >
           <FileUploader
-            accept="image/*,application/pdf"
+            accept={frontUploader.accept}
             maxFiles={1}
-            maxSizeBytes={10 * 1024 * 1024}
-            files={docFront}
-            onFilesAdd={addFront}
-            onRemove={removeFront}
+            maxSizeBytes={frontUploader.maxSizeBytes}
+            files={frontUploader.files}
+            onFilesAdd={frontUploader.addFiles}
+            onRemove={frontUploader.removeFile}
           />
         </FormField>
 
@@ -429,15 +412,15 @@ function DocStep({
           label={docType === "id_card" ? "Зворотна сторона" : "Розворот зі світлиною"}
           required={docType === "id_card"}
           optional={docType !== "id_card"}
-          helper="JPG / PNG / PDF, до 10 МБ"
+          helper="JPG / PNG / PDF, до 20 МБ"
         >
           <FileUploader
-            accept="image/*,application/pdf"
+            accept={backUploader.accept}
             maxFiles={1}
-            maxSizeBytes={10 * 1024 * 1024}
-            files={docBack}
-            onFilesAdd={addBack}
-            onRemove={removeBack}
+            maxSizeBytes={backUploader.maxSizeBytes}
+            files={backUploader.files}
+            onFilesAdd={backUploader.addFiles}
+            onRemove={backUploader.removeFile}
           />
         </FormField>
       </div>

@@ -42,6 +42,9 @@ export type UploaderOpts = {
   purpose: MediaPurpose;
   /** Hard cap. Overrides spec default if passed lower. */
   maxFiles?: number;
+  /** KYC uploads must go through the /kyc/me/uploads/* proxy (REQ-007).
+   *  Default 'media' = generic /media/uploads/* endpoints. */
+  endpoint?: "media" | "kyc";
 };
 
 export type UploaderState = {
@@ -76,10 +79,15 @@ function sizeCapMessage(maxBytes: number): string {
 }
 
 export function useUploader(opts: UploaderOpts): UploaderState {
-  const { purpose, maxFiles } = opts;
+  const { purpose, maxFiles, endpoint = "media" } = opts;
   const maxSizeBytes = MAX_BYTES_BY_PURPOSE[purpose];
   const accept = MIME_BY_PURPOSE[purpose].join(",");
   const allowedMimes = MIME_BY_PURPOSE[purpose];
+
+  const initiatePath =
+    endpoint === "kyc" ? "/kyc/me/uploads/initiate" : "/media/uploads/initiate";
+  const confirmPath =
+    endpoint === "kyc" ? "/kyc/me/uploads/confirm" : "/media/uploads/confirm";
 
   const [files, setFiles] = React.useState<UploadedFile[]>([]);
   // Local→server mediaId mapping. Ref (not state) so concurrent updates don't
@@ -142,7 +150,7 @@ export function useUploader(opts: UploaderOpts): UploaderState {
           // 2. Initiate.
           let init: InitiateResponse;
           try {
-            init = await apiFetch<InitiateResponse>("/media/uploads/initiate", {
+            init = await apiFetch<InitiateResponse>(initiatePath, {
               method: "POST",
               body: JSON.stringify({
                 purpose,
@@ -179,11 +187,15 @@ export function useUploader(opts: UploaderOpts): UploaderState {
           }
 
           // 4. Confirm.
+          let confirmRes: { status: "awaiting_scan" | "ready" };
           try {
-            await apiFetch("/media/uploads/confirm", {
-              method: "POST",
-              body: JSON.stringify({ media_id: init.media_id }),
-            });
+            confirmRes = await apiFetch<{ status: "awaiting_scan" | "ready" }>(
+              confirmPath,
+              {
+                method: "POST",
+                body: JSON.stringify({ media_id: init.media_id }),
+              }
+            );
           } catch {
             updateFile(localId, {
               status: "error",
@@ -194,6 +206,36 @@ export function useUploader(opts: UploaderOpts): UploaderState {
           }
 
           localToMediaRef.current.set(localId, init.media_id);
+
+          // 5. If awaiting_scan (KYC mock + production async scan path),
+          //    show "scanning" chip and poll GET /media/{id} until ready.
+          //    8 attempts × 500ms = 4s ceiling; the mock promotes after 1.5s.
+          if (confirmRes.status === "awaiting_scan") {
+            updateFile(localId, { status: "scanning" });
+            let promoted = false;
+            for (let attempt = 0; attempt < 8; attempt++) {
+              await new Promise((r) => setTimeout(r, 500));
+              try {
+                const meta = await apiFetch<{ status: string }>(
+                  `/media/${init.media_id}`
+                );
+                if (meta.status === "ready") {
+                  promoted = true;
+                  break;
+                }
+              } catch {
+                // transient — keep trying
+              }
+            }
+            if (!promoted) {
+              updateFile(localId, {
+                status: "error",
+                error: "Перевірка не завершилась — спробуйте знову",
+              });
+              return;
+            }
+          }
+
           updateFile(localId, { status: "ready" });
         })
       );
@@ -239,7 +281,9 @@ export function useUploader(opts: UploaderOpts): UploaderState {
     return out;
   }, [files]);
 
-  const uploading = files.some((f) => f.status === "uploading");
+  const uploading = files.some(
+    (f) => f.status === "uploading" || f.status === "scanning"
+  );
   const hasErrors = files.some((f) => f.status === "error");
 
   const getMediaId = React.useCallback(

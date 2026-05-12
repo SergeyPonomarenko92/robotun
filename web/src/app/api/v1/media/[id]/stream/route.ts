@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorize } from "../../../_mock/store";
-import { streamBlob } from "../../../_mock/media";
+import { streamBlob, getMediaMeta } from "../../../_mock/media";
+import { logAdminAction } from "../../../_mock/admin_audit";
 
 /**
  * GET /api/v1/media/{id}/stream — Module 6 §4.5.3.
@@ -20,8 +21,24 @@ export async function GET(
   const { id } = await params;
   const r = streamBlob(id, callerId, isAdmin);
   if (!r.ok) return NextResponse.json({ error: "not_found" }, { status: 404 });
-  // private/no-store is the safe default; CDN cache rules per §4.5.3 will be
-  // applied per-purpose in Step 3 when the public-active-listing JOIN lands.
+  // SEC-006: KYC document reads by a reviewer (mock: admin role) must be
+  // appended to the audit trail. Owner self-reads are not audited.
+  if (callerId && isAdmin) {
+    const meta = getMediaMeta(id, callerId, true);
+    if (meta.ok && meta.media.purpose === "kyc_document") {
+      logAdminAction({
+        actor_admin_id: callerId,
+        action: "kyc.document_streamed",
+        target_type: "media",
+        target_id: id,
+        target_user_id: null,
+        metadata: {
+          mime_type: meta.media.mime_type,
+          byte_size: meta.media.byte_size,
+        },
+      });
+    }
+  }
   return new Response(r.buffer, {
     status: 200,
     headers: {

@@ -23,7 +23,11 @@ export type MediaPurpose =
   | "avatar"
   | "dispute_evidence";
 
-export type MediaStatus = "awaiting_upload" | "ready" | "deleted";
+export type MediaStatus =
+  | "awaiting_upload"
+  | "awaiting_scan"
+  | "ready"
+  | "deleted";
 
 export type MockMediaObject = {
   id: string;
@@ -215,12 +219,17 @@ export type ConfirmResult =
   | { ok: true; media: PublicMediaMeta }
   | { ok: false; error: "not_found" | "blob_missing" };
 
+// KYC documents simulate the prod async scan path (PAT-004): confirm flips
+// to awaiting_scan, then a setTimeout mock-promotes to ready after 1.5s. Other
+// purposes stay instant-ready (the mock skips scan to keep wire-flow simple).
+const KYC_SCAN_DELAY_MS = 1500;
+
 export function confirmUpload(media_id: string, caller_user_id: string): ConfirmResult {
   const obj = mediaStore.objects.get(media_id);
   if (!obj || obj.uploader_user_id !== caller_user_id || obj.status === "deleted") {
     return { ok: false, error: "not_found" };
   }
-  if (obj.status === "ready") {
+  if (obj.status === "ready" || obj.status === "awaiting_scan") {
     // Idempotent (spec §4.5.2): return current state.
     return { ok: true, media: projectMeta(obj) };
   }
@@ -229,10 +238,19 @@ export function confirmUpload(media_id: string, caller_user_id: string): Confirm
   }
   const now = new Date().toISOString();
   obj.confirmed_at = now;
-  obj.ready_at = now;
-  obj.status = "ready";
-  // In production: status would flip to 'awaiting_scan' here, ClamAV worker
-  // would COPY quarantine → target bucket and promote to 'ready' asynchronously.
+  if (obj.purpose === "kyc_document") {
+    obj.status = "awaiting_scan";
+    setTimeout(() => {
+      const cur = mediaStore.objects.get(media_id);
+      if (cur && cur.status === "awaiting_scan") {
+        cur.status = "ready";
+        cur.ready_at = new Date().toISOString();
+      }
+    }, KYC_SCAN_DELAY_MS);
+  } else {
+    obj.status = "ready";
+    obj.ready_at = now;
+  }
   return { ok: true, media: projectMeta(obj) };
 }
 
@@ -240,11 +258,25 @@ export type GetMetaResult =
   | { ok: true; media: PublicMediaMeta }
   | { ok: false; error: "not_found" };
 
-export function getMediaMeta(media_id: string, caller_user_id: string): GetMetaResult {
+export function getMediaMeta(
+  media_id: string,
+  caller_user_id: string,
+  isAdmin = false
+): GetMetaResult {
   const obj = mediaStore.objects.get(media_id);
   if (!obj || obj.status === "deleted") return { ok: false, error: "not_found" };
-  // dispute_evidence Step 1: uploader-only. (Admin streaming access in Step 2.)
-  if (obj.uploader_user_id !== caller_user_id) return { ok: false, error: "not_found" };
+  // kyc_document: owner OR kyc_reviewer (mock: admin role) — never anonymous.
+  // SEC-007: never expose kyc_document in non-KYC listing endpoints; this
+  // function is the GET /media/{id} metadata path which is not the listing.
+  if (obj.purpose === "kyc_document") {
+    if (!isAdmin && obj.uploader_user_id !== caller_user_id) {
+      return { ok: false, error: "not_found" };
+    }
+    return { ok: true, media: projectMeta(obj) };
+  }
+  if (obj.uploader_user_id !== caller_user_id && !isAdmin) {
+    return { ok: false, error: "not_found" };
+  }
   return { ok: true, media: projectMeta(obj) };
 }
 

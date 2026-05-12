@@ -13,6 +13,7 @@ const ACTION_LABELS: Record<AdminAction["action"], string> = {
   "mfa.challenge.consumed": "MFA · код використано",
   "dispute.resolved": "Диспут вирішено",
   "payout.completed": "Виплата зарахована",
+  "kyc.document_streamed": "KYC · документ переглянуто",
 };
 
 const ACTION_ICONS: Record<AdminAction["action"], React.ReactNode> = {
@@ -20,6 +21,7 @@ const ACTION_ICONS: Record<AdminAction["action"], React.ReactNode> = {
   "mfa.challenge.consumed": <ShieldCheck size={14} />,
   "dispute.resolved": <Gavel size={14} />,
   "payout.completed": <Banknote size={14} />,
+  "kyc.document_streamed": <ShieldCheck size={14} />,
 };
 
 const ACTION_TONES: Record<
@@ -30,6 +32,7 @@ const ACTION_TONES: Record<
   "mfa.challenge.consumed": "info",
   "dispute.resolved": "warning",
   "payout.completed": "success",
+  "kyc.document_streamed": "info",
 };
 
 export default function AdminAuditPage() {

@@ -15,7 +15,8 @@ export async function GET(
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
   const { id } = await params;
-  const r = getMediaMeta(id, auth.user.id);
+  const isAdmin = auth.user.roles.includes("admin");
+  const r = getMediaMeta(id, auth.user.id, isAdmin);
   if (!r.ok) return NextResponse.json({ error: "not_found" }, { status: 404 });
   return NextResponse.json(r.media);
 }

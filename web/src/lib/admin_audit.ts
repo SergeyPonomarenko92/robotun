@@ -9,8 +9,9 @@ export type AdminAction = {
     | "mfa.challenge.issued"
     | "mfa.challenge.consumed"
     | "dispute.resolved"
-    | "payout.completed";
-  target_type: "deal" | "user" | "payout" | null;
+    | "payout.completed"
+    | "kyc.document_streamed";
+  target_type: "deal" | "user" | "payout" | "media" | null;
   target_id: string | null;
   target_user_id: string | null;
   metadata: Record<string, string | number | boolean | null>;
