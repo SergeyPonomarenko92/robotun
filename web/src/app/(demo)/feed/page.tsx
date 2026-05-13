@@ -81,6 +81,7 @@ export default function FeedDemoPage() {
   const [sort, setSort] = useState<SortKey>("relevance");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [savedIds, setSavedIds] = useState<Record<string, boolean>>({});
+  const [q, setQ] = useState("");
 
   const handleSave = (id: string, next: boolean) =>
     setSavedIds((s) => ({ ...s, [id]: next }));
@@ -107,8 +108,9 @@ export default function FeedDemoPage() {
         filters.priceRange[1] < 1_000_000 ? filters.priceRange[1] : null,
       min_rating: filters.ratingMin,
       kyc_only: filters.kycOnly,
+      q: q.trim() || undefined,
     }),
-    [filters]
+    [filters, q]
   );
 
   const feed = useFeed(serverFilters, 12);
@@ -131,6 +133,7 @@ export default function FeedDemoPage() {
           { id: "1", label: "ремонт пральних машин bosch" },
           { id: "2", label: "прибирання київ" },
         ]}
+        onSearchSubmit={setQ}
       />
       <main className="mx-auto max-w-7xl px-4 md:px-6 py-6 md:py-10 pb-24 md:pb-16">
         <Breadcrumbs
@@ -154,6 +157,20 @@ export default function FeedDemoPage() {
           <p className="mt-4 text-body-lg text-muted max-w-xl leading-relaxed">
             Перевірені виконавці. Гарантія через ескроу. Жодних прихованих комісій.
           </p>
+          {q.trim() && (
+            <div className="mt-5 inline-flex items-center gap-2 rounded-[var(--radius-pill)] border border-hairline bg-paper px-3 py-1.5 text-caption text-ink-soft">
+              <span>Пошук:</span>
+              <span className="text-ink font-medium">«{q.trim()}»</span>
+              <button
+                type="button"
+                onClick={() => setQ("")}
+                aria-label="Скинути пошук"
+                className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-[var(--radius-xs)] text-muted hover:text-ink hover:bg-ink/10"
+              >
+                ×
+              </button>
+            </div>
+          )}
         </header>
 
         <Tabs defaultValue="listings" className="mb-6">
