@@ -137,19 +137,13 @@ export default function ListingCreateWizard() {
   const [created, setCreated] = React.useState<ListingDetail | null>(null);
 
   // ---------- form state ----------
-  const [title, setTitle] = React.useState(
-    "Ремонт пральних машин Bosch / Siemens — виїзд по Києву"
-  );
-  const [category, setCategory] = React.useState<CategoryPath | null>({
-    l1: { id: "rep", name: "Ремонт побутової техніки" },
-    l2: { id: "rep-wash", name: "Пральні машини" },
-    l3: { id: "rep-wash-bosch", name: "Bosch / Siemens" },
-  } as CategoryPath);
-  const [description, setDescription] = React.useState(
-    "Сервісний центр з 2014 року. Діагностика безкоштовна, оригінальні запчастини, гарантія на роботу 12 місяців. Працюємо з фізичними та юридичними особами через ескроу."
-  );
-  const [city, setCity] = React.useState("Київ");
-  const [tags, setTags] = React.useState<string[]>(["виїзд", "гарантія"]);
+  // Real /provider/listings/new starts blank — provider fills it in. The demo
+  // route used pre-seeded copy for screenshots; that drift is intentional.
+  const [title, setTitle] = React.useState("");
+  const [category, setCategory] = React.useState<CategoryPath | null>(null);
+  const [description, setDescription] = React.useState("");
+  const [city, setCity] = React.useState("");
+  const [tags, setTags] = React.useState<string[]>([]);
   const [tagDraft, setTagDraft] = React.useState("");
 
   // Gallery is derived from the uploader: each successfully-uploaded file
@@ -194,7 +188,7 @@ export default function ListingCreateWizard() {
   }, [uploader, order, coverLocalId]);
 
   const [priceModel, setPriceModel] = React.useState<PriceModel>("visit");
-  const [priceKopecks, setPriceKopecks] = React.useState<number | null>(32000);
+  const [priceKopecks, setPriceKopecks] = React.useState<number | null>(null);
   const [escrowDeposit, setEscrowDeposit] = React.useState(true);
   const [responseSlaMin, setResponseSlaMin] = React.useState<number>(15);
 
