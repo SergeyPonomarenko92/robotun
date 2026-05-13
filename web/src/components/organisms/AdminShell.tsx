@@ -11,7 +11,7 @@ import { useRequireAuth } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/cn";
 
-type QueueCounts = { disputes: number; payouts: number };
+type QueueCounts = { disputes: number; payouts: number; audit: number };
 
 function useAdminQueueCounts(enabled: boolean): QueueCounts | null {
   const [counts, setCounts] = React.useState<QueueCounts | null>(null);
@@ -24,7 +24,7 @@ function useAdminQueueCounts(enabled: boolean): QueueCounts | null {
         if (alive) setCounts(c);
       })
       .catch(() => {
-        if (alive) setCounts({ disputes: 0, payouts: 0 });
+        if (alive) setCounts({ disputes: 0, payouts: 0, audit: 0 });
       });
     return () => {
       alive = false;
@@ -34,7 +34,16 @@ function useAdminQueueCounts(enabled: boolean): QueueCounts | null {
 }
 
 type TabId = "disputes" | "payouts" | "audit";
-type TabDef = { id: TabId; href: string; label: string; count?: number };
+type PipKind = "backlog" | "activity";
+type TabDef = {
+  id: TabId;
+  href: string;
+  label: string;
+  count?: number;
+  /** 'backlog' = work-to-do counter (accent on active), 'activity' = passive
+   *  24h activity indicator (muted on both states). Defaults to 'backlog'. */
+  pipKind?: PipKind;
+};
 
 function AdminTabBar({ counts }: { counts: QueueCounts | null }) {
   const pathname = usePathname();
@@ -49,7 +58,7 @@ function AdminTabBar({ counts }: { counts: QueueCounts | null }) {
   const tabs: TabDef[] = [
     { id: "disputes", href: "/admin/disputes", label: "Диспути", count: counts?.disputes },
     { id: "payouts", href: "/admin/payouts", label: "Виплати", count: counts?.payouts },
-    { id: "audit", href: "/admin/audit", label: "Журнал" },
+    { id: "audit", href: "/admin/audit", label: "Журнал", count: counts?.audit, pipKind: "activity" },
   ];
 
   return (
@@ -81,14 +90,22 @@ function AdminTabBar({ counts }: { counts: QueueCounts | null }) {
                   <span>{tab.label}</span>
                   {tab.count != null && tab.count > 0 && (
                     <span
-                      aria-label={`${tab.count} активних`}
+                      aria-label={
+                        tab.pipKind === "activity"
+                          ? `${tab.count} подій за добу`
+                          : `${tab.count} активних`
+                      }
                       className={cn(
                         "inline-flex items-center justify-center",
                         "min-w-[1.25rem] h-5 px-1.5 rounded-[var(--radius-pill)]",
                         "font-mono text-micro tabular-nums leading-none",
-                        isActive
-                          ? "bg-accent text-paper"
-                          : "bg-ink/10 text-ink-soft"
+                        // Activity pip stays muted on both states — it's not a
+                        // backlog so accent-tone would mis-signal urgency.
+                        tab.pipKind === "activity"
+                          ? "bg-ink/10 text-ink-soft"
+                          : isActive
+                            ? "bg-accent text-paper"
+                            : "bg-ink/10 text-ink-soft"
                       )}
                     >
                       {tab.count > 99 ? "99+" : tab.count}

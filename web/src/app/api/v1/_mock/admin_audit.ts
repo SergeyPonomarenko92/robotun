@@ -64,6 +64,17 @@ export function logAdminAction(input: {
   return row;
 }
 
+/** Count rows newer than `since`. Used by /admin/queue-counts for the audit
+ *  tab pip — gives admins an at-a-glance sense of "what happened in my shift". */
+export function countAdminActionsSince(since: Date): number {
+  const cutoff = since.getTime();
+  let n = 0;
+  for (const a of db()) {
+    if (new Date(a.created_at).getTime() >= cutoff) n++;
+  }
+  return n;
+}
+
 export function listAdminActions(opts: {
   limit?: number;
   cursor?: string | null;
