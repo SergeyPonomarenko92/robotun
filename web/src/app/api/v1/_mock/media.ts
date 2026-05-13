@@ -27,7 +27,25 @@ export type MediaStatus =
   | "awaiting_upload"
   | "awaiting_scan"
   | "ready"
+  | "quarantine_rejected" // spec §4.6 — threat detected (or dimensions_exceeded)
+  | "scan_error_permanent" // spec §4.6 — 3 reconciliation retries exhausted
   | "deleted";
+
+/**
+ * Mock-only deterministic scan-outcome triggers. Production scan path is async
+ * + ClamAV; here we use the uploaded filename prefix to simulate terminal
+ * failures for QA/UX testing:
+ *   EICAR-*  → quarantine_rejected (threat)
+ *   SCANFAIL-* → scan_error_permanent
+ * Anything else → ready.
+ */
+function mockScanOutcome(
+  filename: string
+): "ready" | "quarantine_rejected" | "scan_error_permanent" {
+  if (filename.startsWith("EICAR-")) return "quarantine_rejected";
+  if (filename.startsWith("SCANFAIL-")) return "scan_error_permanent";
+  return "ready";
+}
 
 export type MockMediaObject = {
   id: string;
@@ -240,16 +258,21 @@ export function confirmUpload(media_id: string, caller_user_id: string): Confirm
   obj.confirmed_at = now;
   if (obj.purpose === "kyc_document") {
     obj.status = "awaiting_scan";
+    const outcome = mockScanOutcome(obj.original_filename);
     setTimeout(() => {
       const cur = mediaStore.objects.get(media_id);
       if (cur && cur.status === "awaiting_scan") {
-        cur.status = "ready";
-        cur.ready_at = new Date().toISOString();
+        cur.status = outcome;
+        if (outcome === "ready") cur.ready_at = new Date().toISOString();
       }
     }, KYC_SCAN_DELAY_MS);
   } else {
-    obj.status = "ready";
-    obj.ready_at = now;
+    // Non-KYC purposes skip the async-scan loop in the mock; we still honor
+    // the filename trigger synchronously so threat/permanent failure can be
+    // exercised end-to-end (listing gallery, dispute evidence, …).
+    const outcome = mockScanOutcome(obj.original_filename);
+    obj.status = outcome;
+    if (outcome === "ready") obj.ready_at = now;
   }
   return { ok: true, media: projectMeta(obj) };
 }

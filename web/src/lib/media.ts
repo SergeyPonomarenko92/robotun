@@ -93,9 +93,15 @@ export function useUploader(opts: UploaderOpts): UploaderState {
   // Local→server mediaId mapping. Ref (not state) so concurrent updates don't
   // race. mediaIds[] is derived from files+ref together via useMemo.
   const localToMediaRef = React.useRef<Map<string, string>>(new Map());
+  // localIds the user removed (or unmounted) — used to abort in-flight poll
+  // loops so a late "ready" promote can't resurrect a removed chip.
+  const cancelledRef = React.useRef<Set<string>>(new Set());
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => () => { mountedRef.current = false; }, []);
 
   const updateFile = React.useCallback(
     (localId: string, patch: Partial<UploadedFile>) => {
+      if (!mountedRef.current || cancelledRef.current.has(localId)) return;
       setFiles((prev) => prev.map((f) => (f.id === localId ? { ...f, ...patch } : f)));
     },
     []
@@ -187,15 +193,17 @@ export function useUploader(opts: UploaderOpts): UploaderState {
           }
 
           // 4. Confirm.
-          let confirmRes: { status: "awaiting_scan" | "ready" };
+          type ConfirmStatus =
+            | "awaiting_scan"
+            | "ready"
+            | "quarantine_rejected"
+            | "scan_error_permanent";
+          let confirmRes: { status: ConfirmStatus };
           try {
-            confirmRes = await apiFetch<{ status: "awaiting_scan" | "ready" }>(
-              confirmPath,
-              {
-                method: "POST",
-                body: JSON.stringify({ media_id: init.media_id }),
-              }
-            );
+            confirmRes = await apiFetch<{ status: ConfirmStatus }>(confirmPath, {
+              method: "POST",
+              body: JSON.stringify({ media_id: init.media_id }),
+            });
           } catch {
             updateFile(localId, {
               status: "error",
@@ -205,29 +213,75 @@ export function useUploader(opts: UploaderOpts): UploaderState {
             return;
           }
 
+          if (cancelledRef.current.has(localId)) {
+            // User removed the chip mid-flight — drop the media so it doesn't
+            // leak into mediaIds via a late state arrival.
+            void apiFetch(`/media/${init.media_id}`, { method: "DELETE" }).catch(() => {});
+            return;
+          }
           localToMediaRef.current.set(localId, init.media_id);
 
+          // 4b. Sync terminal failure (non-KYC purposes resolve immediately).
+          if (confirmRes.status === "quarantine_rejected") {
+            updateFile(localId, {
+              status: "threat",
+              error: "Виявлено загрозу — файл відхилено",
+            });
+            return;
+          }
+          if (confirmRes.status === "scan_error_permanent") {
+            updateFile(localId, {
+              status: "error",
+              error: "Перевірка не вдалася — спробуйте інший файл",
+            });
+            return;
+          }
+
           // 5. If awaiting_scan (KYC mock + production async scan path),
-          //    show "scanning" chip and poll GET /media/{id} until ready.
+          //    show "scanning" chip and poll GET /media/{id} until ready or
+          //    a terminal failure (quarantine_rejected / scan_error_permanent).
           //    8 attempts × 500ms = 4s ceiling; the mock promotes after 1.5s.
           if (confirmRes.status === "awaiting_scan") {
             updateFile(localId, { status: "scanning" });
-            let promoted = false;
+            let resolved: "ready" | "threat" | "scan_error" | null = null;
             for (let attempt = 0; attempt < 8; attempt++) {
               await new Promise((r) => setTimeout(r, 500));
+              if (cancelledRef.current.has(localId)) return; // user removed / unmounted
               try {
                 const meta = await apiFetch<{ status: string }>(
                   `/media/${init.media_id}`
                 );
                 if (meta.status === "ready") {
-                  promoted = true;
+                  resolved = "ready";
+                  break;
+                }
+                if (meta.status === "quarantine_rejected") {
+                  resolved = "threat";
+                  break;
+                }
+                if (meta.status === "scan_error_permanent") {
+                  resolved = "scan_error";
                   break;
                 }
               } catch {
                 // transient — keep trying
               }
             }
-            if (!promoted) {
+            if (resolved === "threat") {
+              updateFile(localId, {
+                status: "threat",
+                error: "Виявлено загрозу — файл відхилено",
+              });
+              return;
+            }
+            if (resolved === "scan_error") {
+              updateFile(localId, {
+                status: "error",
+                error: "Перевірка не вдалася — спробуйте інший файл",
+              });
+              return;
+            }
+            if (resolved !== "ready") {
               updateFile(localId, {
                 status: "error",
                 error: "Перевірка не завершилась — спробуйте знову",
@@ -244,6 +298,7 @@ export function useUploader(opts: UploaderOpts): UploaderState {
   );
 
   const removeFile = React.useCallback((localId: string) => {
+    cancelledRef.current.add(localId);
     const mediaId = localToMediaRef.current.get(localId);
     localToMediaRef.current.delete(localId);
     setFiles((prev) => prev.filter((f) => f.id !== localId));
@@ -258,8 +313,11 @@ export function useUploader(opts: UploaderOpts): UploaderState {
     for (const mediaId of localToMediaRef.current.values()) {
       void apiFetch(`/media/${mediaId}`, { method: "DELETE" }).catch(() => {});
     }
+    setFiles((prev) => {
+      for (const f of prev) cancelledRef.current.add(f.id);
+      return [];
+    });
     localToMediaRef.current.clear();
-    setFiles([]);
   }, []);
 
   // Cleanup on unmount.
@@ -284,7 +342,7 @@ export function useUploader(opts: UploaderOpts): UploaderState {
   const uploading = files.some(
     (f) => f.status === "uploading" || f.status === "scanning"
   );
-  const hasErrors = files.some((f) => f.status === "error");
+  const hasErrors = files.some((f) => f.status === "error" || f.status === "threat");
 
   const getMediaId = React.useCallback(
     (localId: string) => localToMediaRef.current.get(localId) ?? null,
