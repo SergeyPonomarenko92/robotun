@@ -435,7 +435,8 @@ export type MfaChallenge = {
 };
 
 export async function createMfaChallenge(): Promise<
-  { ok: true; challenge: MfaChallenge } | { ok: false; error: { message: string; status: number } }
+  | { ok: true; challenge: MfaChallenge }
+  | { ok: false; error: { message: string; status: number; retry_after_seconds?: number } }
 > {
   try {
     const challenge = await apiFetch<MfaChallenge>("/admin/mfa/challenge", {
@@ -444,6 +445,29 @@ export async function createMfaChallenge(): Promise<
     return { ok: true, challenge };
   } catch (e) {
     if (e instanceof ApiError) {
+      // Module 12 ADM-SEC-006 KMS-degraded fallback + per-admin rate-limit.
+      const body = e.body as { error?: string; retry_after_seconds?: number } | null;
+      if (e.status === 503 && body?.error === "admin_mfa_unavailable") {
+        return {
+          ok: false,
+          error: {
+            message:
+              "MFA-сервіс тимчасово недоступний — спробуйте за хвилину",
+            status: 503,
+          },
+        };
+      }
+      if (e.status === 429 && body?.error === "mfa_challenge_rate_limited") {
+        const retry = body?.retry_after_seconds ?? 60;
+        return {
+          ok: false,
+          error: {
+            message: `Забагато запитів MFA — спробуйте через ${retry} с`,
+            status: 429,
+            retry_after_seconds: retry,
+          },
+        };
+      }
       return {
         ok: false,
         error: {

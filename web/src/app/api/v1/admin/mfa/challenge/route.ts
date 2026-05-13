@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { authorize } from "../../../_mock/store";
-import { createChallenge } from "../../../_mock/mfa";
+import {
+  createChallenge,
+  isKmsDegraded,
+  checkAndConsumeIssueRate,
+} from "../../../_mock/mfa";
 import { logAdminAction } from "../../../_mock/admin_audit";
 
 /**
@@ -20,6 +24,28 @@ export async function POST(req: Request) {
   }
   if (!auth.user.roles.includes("admin")) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  // ADM-SEC-006: KMS-degraded → 503 admin_mfa_unavailable + Retry-After: 60.
+  if (isKmsDegraded()) {
+    return NextResponse.json(
+      { error: "admin_mfa_unavailable" },
+      { status: 503, headers: { "Retry-After": "60" } }
+    );
+  }
+  // Per-admin rate limit (5/min). 429 with Retry-After tells the client when
+  // the next issuance will be allowed.
+  const rate = checkAndConsumeIssueRate(auth.user.id);
+  if (!rate.ok) {
+    return NextResponse.json(
+      {
+        error: "mfa_challenge_rate_limited",
+        retry_after_seconds: rate.retry_after_seconds,
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rate.retry_after_seconds) },
+      }
+    );
   }
   const challenge = createChallenge(auth.user.id);
   logAdminAction({

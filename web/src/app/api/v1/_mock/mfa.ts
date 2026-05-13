@@ -21,12 +21,61 @@ export type MfaChallenge = {
 declare global {
   // eslint-disable-next-line no-var
   var __ROBOTUN_MFA__: Map<string, MfaChallenge> | undefined;
+  // eslint-disable-next-line no-var
+  var __ROBOTUN_KMS_DEGRADED__: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __ROBOTUN_MFA_ISSUE_LOG__: Map<string, number[]> | undefined;
 }
 function db() {
   if (!globalThis.__ROBOTUN_MFA__) {
     globalThis.__ROBOTUN_MFA__ = new Map();
   }
   return globalThis.__ROBOTUN_MFA__;
+}
+
+// -- ADM-SEC-006: KMS-degraded mode ----------------------------------------
+// Flag flipped via QA endpoint POST /admin/mfa/_kms (mock-only). When true,
+// MFA-issuance endpoint returns 503 admin_mfa_unavailable. Reads + non-MFA
+// writes proceed normally (the gate is per-endpoint, applied here only).
+export function isKmsDegraded(): boolean {
+  return globalThis.__ROBOTUN_KMS_DEGRADED__ === true;
+}
+export function setKmsDegraded(v: boolean): void {
+  globalThis.__ROBOTUN_KMS_DEGRADED__ = v;
+}
+
+// -- Per-admin rate limit on challenge issuance ----------------------------
+// Sliding window: max ISSUE_LIMIT challenges per ISSUE_WINDOW_MS. Real backend
+// uses Redis; mock keeps a per-admin timestamp array on globalThis.
+const ISSUE_WINDOW_MS = 60 * 1000; // 1 min
+const ISSUE_LIMIT = 5;
+
+function issueLog(): Map<string, number[]> {
+  if (!globalThis.__ROBOTUN_MFA_ISSUE_LOG__) {
+    globalThis.__ROBOTUN_MFA_ISSUE_LOG__ = new Map();
+  }
+  return globalThis.__ROBOTUN_MFA_ISSUE_LOG__;
+}
+
+export type IssueRateCheck =
+  | { ok: true }
+  | { ok: false; retry_after_seconds: number };
+
+export function checkAndConsumeIssueRate(adminId: string): IssueRateCheck {
+  const now = Date.now();
+  const cutoff = now - ISSUE_WINDOW_MS;
+  const log = issueLog();
+  const arr = (log.get(adminId) ?? []).filter((t) => t > cutoff);
+  if (arr.length >= ISSUE_LIMIT) {
+    // Retry-After = how long until the oldest in-window timestamp expires.
+    const oldest = arr[0];
+    const retry = Math.ceil((oldest + ISSUE_WINDOW_MS - now) / 1000);
+    log.set(adminId, arr);
+    return { ok: false, retry_after_seconds: Math.max(1, retry) };
+  }
+  arr.push(now);
+  log.set(adminId, arr);
+  return { ok: true };
 }
 
 const TTL_MS = 5 * 60 * 1000;
