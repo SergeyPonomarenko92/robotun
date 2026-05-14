@@ -37,14 +37,8 @@ import { EditorialPageHeader } from "@/components/organisms/EditorialPageHeader"
 import { WizardSheet } from "@/components/organisms/WizardSheet";
 import { WizardActionBar } from "@/components/organisms/WizardActionBar";
 import { SuccessScreen } from "@/components/organisms/SuccessScreen";
-
-const PROVIDER_USER = {
-  id: "p1",
-  displayName: "Bosch Group Service",
-  email: "service@bosch-group.ua",
-  kycVerified: false,
-  hasProviderRole: true,
-};
+import { useRequireAuth } from "@/lib/auth";
+import { useRouter } from "next/navigation";
 
 type StepId = "doc" | "selfie" | "payout" | "review";
 
@@ -67,11 +61,22 @@ type SelfieState = "idle" | "capturing" | "verifying" | "done" | "failed";
 type PayoutMethod = "card" | "iban";
 
 export default function KYCPage() {
+  const auth = useRequireAuth("/login");
+  const router = useRouter();
+
+  // Only provider-role accounts have a reason to be here. Clients are sent
+  // to the dashboard; the request to become a provider is a different flow.
+  React.useEffect(() => {
+    if (auth && !auth.user.has_provider_role) {
+      router.replace("/");
+    }
+  }, [auth, router]);
+
   const [activeId, setActiveId] = React.useState<StepId>("doc");
   const [visited, setVisited] = React.useState<Set<StepId>>(new Set(["doc"]));
   const [submitted, setSubmitted] = React.useState(false);
 
-  // doc
+  // doc — real /provider/kyc starts blank; demo-style placeholders removed.
   const [docType, setDocType] = React.useState<DocType>("id_card");
   const docFrontUploader = useUploader({
     purpose: "kyc_document",
@@ -83,8 +88,8 @@ export default function KYCPage() {
     maxFiles: 1,
     endpoint: "kyc",
   });
-  const [legalName, setLegalName] = React.useState("Олександр Петренко");
-  const [taxId, setTaxId] = React.useState("3284756291");
+  const [legalName, setLegalName] = React.useState("");
+  const [taxId, setTaxId] = React.useState("");
 
   // selfie
   const [selfieState, setSelfieState] = React.useState<SelfieState>("idle");
@@ -92,11 +97,11 @@ export default function KYCPage() {
 
   // payout
   const [payoutMethod, setPayoutMethod] = React.useState<PayoutMethod>("card");
-  const [cardNumber, setCardNumber] = React.useState("4149 6293 ····  ····");
-  const [iban, setIban] = React.useState("UA21 3223 1300 0002 6007 2335 6601 1");
-  const [bankName, setBankName] = React.useState("ПриватБанк");
-  const [accountHolder, setAccountHolder] = React.useState("ФОП Петренко О.");
-  const [confirmPayout, setConfirmPayout] = React.useState(true);
+  const [cardNumber, setCardNumber] = React.useState("");
+  const [iban, setIban] = React.useState("");
+  const [bankName, setBankName] = React.useState("");
+  const [accountHolder, setAccountHolder] = React.useState("");
+  const [confirmPayout, setConfirmPayout] = React.useState(false);
 
   // ---------- validation ----------
   const errors: Partial<Record<StepId, string[]>> = {};
@@ -179,13 +184,28 @@ export default function KYCPage() {
     }
   }, [selfieState, selfieAttempt]);
 
+  // Auth still loading → render minimal frame to avoid layout flash.
+  if (auth === null) {
+    return (
+      <main
+        role="status"
+        aria-live="polite"
+        className="min-h-screen flex items-center justify-center bg-canvas"
+      >
+        <Loader2 size={20} className="animate-spin text-muted" aria-hidden />
+        <span className="sr-only">Завантаження…</span>
+      </main>
+    );
+  }
+  if (!auth.user.has_provider_role) return null;
+
   if (submitted) {
     return <SubmittedScreen onAgain={() => setSubmitted(false)} />;
   }
 
   return (
     <>
-      <TopNav user={PROVIDER_USER} notificationsUnread={2} messagesUnread={6} />
+      <TopNav />
 
       <main className="mx-auto max-w-7xl px-4 md:px-6 pt-6 md:pt-10 pb-40 md:pb-32">
         <EditorialPageHeader
@@ -898,7 +918,7 @@ function SubmittedScreen({ onAgain }: { onAgain: () => void }) {
 
   return (
     <>
-      <TopNav user={PROVIDER_USER} notificationsUnread={2} messagesUnread={6} />
+      <TopNav />
       <SuccessScreen
         icon={<ShieldCheck size={32} />}
         iconTone="info"
