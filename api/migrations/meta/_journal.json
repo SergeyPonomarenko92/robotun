@@ -99,6 +99,13 @@
       "when": 1778776023278,
       "tag": "0013_residual_debt",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1778776687021,
+      "tag": "0014_kyc_approved_at_denorm",
+      "breakpoints": true
     }
   ]
 }

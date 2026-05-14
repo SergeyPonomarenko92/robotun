@@ -137,9 +137,10 @@ const TEMPLATES: Record<string, Template> = {
     title: () => "Спір по угоді вирішено",
     body: (c) => {
       const outcome = String(c.payload.outcome ?? "");
-      if (outcome === "release_to_provider") return "Адміністратор підтвердив виплату виконавцю.";
-      if (outcome === "refund_to_client") return "Адміністратор підтвердив повернення коштів.";
-      if (outcome === "split") return "Адміністратор вирішив спір частковою виплатою.";
+      const amount = Number(c.payload.release_amount_kopecks ?? 0) / 100;
+      if (outcome === "release_to_provider") return "Адміністратор підтвердив повну виплату виконавцю.";
+      if (outcome === "refund_to_client") return "Адміністратор підтвердив повне повернення коштів клієнту.";
+      if (outcome === "split") return `Адміністратор вирішив спір розподілом: ${amount} грн виплачено виконавцю.`;
       return "Спір вирішено адміністратором.";
     },
     recipients: async (tx, p) => {

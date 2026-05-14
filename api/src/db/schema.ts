@@ -53,6 +53,11 @@ export const users = pgTable(
     payout_enabled: boolean("payout_enabled").notNull().default(false),
     has_provider_role: boolean("has_provider_role").notNull().default(false),
     mfa_enrolled: boolean("mfa_enrolled").notNull().default(false),
+    /** Denorm of "the moment this provider was KYC-approved". Set by
+     *  kyc.service.approve, NEVER cleared on revoke/re-submission. Used
+     *  by Feed for snapshot-stable cursor ranking (kyc_verifications
+     *  mutates status in place so it can't provide the historical signal). */
+    kyc_approved_at: timestamp("kyc_approved_at", { withTimezone: true }),
     /** Token version. Bumped on logout-all / password change / suspend per
      *  spec §SEC-006 — invalidates all outstanding access tokens. */
     ver: integer("ver").notNull().default(1),

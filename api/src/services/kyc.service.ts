@@ -350,6 +350,13 @@ export async function approve(args: { kyc_id: string; admin_id: string }): Promi
     const payoutEnabled = userRows[0]?.mfa_enrolled ?? false;
     await syncUserKycStatus(tx, row.provider_id, "approved", { payout: payoutEnabled });
 
+    // Stamp the first-ever approval timestamp. Module 8 Feed reads this for
+    // snapshot-stable score ranking; never cleared on subsequent rejects.
+    await tx.execute(
+      dsql`UPDATE users SET kyc_approved_at = COALESCE(kyc_approved_at, ${now})
+            WHERE id = ${row.provider_id}`
+    );
+
     // Accept all pending docs.
     await tx
       .update(kycDocuments)
