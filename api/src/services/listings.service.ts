@@ -102,7 +102,24 @@ function validatePayload(p: Partial<CreateInput>): ServiceError | null {
   return null;
 }
 
-/** Detail projection — matches FE ListingDetail roughly. */
+function priceUnitFor(pt: string): string {
+  switch (pt) {
+    case "fixed": return "/виклик";
+    case "hourly": return "/год";
+    case "starting_from": return " від";
+    case "range": return " /проект";
+    case "discuss": return "";
+    default: return "";
+  }
+}
+
+const PLACEHOLDER_COVER = "https://placehold.co/600x400?text=Robotun";
+
+/**
+ * Detail projection — shape adapted to FE `ListingDetail` contract
+ * (web/src/lib/listings.ts:28). Aggregates avg_rating + reviews_count +
+ * completed_deals_count via LATERAL subqueries (single round-trip, no N+1).
+ */
 async function project(listingId: string) {
   const rows = await db.execute<{
     id: string;
@@ -129,6 +146,9 @@ async function project(listingId: string) {
     published_at: string | null;
     created_at: string;
     updated_at: string;
+    avg_rating: number | null;
+    reviews_count: number | null;
+    completed_deals_count: number | null;
   }>(dsql`
     SELECT l.id, l.title, l.description, l.status, l.pricing_type,
            l.price_amount, l.price_amount_max, l.currency, l.service_type,
@@ -136,44 +156,73 @@ async function project(listingId: string) {
            l.category_id, c.name AS category_name,
            l.provider_id, u.display_name AS provider_name, u.avatar_url AS provider_avatar,
            u.kyc_status AS provider_kyc, l.response_sla_minutes,
-           l.published_at, l.created_at, l.updated_at
+           l.published_at, l.created_at, l.updated_at,
+           rv.avg_rating, COALESCE(rv.reviews_count, 0) AS reviews_count,
+           COALESCE(dc.completed_deals_count, 0) AS completed_deals_count
       FROM listings l
       JOIN categories c ON c.id = l.category_id
       LEFT JOIN users u ON u.id = l.provider_id
+      LEFT JOIN LATERAL (
+        SELECT AVG(overall_rating)::float AS avg_rating, COUNT(*)::int AS reviews_count
+          FROM reviews r
+         WHERE r.reviewee_id = l.provider_id
+           AND r.reviewer_role = 'client'
+           AND r.status = 'published' AND r.revealed_at IS NOT NULL
+      ) rv ON true
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS completed_deals_count
+          FROM deals d
+         WHERE d.provider_id = l.provider_id AND d.status = 'completed'
+      ) dc ON true
      WHERE l.id = ${listingId}
      LIMIT 1
   `);
   const r = rows[0];
   if (!r) return null;
+  // FE-shape primary value: price_from_kopecks (single number) — for `range`
+  // it's the min, for `discuss` it's 0. Internal fields kept too so own-side
+  // editor and management UIs work.
+  const priceFromKopecks = r.price_amount ?? 0;
   return {
     id: r.id,
     title: r.title,
     description: r.description,
     status: r.status,
+    // FE ListingDetail contract:
+    cover_url: r.cover_url ?? PLACEHOLDER_COVER,
+    price_from_kopecks: priceFromKopecks,
+    price_unit: priceUnitFor(r.pricing_type),
+    city: r.city ?? "",
+    region: r.region ?? undefined,
+    category: r.category_name,
+    category_id: r.category_id,
+    flags: [
+      ...(r.provider_kyc === "approved" ? ["kyc"] : []),
+      ...((r.completed_deals_count ?? 0) >= 10 ? ["trusted"] : []),
+    ],
+    published_at: r.published_at ? new Date(r.published_at).toISOString() : new Date(r.created_at).toISOString(),
+    provider: r.provider_id
+      ? {
+          id: r.provider_id,
+          name: r.provider_name ?? "Виконавець",
+          avatar_url: r.provider_avatar ?? undefined,
+          kyc_verified: r.provider_kyc === "approved",
+          avg_rating: r.avg_rating ?? 0,
+          reviews_count: r.reviews_count ?? 0,
+          completed_deals_count: r.completed_deals_count ?? 0,
+        }
+      : null,
+    // Extended fields for own-listing editor/management.
     pricing_type: r.pricing_type,
     price_amount: r.price_amount,
     price_amount_max: r.price_amount_max,
     currency: r.currency,
     service_type: r.service_type,
-    city: r.city,
-    region: r.region,
     tags: r.tags,
-    cover_url: r.cover_url,
     gallery_urls: r.gallery_urls,
-    category: { id: r.category_id, name: r.category_name },
-    category_id: r.category_id,
     response_sla_minutes: r.response_sla_minutes,
-    published_at: r.published_at ? new Date(r.published_at).toISOString() : null,
     created_at: new Date(r.created_at).toISOString(),
     updated_at: new Date(r.updated_at).toISOString(),
-    provider: r.provider_id
-      ? {
-          id: r.provider_id,
-          name: r.provider_name,
-          avatar_url: r.provider_avatar,
-          kyc_verified: r.provider_kyc === "approved",
-        }
-      : null,
   };
 }
 
