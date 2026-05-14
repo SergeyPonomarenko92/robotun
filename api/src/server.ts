@@ -13,6 +13,7 @@ import { kycRoutes } from "./routes/kyc.routes.js";
 import { dealsRoutes } from "./routes/deals.routes.js";
 import { reviewsRoutes } from "./routes/reviews.routes.js";
 import { notificationsRoutes } from "./routes/notifications.routes.js";
+import { feedRoutes } from "./routes/feed.routes.js";
 import { consumeOutboxOnce } from "./services/notifications.service.js";
 import { ensureBuckets } from "./services/s3.js";
 
@@ -83,6 +84,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(dealsRoutes);
       await api.register(reviewsRoutes);
       await api.register(notificationsRoutes);
+      await api.register(feedRoutes);
     },
     { prefix: "/api/v1" }
   );
