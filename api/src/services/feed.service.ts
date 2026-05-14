@@ -10,27 +10,40 @@
  */
 import { sql } from "../db/client.js";
 
+/** Matches FE ListingProjection (web/src/lib/feed.ts:8). */
 type FeedItem = {
   id: string;
   title: string;
-  cover_url: string | null;
-  city: string | null;
-  region: string | null;
+  cover_url: string;
+  price_from_kopecks: number;
+  price_unit: string;
+  city: string;
+  region?: string;
+  category: string;
   category_id: string;
-  price_amount: number | null;
-  price_amount_max: number | null;
-  pricing_type: string;
-  currency: string | null;
-  provider_id: string | null;
-  provider_name: string | null;
-  provider_avatar_url: string | null;
-  provider_kyc_approved: boolean;
-  avg_rating: number | null;
-  review_count: number;
-  published_at: string;
-  score: number;
-  tags: string[];
+  flags: string[];
+  provider: {
+    id: string;
+    name: string;
+    avatar_url?: string;
+    kyc_verified: boolean;
+    avg_rating: number;
+    reviews_count: number;
+    completed_deals_count: number;
+  };
+  feed_base_score: number;
 };
+
+const FEED_PLACEHOLDER_COVER = "https://placehold.co/600x400?text=Robotun";
+function feedPriceUnit(pt: string): string {
+  switch (pt) {
+    case "fixed": return "/виклик";
+    case "hourly": return "/год";
+    case "starting_from": return " від";
+    case "range": return " /проект";
+    default: return "";
+  }
+}
 
 type FeedPage = { items: FeedItem[]; next_cursor: string | null; has_more: boolean };
 type FeedResult =
@@ -126,17 +139,15 @@ export async function listFeed(opts: {
     SELECT l.id, l.title, l.cover_url, l.city, l.region, l.category_id,
            l.price_amount, l.price_amount_max, l.pricing_type, l.currency,
            l.provider_id, l.published_at, l.tags,
+           c.name AS category_name,
            u.display_name AS provider_name, u.avatar_url AS provider_avatar_url,
            (u.kyc_approved_at IS NOT NULL AND u.kyc_approved_at <= $${asOfIdx}::timestamptz) AS provider_kyc_approved,
            rv.avg_rating, COALESCE(rv.review_count, 0) AS review_count,
+           COALESCE(dc.completed_count, 0) AS completed_deals_count,
            ${scoreExpr} AS score
       FROM listings l
-      -- INNER (not LEFT): listings.chk_provider_id_archived guarantees
-      -- provider_id IS NOT NULL when status='active', so every row in the
-      -- feed filter has a matching users row. INNER also lets Postgres
-      -- short-circuit before the LATERAL subqueries, removing the
-      -- LEFT-JOIN-then-WHERE-filter footgun.
       INNER JOIN users u ON u.id = l.provider_id
+      INNER JOIN categories c ON c.id = l.category_id
       LEFT JOIN LATERAL (
         SELECT AVG(overall_rating)::float AS avg_rating, COUNT(*)::int AS review_count
           FROM reviews
@@ -164,6 +175,7 @@ export async function listFeed(opts: {
     city: string | null;
     region: string | null;
     category_id: string;
+    category_name: string;
     price_amount: number | null;
     price_amount_max: number | null;
     pricing_type: string;
@@ -174,6 +186,7 @@ export async function listFeed(opts: {
     provider_kyc_approved: boolean;
     avg_rating: number | null;
     review_count: number;
+    completed_deals_count: number;
     published_at: Date | string;
     score: number;
     tags: string[];
@@ -182,7 +195,6 @@ export async function listFeed(opts: {
   const hasMore = result.length > limit;
   const slice = result.slice(0, limit);
   const last = slice[slice.length - 1];
-  // Carry asOf forward in the cursor so the next page uses the same baseline.
   const nextCursor = hasMore && last
     ? Buffer.from(JSON.stringify({ s: last.score, i: last.id, t: asOf.toISOString() }), "utf8").toString("base64")
     : null;
@@ -190,9 +202,30 @@ export async function listFeed(opts: {
   return {
     ok: true,
     value: {
-      items: slice.map((r) => ({
-        ...r,
-        published_at: typeof r.published_at === "string" ? r.published_at : r.published_at.toISOString(),
+      items: slice.map((r): FeedItem => ({
+        id: r.id,
+        title: r.title,
+        cover_url: r.cover_url ?? FEED_PLACEHOLDER_COVER,
+        price_from_kopecks: r.price_amount ?? 0,
+        price_unit: feedPriceUnit(r.pricing_type),
+        city: r.city ?? "",
+        region: r.region ?? undefined,
+        category: r.category_name,
+        category_id: r.category_id,
+        flags: [
+          ...(r.provider_kyc_approved ? ["kyc"] : []),
+          ...((r.completed_deals_count ?? 0) >= 10 ? ["trusted"] : []),
+        ],
+        provider: {
+          id: r.provider_id ?? "",
+          name: r.provider_name ?? "Виконавець",
+          avatar_url: r.provider_avatar_url ?? undefined,
+          kyc_verified: !!r.provider_kyc_approved,
+          avg_rating: r.avg_rating ?? 0,
+          reviews_count: r.review_count ?? 0,
+          completed_deals_count: r.completed_deals_count ?? 0,
+        },
+        feed_base_score: r.score,
       })),
       next_cursor: nextCursor,
       has_more: hasMore,
