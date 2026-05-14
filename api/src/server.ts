@@ -12,6 +12,8 @@ import { mediaRoutes } from "./routes/media.routes.js";
 import { kycRoutes } from "./routes/kyc.routes.js";
 import { dealsRoutes } from "./routes/deals.routes.js";
 import { reviewsRoutes } from "./routes/reviews.routes.js";
+import { notificationsRoutes } from "./routes/notifications.routes.js";
+import { consumeOutboxOnce } from "./services/notifications.service.js";
 import { ensureBuckets } from "./services/s3.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -42,6 +44,17 @@ export async function buildServer(): Promise<FastifyInstance> {
     server.log.warn({ err: e }, "ensureBuckets failed");
   });
 
+  // Notifications worker — polls outbox every 2s, drains to notifications.
+  // Single-active via SELECT FOR UPDATE SKIP LOCKED; safe to run multiple
+  // replicas (each will skip locked rows).
+  if (env.NODE_ENV !== "test") {
+    const tick = async () => {
+      try { await consumeOutboxOnce(); } catch (e) { server.log.warn({ err: e }, "outbox consume tick failed"); }
+    };
+    const handle = setInterval(tick, 2000);
+    handle.unref();
+  }
+
   server.get("/health", async () => {
     const start = Date.now();
     let dbOk = false;
@@ -69,6 +82,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(kycRoutes);
       await api.register(dealsRoutes);
       await api.register(reviewsRoutes);
+      await api.register(notificationsRoutes);
     },
     { prefix: "/api/v1" }
   );

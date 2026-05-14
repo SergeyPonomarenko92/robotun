@@ -50,6 +50,13 @@
       "when": 1778770551886,
       "tag": "0006_unusual_zemo",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1778771450049,
+      "tag": "0007_bored_peter_parker",
+      "breakpoints": true
     }
   ]
 }

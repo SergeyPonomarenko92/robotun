@@ -691,3 +691,67 @@ export const reviewReplies = pgTable(
     authorIdx: index("idx_review_replies_author").on(t.author_id),
   })
 );
+
+/**
+ * Module 9 — Notifications (MVP cut).
+ *
+ * Polling worker (services/notifications-worker.ts) scans outbox_events
+ * for pending rows, maps event_type → notification_code, resolves
+ * recipient(s), writes notifications rows. Channels: in_app only (email
+ * worker deferred). Preferences: per (user, code, channel) toggle.
+ *
+ * Out of scope: email/SMS delivery, batching/digests, push, GDPR PII
+ * scrub at retention, Redis unread-count cache.
+ */
+export const notificationStatusEnum = pgEnum("notification_status", [
+  "pending",
+  "sent",
+  "failed",
+  "skipped",
+]);
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    recipient_user_id: uuid("recipient_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    source_event_id: integer("source_event_id"),
+    aggregate_type: text("aggregate_type").notNull(),
+    aggregate_id: uuid("aggregate_id").notNull(),
+    notification_code: text("notification_code").notNull(),
+    channel: text("channel").notNull().default("in_app"),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    payload: jsonb("payload").notNull().default({}),
+    status: notificationStatusEnum("status").notNull().default("sent"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    read_at: timestamp("read_at", { withTimezone: true }),
+  },
+  (t) => ({
+    recipientIdx: index("idx_notifications_recipient").on(t.recipient_user_id, t.created_at),
+    dedupUniq: uniqueIndex("uq_notifications_dedup").on(
+      t.source_event_id,
+      t.recipient_user_id,
+      t.channel,
+      t.notification_code
+    ),
+  })
+);
+
+export const notificationPreferences = pgTable(
+  "notification_preferences",
+  {
+    user_id: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    notification_code: text("notification_code").notNull(),
+    channel: text("channel").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: uniqueIndex("uq_pref_user_code_channel").on(t.user_id, t.notification_code, t.channel),
+  })
+);
