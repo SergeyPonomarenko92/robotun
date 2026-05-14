@@ -856,3 +856,32 @@ export const payouts = pgTable(
     providerIdx: index("idx_payouts_provider").on(t.provider_id, t.requested_at),
   })
 );
+
+/**
+ * Module 14 — Disputes (MVP cut).
+ *
+ * One dispute_evidence row per party per deal. Admin /resolve transitions
+ * disputed → completed (release_to_provider) or → cancelled (refund or
+ * split). GDPR: statement NULLable to support erasure (CHECK with
+ * length-OR-NULL).
+ */
+export const disputePartyRoleEnum = pgEnum("dispute_party_role", ["client", "provider"]);
+
+export const disputeEvidence = pgTable(
+  "dispute_evidence",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    deal_id: uuid("deal_id").notNull().references(() => deals.id, { onDelete: "restrict" }),
+    party_role: disputePartyRoleEnum("party_role").notNull(),
+    uploader_user_id: uuid("uploader_user_id").references(() => users.id, { onDelete: "set null" }),
+    reason: text("reason"),
+    statement: text("statement"),
+    attachment_ids: jsonb("attachment_ids").notNull().default([]),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+    gdpr_erased_at: timestamp("gdpr_erased_at", { withTimezone: true }),
+  },
+  (t) => ({
+    dealPartyUniq: uniqueIndex("uq_dispute_evidence_deal_role").on(t.deal_id, t.party_role),
+    dealIdx: index("idx_dispute_evidence_deal").on(t.deal_id),
+  })
+);

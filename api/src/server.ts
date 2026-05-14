@@ -16,6 +16,7 @@ import { notificationsRoutes } from "./routes/notifications.routes.js";
 import { feedRoutes } from "./routes/feed.routes.js";
 import { messagingRoutes } from "./routes/messaging.routes.js";
 import { paymentsRoutes } from "./routes/payments.routes.js";
+import { disputesRoutes } from "./routes/disputes.routes.js";
 import { consumeOutboxOnce } from "./services/notifications.service.js";
 import { ensureBuckets } from "./services/s3.js";
 
@@ -89,6 +90,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(feedRoutes);
       await api.register(messagingRoutes);
       await api.register(paymentsRoutes);
+      await api.register(disputesRoutes);
     },
     { prefix: "/api/v1" }
   );
