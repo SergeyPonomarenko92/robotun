@@ -102,18 +102,53 @@ export async function openPreDealConversation(args: {
 
 /* ---------------------------- list / read -------------------------------- */
 
-export async function listMine(userId: string) {
-  const rows = await db
-    .select()
-    .from(conversations)
-    .where(or(eq(conversations.client_id, userId), eq(conversations.provider_id, userId)))
-    .orderBy(desc(conversations.last_message_at), desc(conversations.created_at))
-    .limit(100);
+/** FE Conversation shape (web/src/lib/messaging.ts:14). */
+type ConversationFE = {
+  id: string;
+  scope: "pre_deal" | "deal";
+  listing_id: string | null;
+  deal_id: string | null;
+  status: "active" | "locked" | "archived";
+  counterparty: { id: string; display_name: string; avatar_url?: string; kyc_verified: boolean } | null;
+  last_message_at: string | null;
+  last_message_preview: string | null;
+  unread_count: number;
+  blocked_by: string | null;
+  created_at: string;
+};
 
-  if (rows.length === 0) return { items: [] as unknown[] };
+export async function listMine(userId: string) {
+  const rows = await db.execute<{
+    id: string;
+    kind: string;
+    listing_id: string | null;
+    deal_id: string | null;
+    status: string;
+    last_message_at: Date | string | null;
+    created_at: Date | string;
+    cp_id: string | null;
+    cp_name: string | null;
+    cp_avatar: string | null;
+    cp_kyc_at: Date | string | null;
+    preview: string | null;
+  }>(
+    dsql`SELECT c.id, c.kind, c.listing_id, c.deal_id, c.status,
+                c.last_message_at, c.created_at,
+                cu.id AS cp_id, cu.display_name AS cp_name,
+                cu.avatar_url AS cp_avatar, cu.kyc_approved_at AS cp_kyc_at,
+                (SELECT body FROM messages m
+                   WHERE m.conversation_id = c.id
+                   ORDER BY m.created_at DESC LIMIT 1) AS preview
+           FROM conversations c
+           LEFT JOIN users cu ON cu.id =
+             CASE WHEN c.client_id = ${userId} THEN c.provider_id ELSE c.client_id END
+          WHERE c.client_id = ${userId} OR c.provider_id = ${userId}
+          ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC
+          LIMIT 100`
+  );
+  if (rows.length === 0) return { items: [] as ConversationFE[] };
+
   const convIds = rows.map((r) => r.id);
-  // drizzle's inArray binds the array as a tuple of $N params and serializes
-  // each UUID safely — no manual array-literal string-building.
   const counts = await db
     .select({
       conversation_id: messages.conversation_id,
@@ -137,9 +172,34 @@ export async function listMine(userId: string) {
     .groupBy(messages.conversation_id);
   const byConv = new Map(counts.map((c) => [c.conversation_id, c.unread]));
 
-  return {
-    items: rows.map((r) => ({ ...r, unread_count: byConv.get(r.id) ?? 0 })),
-  };
+  const items: ConversationFE[] = rows.map((r) => ({
+    id: r.id,
+    scope: r.kind as "pre_deal" | "deal",
+    listing_id: r.listing_id,
+    deal_id: r.deal_id,
+    status: (r.status === "open" ? "active" : r.status) as "active" | "locked" | "archived",
+    counterparty: r.cp_id
+      ? {
+          id: r.cp_id,
+          display_name: r.cp_name ?? "",
+          avatar_url: r.cp_avatar ?? undefined,
+          kyc_verified: r.cp_kyc_at != null,
+        }
+      : null,
+    last_message_at: r.last_message_at
+      ? typeof r.last_message_at === "string"
+        ? new Date(r.last_message_at).toISOString()
+        : r.last_message_at.toISOString()
+      : null,
+    last_message_preview: r.preview ? r.preview.slice(0, 200) : null,
+    unread_count: byConv.get(r.id) ?? 0,
+    blocked_by: null,
+    created_at:
+      typeof r.created_at === "string"
+        ? new Date(r.created_at).toISOString()
+        : r.created_at.toISOString(),
+  }));
+  return { items };
 }
 
 export async function getConversation(userId: string, conversationId: string) {
