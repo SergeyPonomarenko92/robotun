@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { Suspense } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -175,6 +176,14 @@ const DESC_MAX = 2000;
 const DESC_MIN = 80;
 
 export default function ListingCreateWizard() {
+  return (
+    <Suspense fallback={null}>
+      <ListingCreateWizardInner />
+    </Suspense>
+  );
+}
+
+function ListingCreateWizardInner() {
   const auth = useRequireAuth();
   const router = useRouter();
   const searchParams = useSearchParams();

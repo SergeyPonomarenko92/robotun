@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   ArrowRight,
@@ -57,6 +58,14 @@ const SCOPE_MIN = 40;
 const SCOPE_MAX = 1500;
 
 export default function DealCreatePage() {
+  return (
+    <Suspense fallback={null}>
+      <DealCreatePageInner />
+    </Suspense>
+  );
+}
+
+function DealCreatePageInner() {
   const auth = useRequireAuth("/login");
   const params = useSearchParams();
   const listingId = params?.get("listing") ?? null;

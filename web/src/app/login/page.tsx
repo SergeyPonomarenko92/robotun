@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowRight, ShieldCheck, Loader2 } from "lucide-react";
@@ -23,7 +24,18 @@ const DEMO_ACCOUNTS: { label: string; email: string; password: string }[] = [
   },
 ];
 
+// useSearchParams() forces this client component out of static rendering;
+// Next 15+ requires a Suspense boundary above it (otherwise next build
+// fails with missing-suspense-with-csr-bailout).
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageInner />
+    </Suspense>
+  );
+}
+
+function LoginPageInner() {
   const auth = useAuth();
   const params = useSearchParams();
   const next = params?.get("next") || "/feed";

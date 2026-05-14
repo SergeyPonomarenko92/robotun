@@ -1,5 +1,6 @@
 "use client";
 import * as React from "react";
+import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Loader2, MessageCircle } from "lucide-react";
 
@@ -31,6 +32,14 @@ import { useUploader, getMediaStreamUrl } from "@/lib/media";
 import type { ComposerAttachment } from "@/components/organisms/Composer";
 
 export default function MessagesPage() {
+  return (
+    <Suspense fallback={null}>
+      <MessagesPageInner />
+    </Suspense>
+  );
+}
+
+function MessagesPageInner() {
   const auth = useRequireAuth("/login");
   const searchParams = useSearchParams();
   const initialId = searchParams.get("c");
