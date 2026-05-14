@@ -300,3 +300,216 @@ export const providerListingCaps = pgTable("provider_listing_caps", {
   created_today: integer("created_today").notNull().default(0),
   today_date: date("today_date").notNull().defaultNow(),
 });
+
+/**
+ * Module 6 — Media pipeline (MVP cut).
+ *
+ * In scope: media_objects (listing_cover/listing_gallery/avatar purposes
+ * only), listing_media link table. State machine awaiting_upload →
+ * awaiting_scan → ready directly (no async clamav scan in MVP — TODO).
+ * Quarantine bucket = direct PUT/POST from client; on confirm we HEAD and
+ * mark ready. KYC/message/dispute purposes deferred to their owning modules.
+ * No variants/thumbnails (single original). No rate limiter table.
+ */
+export const mediaPurposeEnum = pgEnum("media_purpose", [
+  "listing_cover",
+  "listing_gallery",
+  "listing_attachment",
+  "kyc_document",
+  "avatar",
+  "message_attachment",
+  "dispute_evidence",
+]);
+
+export const mediaBucketEnum = pgEnum("media_bucket", [
+  "quarantine",
+  "public-media",
+  "kyc-private",
+]);
+
+export const mediaStatusEnum = pgEnum("media_status", [
+  "awaiting_upload",
+  "awaiting_scan",
+  "ready",
+  "scan_error",
+  "scan_error_permanent",
+  "quarantine_rejected",
+  "deleted",
+]);
+
+export const mediaObjects = pgTable(
+  "media_objects",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    owner_user_id: uuid("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+    listing_id: uuid("listing_id").references(() => listings.id, { onDelete: "set null" }),
+    /** kyc_document_id / message_id / dispute_evidence_id columns ship now
+     *  without FK — added by their owning modules' deploy migrations
+     *  (Module 4 / Module 10 / Module 14). */
+    kyc_document_id: uuid("kyc_document_id"),
+    message_id: uuid("message_id"),
+    dispute_evidence_id: uuid("dispute_evidence_id"),
+    purpose: mediaPurposeEnum("purpose").notNull(),
+    storage_key: text("storage_key").notNull(),
+    bucket_alias: mediaBucketEnum("bucket_alias").notNull(),
+    original_filename: text("original_filename"),
+    mime_type: text("mime_type").notNull(),
+    byte_size: integer("byte_size").notNull(),
+    checksum_sha256: text("checksum_sha256"),
+    width_px: integer("width_px"),
+    height_px: integer("height_px"),
+    is_public: boolean("is_public").notNull().default(false),
+    status: mediaStatusEnum("status").notNull().default("awaiting_upload"),
+    scan_attempts: smallint("scan_attempts").notNull().default(0),
+    last_scan_error: text("last_scan_error"),
+    scan_error_at: timestamp("scan_error_at", { withTimezone: true }),
+    scan_completed_at: timestamp("scan_completed_at", { withTimezone: true }),
+    confirmed_at: timestamp("confirmed_at", { withTimezone: true }),
+    ready_at: timestamp("ready_at", { withTimezone: true }),
+    expires_at: timestamp("expires_at", { withTimezone: true }),
+    deleted_at: timestamp("deleted_at", { withTimezone: true }),
+    hard_deleted_at: timestamp("hard_deleted_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    ownerIdx: index("idx_media_objects_owner").on(t.owner_user_id),
+    listingIdx: index("idx_media_objects_listing").on(t.listing_id),
+    orphanIdx: index("idx_media_objects_orphan").on(t.created_at),
+  })
+);
+
+export const listingMedia = pgTable(
+  "listing_media",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listing_id: uuid("listing_id")
+      .notNull()
+      .references(() => listings.id, { onDelete: "cascade" }),
+    media_id: uuid("media_id")
+      .notNull()
+      .references(() => mediaObjects.id),
+    display_order: smallint("display_order").notNull().default(0),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    listingUniq: uniqueIndex("uq_listing_media").on(t.listing_id, t.media_id),
+    orderIdx: index("idx_listing_media_order").on(t.listing_id, t.display_order),
+  })
+);
+
+/**
+ * Module 4 — KYC provider verification (MVP cut).
+ *
+ * In scope: state machine (not_submitted → submitted → in_review →
+ * approved/rejected), submission cap with 24h cooling-off after rejection,
+ * denormalization to users.kyc_status, document metadata. Documents are
+ * uploaded via Module 6 Media pipeline with purpose='kyc_document'
+ * (bucket=kyc-private).
+ *
+ * Out of scope (TODO): encryption-at-rest of PII (document_number_enc /
+ * full_name_enc remain NULL), partitioned kyc_review_events (non-
+ * partitioned MVP), expired/stale-claim/rekyc sweeps, provider_profiles
+ * table (mfa+payout fields live on users for now).
+ */
+export const kycVerificationStatusEnum = pgEnum("kyc_verification_status", [
+  "not_submitted",
+  "submitted",
+  "in_review",
+  "approved",
+  "rejected",
+  "expired",
+  "cancelled",
+]);
+
+export const kycVerifications = pgTable(
+  "kyc_verifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider_id: uuid("provider_id")
+      .references(() => users.id, { onDelete: "set null" }),
+    status: kycVerificationStatusEnum("status").notNull().default("not_submitted"),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }),
+    review_started_at: timestamp("review_started_at", { withTimezone: true }),
+    decided_at: timestamp("decided_at", { withTimezone: true }),
+    expires_at: timestamp("expires_at", { withTimezone: true }),
+    rejection_code: text("rejection_code"),
+    rejection_note: text("rejection_note"),
+    rekyc_required_reason: text("rekyc_required_reason"),
+    rekyc_required_at: timestamp("rekyc_required_at", { withTimezone: true }),
+    reviewed_by: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+    submission_count: integer("submission_count").notNull().default(0),
+    submission_limit: integer("submission_limit").notNull().default(5),
+    last_decided_at: timestamp("last_decided_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    providerUniq: uniqueIndex("uq_kyc_provider").on(t.provider_id),
+    statusQueueIdx: index("idx_kyc_status_queue").on(t.created_at, t.status),
+  })
+);
+
+export const kycDocumentTypeEnum = pgEnum("kyc_document_type", [
+  "passport_ua",
+  "passport_foreign",
+  "id_card",
+  "rnokpp",
+  "fop_certificate",
+  "selfie",
+]);
+
+export const kycDocVerificationEnum = pgEnum("kyc_doc_verification_status", [
+  "pending",
+  "accepted",
+  "rejected",
+]);
+
+export const kycDocuments = pgTable(
+  "kyc_documents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kyc_verification_id: uuid("kyc_verification_id")
+      .notNull()
+      .references(() => kycVerifications.id, { onDelete: "restrict" }),
+    provider_id: uuid("provider_id").references(() => users.id, { onDelete: "set null" }),
+    document_type: kycDocumentTypeEnum("document_type").notNull(),
+    media_id: uuid("media_id").references(() => mediaObjects.id, { onDelete: "set null" }),
+    /** PII columns kept for forward-compat with KMS encryption layer; NULL in MVP. */
+    document_number_enc: text("document_number_enc"),
+    full_name_enc: text("full_name_enc"),
+    date_of_birth_enc: text("date_of_birth_enc"),
+    kek_version: text("kek_version").notNull().default("v1"),
+    document_expires_at: date("document_expires_at"),
+    verification_status: kycDocVerificationEnum("verification_status").notNull().default("pending"),
+    rejection_reason: text("rejection_reason"),
+    submission_index: integer("submission_index").notNull(),
+    uploaded_at: timestamp("uploaded_at", { withTimezone: true }).notNull().defaultNow(),
+    reviewed_at: timestamp("reviewed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    verificationIdx: index("idx_kyc_docs_verification").on(t.kyc_verification_id, t.submission_index),
+    providerIdx: index("idx_kyc_docs_provider").on(t.provider_id, t.uploaded_at),
+  })
+);
+
+/** Non-partitioned MVP; full spec wants monthly partitions. */
+export const kycReviewEvents = pgTable(
+  "kyc_review_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    kyc_verification_id: uuid("kyc_verification_id").notNull(),
+    provider_id: uuid("provider_id"),
+    actor_id: uuid("actor_id").references(() => users.id, { onDelete: "set null" }),
+    actor_role: text("actor_role").notNull(),
+    event_type: text("event_type").notNull(),
+    from_status: text("from_status"),
+    to_status: text("to_status"),
+    metadata: jsonb("metadata").notNull().default({}),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    kvIdx: index("idx_kyc_events_kv").on(t.kyc_verification_id, t.created_at),
+  })
+);

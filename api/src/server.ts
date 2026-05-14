@@ -8,6 +8,9 @@ import authenticate from "./plugins/authenticate.js";
 import { authRoutes, usersRoutes } from "./routes/auth.routes.js";
 import { categoriesRoutes } from "./routes/categories.routes.js";
 import { listingsRoutes } from "./routes/listings.routes.js";
+import { mediaRoutes } from "./routes/media.routes.js";
+import { kycRoutes } from "./routes/kyc.routes.js";
+import { ensureBuckets } from "./services/s3.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -30,6 +33,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
   await server.register(sensible);
   await server.register(authenticate);
+
+  // Best-effort bucket bootstrap. MinIO in docker-compose; AWS S3 in prod
+  // pre-provisions, so failures here are logged not fatal.
+  ensureBuckets().catch((e) => {
+    server.log.warn({ err: e }, "ensureBuckets failed");
+  });
 
   server.get("/health", async () => {
     const start = Date.now();
@@ -54,6 +63,8 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(usersRoutes);
       await api.register(categoriesRoutes);
       await api.register(listingsRoutes);
+      await api.register(mediaRoutes);
+      await api.register(kycRoutes);
     },
     { prefix: "/api/v1" }
   );
