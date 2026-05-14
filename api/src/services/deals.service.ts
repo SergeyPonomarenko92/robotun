@@ -477,15 +477,184 @@ export async function cancelDeal(args: TransitionArgs): Promise<Result<{ id: str
 
 /* ------------------------------- READ ------------------------------------ */
 
+/** FE Deal shape (web/src/lib/deals.ts:22). */
+type DealFE = {
+  id: string;
+  listing_id: string;
+  client_id: string;
+  provider_id: string;
+  status: string;
+  scope: string;
+  urgency: "today" | "tomorrow" | "week" | "later";
+  deadline_at: string | null;
+  address: string;
+  phone: string;
+  attachment_ids: string[];
+  budget_kopecks: number;
+  fee_kopecks: number;
+  total_held_kopecks: number;
+  hold_id: string;
+  created_at: string;
+  listing_title_snapshot: string;
+  cancel_requested_by_client_at: string | null;
+  cancel_requested_by_provider_at: string | null;
+  cancel_request_reason: string | null;
+  dispute_evidence_client: { reason: string; statement: string; attachment_ids: string[]; submitted_at: string } | null;
+  dispute_evidence_provider: { reason: string; statement: string; attachment_ids: string[]; submitted_at: string } | null;
+  dispute_evidence_visibility: "open" | "redacted" | "revealed";
+  dispute_resolution: { verdict: "refund_client" | "release_to_provider"; resolver_admin_id: string; reason: string; resolved_at: string } | null;
+  client: { id: string; display_name: string; avatar_url?: string; kyc_verified: boolean };
+  provider: { id: string; display_name: string; avatar_url?: string; kyc_verified: boolean };
+  version: number;
+};
+
+function urgencyFromDeadline(deadline: Date | string | null): DealFE["urgency"] {
+  if (!deadline) return "later";
+  const d = typeof deadline === "string" ? new Date(deadline) : deadline;
+  const hours = (d.getTime() - Date.now()) / (1000 * 3600);
+  if (hours <= 24) return "today";
+  if (hours <= 48) return "tomorrow";
+  if (hours <= 168) return "week";
+  return "later";
+}
+
+function isoOrNull(v: Date | string | null | undefined): string | null {
+  if (!v) return null;
+  return typeof v === "string" ? new Date(v).toISOString() : v.toISOString();
+}
+
+async function projectDealFE(dealId: string, viewerId: string): Promise<DealFE | null | "forbidden"> {
+  const rows = await db.execute<{
+    id: string;
+    client_id: string;
+    provider_id: string;
+    listing_id: string | null;
+    status: string;
+    title: string;
+    agreed_price: number;
+    deadline_at: Date | string | null;
+    escrow_hold_id: string | null;
+    cancel_requested_by_client_at: Date | string | null;
+    cancel_requested_by_provider_at: Date | string | null;
+    cancellation_reason: string | null;
+    resolution_outcome: string | null;
+    resolution_note: string | null;
+    resolved_by_admin_id: string | null;
+    resolved_at: Date | string | null;
+    version: number;
+    created_at: Date | string;
+    listing_title_snapshot: string | null;
+    c_name: string | null;
+    c_avatar: string | null;
+    c_kyc_at: Date | string | null;
+    p_name: string | null;
+    p_avatar: string | null;
+    p_kyc_at: Date | string | null;
+  }>(
+    dsql`SELECT d.id, d.client_id, d.provider_id, d.listing_id, d.status,
+                d.title, d.agreed_price, d.deadline_at,
+                d.escrow_hold_id,
+                d.cancel_requested_by_client_at, d.cancel_requested_by_provider_at,
+                d.cancellation_reason,
+                d.resolution_outcome, d.resolution_note, d.resolved_by_admin_id, d.resolved_at,
+                d.version, d.created_at,
+                l.title AS listing_title_snapshot,
+                cu.display_name AS c_name, cu.avatar_url AS c_avatar, cu.kyc_approved_at AS c_kyc_at,
+                pu.display_name AS p_name, pu.avatar_url AS p_avatar, pu.kyc_approved_at AS p_kyc_at
+           FROM deals d
+           LEFT JOIN listings l ON l.id = d.listing_id
+           LEFT JOIN users cu ON cu.id = d.client_id
+           LEFT JOIN users pu ON pu.id = d.provider_id
+          WHERE d.id = ${dealId}
+          LIMIT 1`
+  );
+  const r = rows[0];
+  if (!r) return null;
+  if (r.client_id !== viewerId && r.provider_id !== viewerId) return "forbidden";
+
+  // Dispute evidence (both parties).
+  const ev = await db
+    .select()
+    .from(dealEvents)
+    .where(eq(dealEvents.deal_id, dealId))
+    .limit(0);
+  void ev;
+  const evidenceRows = await db.execute<{
+    party_role: "client" | "provider";
+    reason: string | null;
+    statement: string | null;
+    attachment_ids: unknown;
+    submitted_at: Date | string;
+  }>(
+    dsql`SELECT party_role, reason, statement, attachment_ids, submitted_at
+           FROM dispute_evidence WHERE deal_id = ${dealId}`
+  );
+  const evClient = evidenceRows.find((e) => e.party_role === "client");
+  const evProvider = evidenceRows.find((e) => e.party_role === "provider");
+  const mkEvidence = (e: typeof evClient) =>
+    e
+      ? {
+          reason: e.reason ?? "other",
+          statement: e.statement ?? "",
+          attachment_ids: Array.isArray(e.attachment_ids) ? (e.attachment_ids as string[]) : [],
+          submitted_at: typeof e.submitted_at === "string" ? new Date(e.submitted_at).toISOString() : e.submitted_at.toISOString(),
+        }
+      : null;
+
+  // Resolution mapping: 'refund_to_client' → 'refund_client'; everything else
+  // (release_to_provider, split) → 'release_to_provider' (closest FE enum).
+  const resolution: DealFE["dispute_resolution"] = r.resolution_outcome
+    ? {
+        verdict: r.resolution_outcome === "refund_to_client" ? "refund_client" : "release_to_provider",
+        resolver_admin_id: r.resolved_by_admin_id ?? "",
+        reason: r.resolution_note ?? "",
+        resolved_at: isoOrNull(r.resolved_at) ?? "",
+      }
+    : null;
+
+  return {
+    id: r.id,
+    listing_id: r.listing_id ?? "",
+    client_id: r.client_id,
+    provider_id: r.provider_id,
+    status: r.status,
+    scope: r.title,
+    urgency: urgencyFromDeadline(r.deadline_at),
+    deadline_at: isoOrNull(r.deadline_at),
+    address: "",
+    phone: "",
+    attachment_ids: [],
+    budget_kopecks: r.agreed_price,
+    fee_kopecks: 0,
+    total_held_kopecks: r.agreed_price,
+    hold_id: r.escrow_hold_id ?? "",
+    created_at: isoOrNull(r.created_at) ?? new Date().toISOString(),
+    listing_title_snapshot: r.listing_title_snapshot ?? r.title,
+    cancel_requested_by_client_at: isoOrNull(r.cancel_requested_by_client_at),
+    cancel_requested_by_provider_at: isoOrNull(r.cancel_requested_by_provider_at),
+    cancel_request_reason: r.cancellation_reason,
+    dispute_evidence_client: mkEvidence(evClient),
+    dispute_evidence_provider: mkEvidence(evProvider),
+    dispute_evidence_visibility: r.status === "disputed" ? "open" : "redacted",
+    dispute_resolution: resolution,
+    client: {
+      id: r.client_id,
+      display_name: r.c_name ?? "",
+      avatar_url: r.c_avatar ?? undefined,
+      kyc_verified: r.c_kyc_at != null,
+    },
+    provider: {
+      id: r.provider_id,
+      display_name: r.p_name ?? "",
+      avatar_url: r.p_avatar ?? undefined,
+      kyc_verified: r.p_kyc_at != null,
+    },
+    version: r.version,
+  };
+}
+
 export async function getDeal(viewerId: string, dealId: string) {
-  const rows = await db.select().from(deals).where(eq(deals.id, dealId)).limit(1);
-  if (rows.length === 0) return null;
-  const d = rows[0]!;
-  if (d.client_id !== viewerId && d.provider_id !== viewerId) {
-    // Admin viewer would need role check — defer to caller.
-    return "forbidden" as const;
-  }
-  return d;
+  return projectDealFE(dealId, viewerId);
 }
 
 export async function listMine(viewerId: string, opts: { status?: string; limit: number }) {
