@@ -5,13 +5,17 @@ import { db } from "../db/client.js";
 import { userRoles } from "../db/schema.js";
 import * as svc from "../services/admin.service.js";
 
-async function requireAdmin(req: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+async function requireAdmin(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  required: ("admin" | "moderator")[] = ["admin", "moderator"]
+): Promise<boolean> {
   if (!req.auth) {
     reply.code(401).send({ error: "unauthorized" });
     return false;
   }
   const r = await db.select({ role: userRoles.role }).from(userRoles).where(eq(userRoles.user_id, req.auth.user_id));
-  const ok = r.some((x) => x.role === "admin" || x.role === "moderator");
+  const ok = r.some((x) => required.includes(x.role as "admin" | "moderator"));
   if (!ok) {
     reply.code(403).send({ error: "forbidden" });
     return false;
@@ -79,8 +83,9 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // admin-only (moderators excluded from PII-bearing audit log).
   server.get("/admin/actions", { preHandler: server.authenticate }, async (req, reply) => {
-    if (!(await requireAdmin(req, reply))) return;
+    if (!(await requireAdmin(req, reply, ["admin"]))) return;
     const q = z
       .object({
         limit: z.coerce.number().int().min(1).max(200).default(50),

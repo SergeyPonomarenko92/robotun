@@ -5,7 +5,7 @@
  * preferences override the in-app default (enabled=true). Email channel
  * deferred.
  */
-import { and, desc, eq, isNull, sql as dsql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
   deals,
@@ -18,6 +18,8 @@ import {
 
 type ServiceError = { code: string; status: number };
 type Result<T> = { ok: true; value: T } | { ok: false; error: ServiceError };
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+type _ServiceErrorUsed = ServiceError;
 
 /* --------------------------- template registry --------------------------- */
 
@@ -160,10 +162,46 @@ const TEMPLATES: Record<string, Template> = {
 /* ----------------------------- worker tick ------------------------------- */
 
 const BATCH = 50;
+const CONSUMER_NAME = "notifications:in_app";
 
-/** One pass through outbox_events. Returns processed count. */
+/** Aggregate types Notifications cares about. Other consumers (e.g. payment
+ *  capture worker) read from outbox independently via their own cursors. */
+const AGGREGATE_ALLOWLIST = [
+  "deal",
+  "kyc",
+  "review",
+  "listing",
+  "user",
+  "message",
+  "conversation",
+  "payout",
+];
+
+/** Notification codes which the user CANNOT opt out of (legal / security). */
+const MANDATORY_CODES = new Set([
+  "kyc_approved",
+  "kyc_rejected",
+  "deal_disputed_for_provider",
+]);
+
+/**
+ * One pass through outbox_events. Uses a per-consumer cursor (does NOT
+ * mutate outbox_events.status — the outbox is shared infra). Returns
+ * processed count.
+ */
 export async function consumeOutboxOnce(): Promise<number> {
   return await db.transaction(async (tx) => {
+    // Single-active per consumer via FOR UPDATE on the cursor row.
+    const cursorRows = await tx.execute<{ last_seen_id: number }>(
+      dsql`SELECT last_seen_id FROM notification_consumer_cursors
+            WHERE consumer_name = ${CONSUMER_NAME} FOR UPDATE`
+    );
+    if (cursorRows.length === 0) return 0; // cursor row missing — bootstrap.
+    const lastSeen = Number(cursorRows[0]!.last_seen_id);
+
+    // Hand-build the IN-list (constant, no user input) since drizzle's
+    // template binds JS arrays as tuples rather than text[] literals.
+    const allowlistSql = AGGREGATE_ALLOWLIST.map((t) => `'${t}'`).join(",");
     const rows = await tx.execute<{
       id: number;
       aggregate_type: string;
@@ -173,64 +211,102 @@ export async function consumeOutboxOnce(): Promise<number> {
     }>(
       dsql`SELECT id, aggregate_type, aggregate_id, event_type, payload
              FROM outbox_events
-            WHERE status = 'pending' AND next_retry_at <= now()
+            WHERE id > ${lastSeen}
+              AND aggregate_type IN (${dsql.raw(allowlistSql)})
             ORDER BY id
-            FOR UPDATE SKIP LOCKED
             LIMIT ${BATCH}`
     );
 
-    let processed = 0;
+    if (rows.length === 0) return 0;
+    const maxId = rows[rows.length - 1]!.id;
+
+    // Pre-resolve all recipients per row, then batch-load preferences for
+    // the union of (user, code) pairs. Avoids per-recipient SELECT.
+    type Plan = { row: typeof rows[number]; tpl: Template; recipients: string[] };
+    const plans: Plan[] = [];
+    // Cache admin list once per batch tick.
+    let adminCache: string[] | null = null;
+    const resolveAdmins = async () => {
+      if (adminCache) return adminCache;
+      const r = await tx.execute<{ user_id: string }>(
+        dsql`SELECT user_id FROM user_roles WHERE role = 'admin'`
+      );
+      adminCache = r.map((x) => x.user_id);
+      return adminCache;
+    };
+
     for (const row of rows) {
       const tpl = TEMPLATES[row.event_type];
-      if (!tpl) {
-        await tx
-          .update(outboxEvents)
-          .set({ status: "processed", processed_at: new Date() })
-          .where(eq(outboxEvents.id, row.id));
-        processed++;
-        continue;
-      }
-
-      const ctx: TemplateCtx = { payload: row.payload };
-      const recipients = await tpl.recipients(tx, row.payload);
+      if (!tpl) continue; // unknown event_type → just skip (cursor advances).
+      // Special-case admin fan-out: resolve once.
+      const recipients = tpl.code === "kyc_submitted_for_admins"
+        ? await resolveAdmins()
+        : await tpl.recipients(tx, row.payload);
       const uniq = Array.from(new Set(recipients.filter((r) => /^[0-9a-f-]{36}$/i.test(r))));
+      if (uniq.length === 0) continue;
+      plans.push({ row, tpl, recipients: uniq });
+    }
 
-      for (const uid of uniq) {
-        // Preference check (default enabled).
-        const prefRows = await tx
-          .select({ enabled: notificationPreferences.enabled })
-          .from(notificationPreferences)
-          .where(
-            and(
-              eq(notificationPreferences.user_id, uid),
-              eq(notificationPreferences.notification_code, tpl.code),
-              eq(notificationPreferences.channel, "in_app")
-            )
+    // Batched preferences fetch.
+    const allUserIds = Array.from(new Set(plans.flatMap((p) => p.recipients)));
+    const allCodes = Array.from(new Set(plans.map((p) => p.tpl.code)));
+    let prefMap = new Map<string, boolean>();
+    if (allUserIds.length > 0 && allCodes.length > 0) {
+      // drizzle inArray binds each value as a separate $N param — works
+      // around the "record vs array" cast issue without manual building.
+      const prefRows = await tx
+        .select({
+          user_id: notificationPreferences.user_id,
+          notification_code: notificationPreferences.notification_code,
+          enabled: notificationPreferences.enabled,
+        })
+        .from(notificationPreferences)
+        .where(
+          and(
+            inArray(notificationPreferences.user_id, allUserIds),
+            inArray(notificationPreferences.notification_code, allCodes),
+            eq(notificationPreferences.channel, "in_app")
           )
-          .limit(1);
-        const enabled = prefRows.length === 0 ? true : prefRows[0]!.enabled;
-        if (!enabled) continue;
+        );
+      prefMap = new Map(prefRows.map((r) => [`${r.user_id}|${r.notification_code}`, r.enabled]));
+    }
 
-        // Idempotent insert; dedupe by (source_event_id, user, channel, code).
+    let processed = 0;
+    for (const plan of plans) {
+      const ctx: TemplateCtx = { payload: plan.row.payload };
+      for (const uid of plan.recipients) {
+        // Mandatory codes bypass preferences (legal / security).
+        const enabled = MANDATORY_CODES.has(plan.tpl.code)
+          ? true
+          : prefMap.get(`${uid}|${plan.tpl.code}`) ?? true;
+        if (!enabled) continue;
         await tx.execute(
           dsql`INSERT INTO notifications
                   (recipient_user_id, source_event_id, aggregate_type, aggregate_id,
                    notification_code, channel, title, body, payload, status)
-                VALUES (${uid}, ${row.id}, ${row.aggregate_type}, ${row.aggregate_id},
-                        ${tpl.code}, 'in_app', ${tpl.title(ctx)}, ${tpl.body(ctx)},
-                        ${JSON.stringify(row.payload)}::jsonb, 'sent')
+                VALUES (${uid}, ${plan.row.id}, ${plan.row.aggregate_type}, ${plan.row.aggregate_id},
+                        ${plan.tpl.code}, 'in_app', ${plan.tpl.title(ctx)}, ${plan.tpl.body(ctx)},
+                        ${JSON.stringify(plan.row.payload)}::jsonb, 'sent')
                 ON CONFLICT DO NOTHING`
         );
       }
-
-      await tx
-        .update(outboxEvents)
-        .set({ status: "processed", processed_at: new Date() })
-        .where(eq(outboxEvents.id, row.id));
       processed++;
     }
+
+    // Advance the cursor — outbox_events row stays untouched so other
+    // consumers can independently read.
+    await tx.execute(
+      dsql`UPDATE notification_consumer_cursors
+              SET last_seen_id = ${maxId}, updated_at = now()
+            WHERE consumer_name = ${CONSUMER_NAME}`
+    );
     return processed;
   });
+}
+
+/** Mandatory codes cannot be opted out via PATCH /preferences. */
+export function isMandatoryCode(code: string): boolean {
+  return MANDATORY_CODES.has(code);
 }
 
 /* ----------------------------- public reads ------------------------------ */
@@ -283,11 +359,15 @@ export async function listPreferences(userId: string) {
   return { items: rows };
 }
 
-export async function setPreference(userId: string, code: string, channel: string, enabled: boolean) {
+export async function setPreference(userId: string, code: string, channel: string, enabled: boolean): Promise<Result<{ ok: true }>> {
+  if (!enabled && isMandatoryCode(code)) {
+    return { ok: false, error: { code: "cannot_opt_out_mandatory", status: 422 } };
+  }
   await db.execute(
     dsql`INSERT INTO notification_preferences (user_id, notification_code, channel, enabled)
          VALUES (${userId}, ${code}, ${channel}, ${enabled})
          ON CONFLICT (user_id, notification_code, channel)
          DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()`
   );
+  return { ok: true, value: { ok: true } };
 }

@@ -26,6 +26,19 @@ export type DealPayment = {
   refunded_at: string | null;
 };
 
+/**
+ * Reasons whose deals never reached active+ status → escrow was never held.
+ * Distinguished from "actually refunded" (mutual cancel from active, dispute
+ * resolved with refund_to_client) where funds had been held.
+ */
+const NEVER_HELD_REASONS = new Set([
+  "cancelled_by_client",
+  "rejected_by_provider",
+  "escrow_timeout",
+  "escrow_hold_expired",
+  "expired_pending",
+]);
+
 function paymentStateFromDeal(d: {
   status: string;
   cancellation_reason: string | null;
@@ -37,13 +50,11 @@ function paymentStateFromDeal(d: {
   if (d.status === "pending") return { state: "none", released_at: null, refunded_at: null, held_at: null };
   if (d.status === "completed") return { state: "released", released_at: d.updated_at, refunded_at: null, held_at: d.created_at };
   if (d.status === "cancelled") {
-    // Pending-cancel → no payment at all. Mutual cancel from active → refunded.
-    if (d.cancellation_reason === "cancelled_by_client" || d.cancellation_reason === "rejected_by_provider") {
+    if (d.cancellation_reason && NEVER_HELD_REASONS.has(d.cancellation_reason)) {
       return { state: "none", released_at: null, refunded_at: null, held_at: null };
     }
     return { state: "refunded", released_at: null, refunded_at: d.updated_at, held_at: d.created_at };
   }
-  // active / in_review / disputed
   return { state: "held", released_at: null, refunded_at: null, held_at: d.created_at };
 }
 
@@ -66,15 +77,19 @@ export async function getDealPayment(viewerId: string, dealId: string): Promise<
 
 /* ------------------------------- wallet --------------------------------- */
 
-export async function getWallet(providerId: string) {
-  const earned = await db.execute<{ s: number | null }>(
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0] | typeof db;
+
+async function computeWallet(executor: Tx, providerId: string) {
+  const earned = await executor.execute<{ s: number | null }>(
     dsql`SELECT COALESCE(SUM(agreed_price), 0)::bigint AS s FROM deals
           WHERE provider_id = ${providerId} AND status = 'completed'`
   );
-  const paidOut = await db.execute<{ s: number | null }>(
+  const paidOut = await executor.execute<{ s: number | null }>(
     dsql`SELECT COALESCE(SUM(amount_kopecks), 0)::bigint AS s FROM payouts
           WHERE provider_id = ${providerId} AND status IN ('completed','processing','requested')`
   );
+  // NOTE: Number() coerces bigint→number; safe under 2^53 kopecks (~90T UAH).
+  // Switch to BigInt + string serialization once aggregates approach that.
   const earnedNum = Number(earned[0]?.s ?? 0);
   const paidNum = Number(paidOut[0]?.s ?? 0);
   return {
@@ -83,6 +98,10 @@ export async function getWallet(providerId: string) {
     available_kopecks: Math.max(earnedNum - paidNum, 0),
     currency: "UAH",
   };
+}
+
+export async function getWallet(providerId: string) {
+  return computeWallet(db, providerId);
 }
 
 /* ------------------------------ payouts --------------------------------- */
@@ -95,16 +114,19 @@ export async function requestPayout(args: {
   if (args.amount_kopecks <= 0) return err("validation_failed", 400, { fields: { amount_kopecks: "must_be_positive" } });
 
   return await db.transaction(async (tx) => {
-    // KYC + payout_enabled gate (spec §4.7 defense-in-depth).
-    const u = await tx
-      .select({ payout_enabled: users.payout_enabled, kyc_status: users.kyc_status })
-      .from(users)
-      .where(eq(users.id, args.provider_id))
-      .limit(1);
+    // FOR UPDATE on the user row serializes concurrent payout requests for
+    // the same provider. Without this lock, two simultaneous calls can both
+    // pass the wallet check at available=X and both insert payouts summing
+    // to 2X → silent overdraft.
+    const u = await tx.execute<{ payout_enabled: boolean; kyc_status: string; status: string }>(
+      dsql`SELECT payout_enabled, kyc_status, status
+             FROM users WHERE id = ${args.provider_id} FOR UPDATE`
+    );
     if (u.length === 0) return err("user_not_found", 404);
+    if (u[0]!.status !== "active") return err("account_suspended", 403);
     if (!u[0]!.payout_enabled) return err("payout_disabled", 403, { kyc_status: u[0]!.kyc_status });
 
-    const wallet = await getWallet(args.provider_id);
+    const wallet = await computeWallet(tx, args.provider_id);
     if (args.amount_kopecks > wallet.available_kopecks) {
       return err("insufficient_funds", 422, { available_kopecks: wallet.available_kopecks });
     }
@@ -145,44 +167,50 @@ export async function listPayouts(providerId: string, opts: { limit: number }) {
 
 export async function markPayoutCompleted(args: { payout_id: string; admin_id: string }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
-    const r = await tx
-      .select()
-      .from(payouts)
-      .where(eq(payouts.id, args.payout_id))
-      .limit(1);
-    if (r.length === 0) return err("not_found", 404);
-    const p = r[0]!;
-    if (p.status !== "requested" && p.status !== "processing") {
-      return err("invalid_state", 409, { current_status: p.status });
-    }
+    // Conditional UPDATE collapses SELECT+UPDATE TOCTOU into one statement —
+    // two admins racing won't both emit payout.completed.
     const now = new Date();
-    await tx
-      .update(payouts)
-      .set({ status: "completed", processed_at: p.processed_at ?? now, completed_at: now })
-      .where(eq(payouts.id, args.payout_id));
-
+    const upd = await tx.execute<{ id: string; provider_id: string; amount_kopecks: number }>(
+      dsql`UPDATE payouts
+              SET status = 'completed',
+                  processed_at = COALESCE(processed_at, ${now}),
+                  completed_at = ${now}
+            WHERE id = ${args.payout_id}
+              AND status IN ('requested','processing')
+            RETURNING id, provider_id, amount_kopecks`
+    );
+    if (upd.length === 0) {
+      const cur = await tx.select({ status: payouts.status }).from(payouts).where(eq(payouts.id, args.payout_id)).limit(1);
+      if (cur.length === 0) return err("not_found", 404);
+      return err("invalid_state", 409, { current_status: cur[0]!.status });
+    }
+    const p = upd[0]!;
     await tx.insert(outboxEvents).values({
       aggregate_type: "payout",
       aggregate_id: args.payout_id,
       event_type: "payout.completed",
       payload: { payout_id: args.payout_id, provider_id: p.provider_id, amount_kopecks: p.amount_kopecks },
     });
-
     return { ok: true as const, value: { id: args.payout_id } };
   });
 }
 
 export async function markPayoutFailed(args: { payout_id: string; admin_id: string; reason: string }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
-    const r = await tx.select().from(payouts).where(eq(payouts.id, args.payout_id)).limit(1);
-    if (r.length === 0) return err("not_found", 404);
-    if (r[0]!.status === "completed" || r[0]!.status === "failed") {
-      return err("invalid_state", 409, { current_status: r[0]!.status });
+    const upd = await tx.execute<{ id: string }>(
+      dsql`UPDATE payouts
+              SET status = 'failed',
+                  failure_reason = ${args.reason},
+                  processed_at = ${new Date()}
+            WHERE id = ${args.payout_id}
+              AND status IN ('requested','processing')
+            RETURNING id`
+    );
+    if (upd.length === 0) {
+      const cur = await tx.select({ status: payouts.status }).from(payouts).where(eq(payouts.id, args.payout_id)).limit(1);
+      if (cur.length === 0) return err("not_found", 404);
+      return err("invalid_state", 409, { current_status: cur[0]!.status });
     }
-    await tx
-      .update(payouts)
-      .set({ status: "failed", failure_reason: args.reason, processed_at: new Date() })
-      .where(eq(payouts.id, args.payout_id));
     await tx.insert(outboxEvents).values({
       aggregate_type: "payout",
       aggregate_id: args.payout_id,

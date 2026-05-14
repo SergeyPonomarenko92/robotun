@@ -37,10 +37,16 @@ export const messagingRoutes: FastifyPluginAsync = async (server) => {
     "/conversations/:id/messages",
     { preHandler: server.authenticate },
     async (req, reply) => {
-      const q = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50), before: z.string().datetime().optional() }).parse(req.query ?? {});
+      const q = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(100).default(50),
+          cursor: z.string().optional(),
+        })
+        .parse(req.query ?? {});
       const r = await svc.listMessages(req.auth!.user_id, req.params.id, q);
       if (!r) return reply.code(404).send({ error: "conversation_not_found" });
       if (r === "forbidden") return reply.code(404).send({ error: "conversation_not_found" });
+      if (r === "invalid_cursor") return reply.code(400).send({ error: "invalid_cursor" });
       return r;
     }
   );

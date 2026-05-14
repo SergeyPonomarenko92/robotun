@@ -42,7 +42,8 @@ export async function recordEvidence(args: {
     const expectedParty = args.party_role === "client" ? d.client_id : d.provider_id;
     if (expectedParty !== args.user_id) return err("forbidden", 403);
     if (d.status !== "disputed") return err("deal_not_disputed", 409, { current_status: d.status });
-    if (args.statement && (args.statement.length < 30 || args.statement.length > 4000)) {
+    if (!args.statement) return err("validation_failed", 400, { fields: { statement: "required" } });
+    if (args.statement.length < 30 || args.statement.length > 4000) {
       return err("validation_failed", 400, { fields: { statement: "length_30_4000" } });
     }
 

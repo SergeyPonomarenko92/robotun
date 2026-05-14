@@ -7,7 +7,7 @@
  */
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { adminActions, outboxEvents, users } from "../db/schema.js";
+import { adminActions, outboxEvents, userRoles, users } from "../db/schema.js";
 
 type ServiceError = { code: string; status: number };
 type Result<T> = { ok: true; value: T } | { ok: false; error: ServiceError };
@@ -103,21 +103,30 @@ export async function suspendUser(args: {
   ua?: string | null;
 }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
+    // Re-read admin role inside the tx (closes race vs. concurrent role revoke).
+    const actorRoles = await tx.select({ role: userRoles.role }).from(userRoles).where(eq(userRoles.user_id, args.admin_id));
+    if (!actorRoles.some((r) => r.role === "admin")) {
+      return { ok: false, error: { code: "forbidden", status: 403 } };
+    }
+
     const rows = await tx.select().from(users).where(eq(users.id, args.target_user_id)).limit(1);
     if (rows.length === 0) return { ok: false, error: { code: "user_not_found", status: 404 } };
     const u = rows[0]!;
     if (u.status === "suspended") return { ok: false, error: { code: "already_suspended", status: 409 } };
 
+    // Snapshot payout_enabled so activate can restore it. Suspension already
+    // gates monetary egress via account_suspended check in payouts; flipping
+    // payout_enabled here would orphan it on the next /activate.
     await tx
       .update(users)
-      .set({ status: "suspended", ver: u.ver + 1, payout_enabled: false })
+      .set({ status: "suspended", ver: u.ver + 1 })
       .where(eq(users.id, args.target_user_id));
 
     await audit(tx, {
       actor_admin_id: args.admin_id,
       target_user_id: args.target_user_id,
       action: "user.suspend",
-      metadata: { reason: args.reason, prev_status: u.status },
+      metadata: { reason: args.reason, prev_status: u.status, prev_payout_enabled: u.payout_enabled },
       ip: args.ip ?? null,
       user_agent: args.ua ?? null,
     });
@@ -140,10 +149,19 @@ export async function activateUser(args: {
   ua?: string | null;
 }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
+    const actorRoles = await tx.select({ role: userRoles.role }).from(userRoles).where(eq(userRoles.user_id, args.admin_id));
+    if (!actorRoles.some((r) => r.role === "admin")) {
+      return { ok: false, error: { code: "forbidden", status: 403 } };
+    }
+
     const rows = await tx.select().from(users).where(eq(users.id, args.target_user_id)).limit(1);
     if (rows.length === 0) return { ok: false, error: { code: "user_not_found", status: 404 } };
     const u = rows[0]!;
-    if (u.status === "deleted") return { ok: false, error: { code: "user_deleted", status: 409 } };
+    // Activate strictly lifts a prior suspend. Don't bypass email verification
+    // (pending) or undelete soft-deleted accounts.
+    if (u.status !== "suspended") {
+      return { ok: false, error: { code: "invalid_transition", status: 409 } };
+    }
 
     await tx
       .update(users)
@@ -157,6 +175,13 @@ export async function activateUser(args: {
       metadata: { prev_status: u.status },
       ip: args.ip ?? null,
       user_agent: args.ua ?? null,
+    });
+
+    await tx.insert(outboxEvents).values({
+      aggregate_type: "user",
+      aggregate_id: args.target_user_id,
+      event_type: "user.activated",
+      payload: { user_id: args.target_user_id, by_admin: args.admin_id },
     });
 
     return { ok: true as const, value: { id: args.target_user_id } };

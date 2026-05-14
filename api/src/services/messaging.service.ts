@@ -4,7 +4,7 @@
  * Polling-based. SSE/Redis pub-sub, contact-info detection, moderation,
  * attachments — deferred.
  */
-import { and, desc, eq, or, sql as dsql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
   conversationReads,
@@ -78,8 +78,24 @@ export async function openPreDealConversation(args: {
       payload: { conversation_id: id, kind: "pre_deal", client_id: args.user_id, provider_id: providerId },
     });
     return { ok: true as const, value: { id, created: true } };
-  }).catch((e) => {
-    if (pgCode(e) === "23505") return err("conversation_exists", 409);
+  }).catch(async (e) => {
+    if (pgCode(e) === "23505") {
+      // Lost the race — re-fetch the now-existing row so idempotency is
+      // preserved (caller can resolve the conversation id either way).
+      const existing = await db
+        .select({ id: conversations.id })
+        .from(conversations)
+        .where(
+          and(
+            eq(conversations.kind, "pre_deal"),
+            eq(conversations.listing_id, args.listing_id),
+            eq(conversations.client_id, args.user_id)
+          )
+        )
+        .limit(1);
+      if (existing.length > 0) return { ok: true as const, value: { id: existing[0]!.id, created: false } };
+      return err("conversation_exists", 409);
+    }
     throw e;
   });
 }
@@ -94,18 +110,31 @@ export async function listMine(userId: string) {
     .orderBy(desc(conversations.last_message_at), desc(conversations.created_at))
     .limit(100);
 
-  // Unread counts via single batch query.
   if (rows.length === 0) return { items: [] as unknown[] };
-  const counts = await db.execute<{ conversation_id: string; unread: number }>(
-    dsql`SELECT m.conversation_id, COUNT(*)::int AS unread
-           FROM messages m
-           LEFT JOIN conversation_reads r
-             ON r.conversation_id = m.conversation_id AND r.user_id = ${userId}
-          WHERE m.conversation_id = ANY(${dsql.raw(`ARRAY[${rows.map(r => `'${r.id}'`).join(",")}]::uuid[]`)})
-            AND m.sender_id <> ${userId}
-            AND (r.last_read_at IS NULL OR m.created_at > r.last_read_at)
-          GROUP BY m.conversation_id`
-  );
+  const convIds = rows.map((r) => r.id);
+  // drizzle's inArray binds the array as a tuple of $N params and serializes
+  // each UUID safely — no manual array-literal string-building.
+  const counts = await db
+    .select({
+      conversation_id: messages.conversation_id,
+      unread: dsql<number>`COUNT(*)::int`,
+    })
+    .from(messages)
+    .leftJoin(
+      conversationReads,
+      and(
+        eq(conversationReads.conversation_id, messages.conversation_id),
+        eq(conversationReads.user_id, userId)
+      )
+    )
+    .where(
+      and(
+        inArray(messages.conversation_id, convIds),
+        dsql`${messages.sender_id} <> ${userId}`,
+        dsql`(${conversationReads.last_read_at} IS NULL OR ${messages.created_at} > ${conversationReads.last_read_at})`
+      )
+    )
+    .groupBy(messages.conversation_id);
   const byConv = new Map(counts.map((c) => [c.conversation_id, c.unread]));
 
   return {
@@ -125,23 +154,41 @@ export async function getConversation(userId: string, conversationId: string) {
   return c;
 }
 
-export async function listMessages(userId: string, conversationId: string, opts: { limit: number; before?: string }) {
+function decodeMsgCursor(c: string): { t: string; i: string } | null {
+  try {
+    const o = JSON.parse(Buffer.from(c, "base64").toString("utf8"));
+    if (typeof o?.t === "string" && typeof o?.i === "string" && !isNaN(Date.parse(o.t))) return o;
+  } catch {}
+  return null;
+}
+
+export async function listMessages(userId: string, conversationId: string, opts: { limit: number; cursor?: string }) {
   const conv = await getConversation(userId, conversationId);
   if (!conv) return null;
   if (conv === "forbidden") return "forbidden" as const;
 
   const limit = Math.min(Math.max(opts.limit, 1), 100);
   const where = [eq(messages.conversation_id, conversationId)];
-  if (opts.before) {
-    where.push(dsql`${messages.created_at} < ${new Date(opts.before)}`);
+  if (opts.cursor) {
+    const cur = decodeMsgCursor(opts.cursor);
+    if (!cur) return "invalid_cursor" as const;
+    // (created_at, id) tuple keyset: stable across equal timestamps.
+    where.push(dsql`(${messages.created_at}, ${messages.id}) < (${new Date(cur.t)}, ${cur.i}::uuid)`);
   }
   const rows = await db
     .select()
     .from(messages)
     .where(and(...where))
-    .orderBy(desc(messages.created_at))
-    .limit(limit);
-  return { items: rows.reverse() };
+    .orderBy(desc(messages.created_at), desc(messages.id))
+    .limit(limit + 1);
+  const hasMore = rows.length > limit;
+  const slice = rows.slice(0, limit);
+  const last = slice[slice.length - 1];
+  const next =
+    hasMore && last
+      ? Buffer.from(JSON.stringify({ t: last.created_at.toISOString(), i: last.id }), "utf8").toString("base64")
+      : null;
+  return { items: slice.reverse(), next_cursor: next, has_more: hasMore };
 }
 
 export async function sendMessage(args: {
@@ -165,13 +212,13 @@ export async function sendMessage(args: {
     }
     if (conv.status !== "open") return err("conversation_closed", 409, { status: conv.status });
 
-    // Deal-scoped conversations: send only if deal is non-terminal.
+    // Deal-scoped conversations: send only if deal is non-terminal. FOR
+    // SHARE forces the deal-completion tx (which takes FOR UPDATE) to wait,
+    // closing the TOCTOU window between status read and message INSERT.
     if (conv.kind === "deal" && conv.deal_id) {
-      const dr = await tx
-        .select({ status: deals.status })
-        .from(deals)
-        .where(eq(deals.id, conv.deal_id))
-        .limit(1);
+      const dr = await tx.execute<{ status: string }>(
+        dsql`SELECT status FROM deals WHERE id = ${conv.deal_id} FOR SHARE`
+      );
       if (dr.length > 0 && (dr[0]!.status === "completed" || dr[0]!.status === "cancelled")) {
         return err("deal_terminal", 409, { deal_status: dr[0]!.status });
       }
@@ -201,15 +248,18 @@ export async function sendMessage(args: {
 }
 
 export async function markRead(userId: string, conversationId: string): Promise<Result<{ ok: true }>> {
-  const conv = await getConversation(userId, conversationId);
-  if (!conv) return err("conversation_not_found", 404);
-  if (conv === "forbidden") return err("forbidden", 403);
-
-  await db.execute(
+  // Conditional INSERT — participation enforced inside the same statement,
+  // closing the TOCTOU window vs. the prior SELECT-then-INSERT.
+  const r = await db.execute<{ conversation_id: string }>(
     dsql`INSERT INTO conversation_reads (conversation_id, user_id, last_read_at)
-         VALUES (${conversationId}, ${userId}, now())
+         SELECT ${conversationId}::uuid, ${userId}::uuid, now()
+           FROM conversations c
+          WHERE c.id = ${conversationId}::uuid
+            AND (c.client_id = ${userId}::uuid OR c.provider_id = ${userId}::uuid)
          ON CONFLICT (conversation_id, user_id)
-         DO UPDATE SET last_read_at = EXCLUDED.last_read_at`
+         DO UPDATE SET last_read_at = EXCLUDED.last_read_at
+         RETURNING conversation_id`
   );
+  if (r.length === 0) return err("conversation_not_found", 404);
   return { ok: true, value: { ok: true } };
 }

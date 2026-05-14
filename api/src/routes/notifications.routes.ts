@@ -1,6 +1,14 @@
 import type { FastifyPluginAsync } from "fastify";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { db } from "../db/client.js";
+import { userRoles } from "../db/schema.js";
 import * as svc from "../services/notifications.service.js";
+
+async function isAdmin(userId: string): Promise<boolean> {
+  const r = await db.select({ role: userRoles.role }).from(userRoles).where(eq(userRoles.user_id, userId));
+  return r.some((x) => x.role === "admin");
+}
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -47,15 +55,17 @@ export const notificationsRoutes: FastifyPluginAsync = async (server) => {
     async (req, reply) => {
       const parsed = prefSchema.safeParse(req.body);
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
-      await svc.setPreference(req.auth!.user_id, parsed.data.notification_code, parsed.data.channel, parsed.data.enabled);
-      return { ok: true };
+      const r = await svc.setPreference(req.auth!.user_id, parsed.data.notification_code, parsed.data.channel, parsed.data.enabled);
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      return r.value;
     }
   );
 
   // Admin/dev: drain outbox synchronously. Useful for tests; production
   // path is the background worker.
+  // Admin-only synchronous drain (dev / tests).
   server.post("/admin/notifications/drain", { preHandler: server.authenticate }, async (req, reply) => {
-    if (req.auth!.status !== "active") return reply.code(403).send({ error: "forbidden" });
+    if (!(await isAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
     const n = await svc.consumeOutboxOnce();
     return { processed: n };
   });

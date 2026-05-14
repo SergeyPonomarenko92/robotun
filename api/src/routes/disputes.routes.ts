@@ -6,7 +6,9 @@ import { userRoles } from "../db/schema.js";
 import * as svc from "../services/disputes.service.js";
 
 const respondSchema = z.object({
-  statement: z.string().min(30).max(4000).optional(),
+  // Spec REQ-003 / DSP-CON-006: statement required at submission. NULL is
+  // reserved for GDPR-erased rows (DSP-CON-007).
+  statement: z.string().min(30).max(4000),
   attachment_ids: z.array(z.string().uuid()).max(10).optional(),
 });
 
@@ -22,25 +24,10 @@ async function isAdmin(userId: string): Promise<boolean> {
 }
 
 export const disputesRoutes: FastifyPluginAsync = async (server) => {
-  server.post<{ Params: { id: string } }>(
-    "/deals/:id/dispute/evidence",
-    { preHandler: server.authenticate },
-    async (req, reply) => {
-      const parsed = respondSchema.safeParse(req.body ?? {});
-      if (!parsed.success) return reply.code(400).send({ error: "invalid_body", fields: parsed.error.flatten().fieldErrors });
-      const r = await svc.recordEvidence({
-        deal_id: req.params.id,
-        user_id: req.auth!.user_id,
-        party_role: "client",
-        reason: "evidence",
-        statement: parsed.data.statement ?? null,
-        attachment_ids: parsed.data.attachment_ids,
-      });
-      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
-      return reply.code(201).send(r.value);
-    }
-  );
-
+  // Note: client evidence is now written atomically inside /deals/:id/dispute
+  // (deals.service.ts:disputeDeal). The previous standalone
+  // /deals/:id/dispute/evidence endpoint was removed — see Module 14 fix
+  // for REQ-003 violation.
   server.post<{ Params: { id: string } }>(
     "/deals/:id/dispute/respond",
     { preHandler: server.authenticate },

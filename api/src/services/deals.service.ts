@@ -16,6 +16,7 @@ import {
   categories,
   dealEvents,
   deals,
+  disputeEvidence,
   listings,
   outboxEvents,
   users,
@@ -378,6 +379,19 @@ export async function disputeDeal(args: TransitionArgs & {
         dispute_resolve_by: resolveBy,
       })
       .where(eq(deals.id, d.id));
+
+    // REQ-003 / DSP-PAT-003 / AC-001: client evidence row inserted atomically
+    // with the status transition. Spec forbids a "disputed" deal with zero
+    // dispute_evidence rows. The follow-up /dispute/evidence call would be
+    // redundant; /dispute/respond is provider's only entry.
+    await tx.insert(disputeEvidence).values({
+      deal_id: d.id,
+      party_role: "client",
+      uploader_user_id: args.actor_id,
+      reason: "initial_dispute",
+      statement: args.reason,
+      attachment_ids: args.attachment_ids ?? [],
+    });
 
     await logEvent(tx, {
       deal_id: d.id,
