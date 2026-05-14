@@ -264,20 +264,104 @@ export async function submitKyc(args: {
 
 /* ------------------------------ ADMIN ----------------------------------- */
 
-export async function listAdminQueue(opts: { limit: number }) {
+/**
+ * Admin queue FE shape (web/src/lib/admin-kyc.ts:5):
+ *   AdminKycRow {
+ *     provider_id, provider: {id, display_name, email, avatar_url?} | null,
+ *     status, doc_type, legal_name, tax_id, submitted_at,
+ *     reviewed_at, rejection_code
+ *   }
+ *
+ * Filter `status`:
+ *   'open' → submitted OR in_review (admin queue)
+ *   'approved' / 'rejected' → exact match
+ */
+export async function listAdminQueue(opts: { limit: number; status?: string }) {
   const limit = Math.min(Math.max(opts.limit, 1), 100);
-  const rows = await db
-    .select()
+  let statusClause: string;
+  switch (opts.status) {
+    case "approved":
+      statusClause = `kv.status = 'approved'`;
+      break;
+    case "rejected":
+      statusClause = `kv.status = 'rejected'`;
+      break;
+    case "expired":
+      statusClause = `kv.status = 'expired'`;
+      break;
+    case "open":
+    default:
+      statusClause = `kv.status IN ('submitted','in_review')`;
+  }
+  const rows = await (await import("../db/client.js")).sql.unsafe(`
+    SELECT
+      kv.provider_id, kv.status, kv.submitted_at, kv.decided_at AS reviewed_at, kv.rejection_code,
+      u.display_name AS p_name, u.email AS p_email, u.avatar_url AS p_avatar,
+      (SELECT document_type FROM kyc_documents
+        WHERE kyc_verification_id = kv.id
+        ORDER BY uploaded_at DESC LIMIT 1) AS doc_type
+      FROM kyc_verifications kv
+      LEFT JOIN users u ON u.id = kv.provider_id
+     WHERE ${statusClause}
+     ORDER BY kv.created_at
+     LIMIT ${limit}
+  `) as unknown as Array<{
+    provider_id: string | null;
+    status: string;
+    submitted_at: Date | string | null;
+    reviewed_at: Date | string | null;
+    rejection_code: string | null;
+    p_name: string | null;
+    p_email: string | null;
+    p_avatar: string | null;
+    doc_type: string | null;
+  }>;
+  return {
+    items: rows.map((r) => {
+      // Map BE document_type → FE doc_type domain.
+      const fedoc =
+        r.doc_type === "passport_ua" || r.doc_type === "passport_foreign"
+          ? "passport"
+          : r.doc_type === "id_card"
+            ? "id_card"
+            : r.doc_type === "rnokpp" || r.doc_type === "fop_certificate"
+              ? "bio_passport"
+              : "id_card";
+      return {
+        provider_id: r.provider_id ?? "",
+        provider: r.provider_id
+          ? {
+              id: r.provider_id,
+              display_name: r.p_name ?? "",
+              email: r.p_email ?? "",
+              avatar_url: r.p_avatar ?? undefined,
+            }
+          : null,
+        status: r.status,
+        doc_type: fedoc,
+        // PII fields (legal_name, tax_id) NULL until KMS encryption ships.
+        legal_name: "",
+        tax_id: "",
+        submitted_at: r.submitted_at
+          ? (typeof r.submitted_at === "string" ? r.submitted_at : r.submitted_at.toISOString())
+          : "",
+        reviewed_at: r.reviewed_at
+          ? (typeof r.reviewed_at === "string" ? r.reviewed_at : r.reviewed_at.toISOString())
+          : null,
+        rejection_code: r.rejection_code ?? null,
+      };
+    }),
+  };
+}
+
+/** Resolve a kyc_verifications.id by provider_id (FE-canonical key). */
+export async function kycIdForProvider(providerId: string): Promise<string | null> {
+  const r = await db
+    .select({ id: kycVerifications.id })
     .from(kycVerifications)
-    .where(
-      and(
-        eq(kycVerifications.status, "submitted"),
-        dsql`${kycVerifications.reviewed_by} IS NULL`
-      )
-    )
-    .orderBy(kycVerifications.created_at)
-    .limit(limit);
-  return { items: rows };
+    .where(eq(kycVerifications.provider_id, providerId))
+    .limit(1);
+  return r[0]?.id ?? null;
 }
 
 export async function claim(args: { kyc_id: string; admin_id: string }): Promise<Result<{ id: string }>> {

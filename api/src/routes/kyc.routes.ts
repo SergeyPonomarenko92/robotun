@@ -84,46 +84,64 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
     async (req, reply) => {
       if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
       const q = z
-        .object({ limit: z.coerce.number().int().min(1).max(100).default(20) })
+        .object({
+          limit: z.coerce.number().int().min(1).max(100).default(50),
+          status: z.enum(["open", "approved", "rejected", "expired"]).default("open"),
+        })
         .parse(req.query ?? {});
       return svc.listAdminQueue(q);
     }
   );
 
-  server.post<{ Params: { id: string } }>(
-    "/admin/kyc/:id/claim",
+  // FE-canonical provider-id-keyed routes (delegate to id-keyed handlers).
+  server.post<{ Params: { provider_id: string } }>(
+    "/admin/kyc/:provider_id/approve",
     { preHandler: server.authenticate },
     async (req, reply) => {
       if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
-      const r = await svc.claim({ kyc_id: req.params.id, admin_id: req.auth!.user_id });
+      const kycId = await svc.kycIdForProvider(req.params.provider_id);
+      if (!kycId) return reply.code(404).send({ error: "not_found" });
+      // Auto-claim if not claimed yet (FE flow doesn't separate claim+approve).
+      const claimR = await svc.claim({ kyc_id: kycId, admin_id: req.auth!.user_id });
+      if (!claimR.ok && claimR.error.code !== "not_claimable") {
+        return reply.code(claimR.error.status).send({ error: claimR.error.code });
+      }
+      const r = await svc.approve({ kyc_id: kycId, admin_id: req.auth!.user_id });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return r.value;
     }
   );
 
-  server.post<{ Params: { id: string } }>(
-    "/admin/kyc/:id/approve",
+  server.post<{ Params: { provider_id: string } }>(
+    "/admin/kyc/:provider_id/reject",
     { preHandler: server.authenticate },
     async (req, reply) => {
       if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
-      const r = await svc.approve({ kyc_id: req.params.id, admin_id: req.auth!.user_id });
-      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
-      return r.value;
-    }
-  );
-
-  server.post<{ Params: { id: string } }>(
-    "/admin/kyc/:id/reject",
-    { preHandler: server.authenticate },
-    async (req, reply) => {
-      if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
+      const kycId = await svc.kycIdForProvider(req.params.provider_id);
+      if (!kycId) return reply.code(404).send({ error: "not_found" });
       const parsed = rejectSchema.safeParse(req.body ?? {});
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
-      const r = await svc.reject({
-        kyc_id: req.params.id,
-        admin_id: req.auth!.user_id,
-        ...parsed.data,
-      });
+      const claimR = await svc.claim({ kyc_id: kycId, admin_id: req.auth!.user_id });
+      if (!claimR.ok && claimR.error.code !== "not_claimable") {
+        return reply.code(claimR.error.status).send({ error: claimR.error.code });
+      }
+      const r = await svc.reject({ kyc_id: kycId, admin_id: req.auth!.user_id, ...parsed.data });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      return r.value;
+    }
+  );
+
+  // Legacy id-keyed claim path retained for internal/admin tooling that
+  // tracks by kyc_id. /approve and /reject are FE-canonical provider-id-
+  // keyed (above) and auto-claim internally.
+  server.post<{ Params: { provider_id: string } }>(
+    "/admin/kyc/:provider_id/claim",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
+      const kycId = await svc.kycIdForProvider(req.params.provider_id);
+      if (!kycId) return reply.code(404).send({ error: "not_found" });
+      const r = await svc.claim({ kyc_id: kycId, admin_id: req.auth!.user_id });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return r.value;
     }
