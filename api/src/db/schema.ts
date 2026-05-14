@@ -513,3 +513,108 @@ export const kycReviewEvents = pgTable(
     kvIdx: index("idx_kyc_events_kv").on(t.kyc_verification_id, t.created_at),
   })
 );
+
+/**
+ * Module 3 — Deal workflow (MVP cut).
+ *
+ * State machine: pending → active → in_review → completed | disputed | cancelled.
+ * Escrow stays as fields/columns but transitions don't gate on Payments — /accept
+ * activates synchronously (TODO Module 11 will route through escrow callback).
+ *
+ * Out of scope (TODO): auto-completion 7d cron, dispute escalation, pending-expiry
+ * 72h sweep, admin /resolve (Module 14), provider_profiles.completed_deals_count
+ * trigger (provider_profiles table not yet built), dispute_escalations,
+ * deal_attachments (defer to Module 6 media linkage).
+ */
+export const dealStatusEnum = pgEnum("deal_status", [
+  "pending",
+  "active",
+  "in_review",
+  "completed",
+  "disputed",
+  "cancelled",
+]);
+
+export const escrowStatusEnum = pgEnum("escrow_status", [
+  "not_required",
+  "hold_requested",
+  "held",
+  "release_requested",
+  "released",
+  "refund_requested",
+  "refunded",
+]);
+
+export const deals = pgTable(
+  "deals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    client_id: uuid("client_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    provider_id: uuid("provider_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    listing_id: uuid("listing_id").references(() => listings.id, { onDelete: "set null" }),
+    category_id: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "restrict" }),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    status: dealStatusEnum("status").notNull().default("pending"),
+    /** kopecks (UAH minor units) */
+    agreed_price: integer("agreed_price").notNull(),
+    currency: text("currency").notNull().default("UAH"),
+    escrow_status: escrowStatusEnum("escrow_status").notNull().default("not_required"),
+    escrow_hold_id: uuid("escrow_hold_id"),
+    escrow_hold_requested_at: timestamp("escrow_hold_requested_at", { withTimezone: true }),
+    escrow_held_at: timestamp("escrow_held_at", { withTimezone: true }),
+    escrow_released_at: timestamp("escrow_released_at", { withTimezone: true }),
+    deadline_at: timestamp("deadline_at", { withTimezone: true }),
+    review_started_at: timestamp("review_started_at", { withTimezone: true }),
+    auto_complete_after: timestamp("auto_complete_after", { withTimezone: true }),
+    dispute_window_until: timestamp("dispute_window_until", { withTimezone: true }),
+    dispute_opened_at: timestamp("dispute_opened_at", { withTimezone: true }),
+    dispute_resolve_by: timestamp("dispute_resolve_by", { withTimezone: true }),
+    cancel_requested_by_client_at: timestamp("cancel_requested_by_client_at", { withTimezone: true }),
+    cancel_requested_by_provider_at: timestamp("cancel_requested_by_provider_at", { withTimezone: true }),
+    cancellation_reason: text("cancellation_reason"),
+    resolution_outcome: text("resolution_outcome"),
+    resolution_release_amount: integer("resolution_release_amount"),
+    resolution_note: text("resolution_note"),
+    resolved_by_admin_id: uuid("resolved_by_admin_id").references(() => users.id, { onDelete: "set null" }),
+    resolved_at: timestamp("resolved_at", { withTimezone: true }),
+    version: integer("version").notNull().default(1),
+    idempotency_key: text("idempotency_key"),
+    idempotency_body_hash: text("idempotency_body_hash"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index("idx_deals_client").on(t.client_id, t.status, t.created_at),
+    providerIdx: index("idx_deals_provider").on(t.provider_id, t.status, t.created_at),
+    listingIdx: index("idx_deals_listing").on(t.listing_id),
+    idempUniq: uniqueIndex("uq_deals_idempotency_key").on(t.idempotency_key),
+  })
+);
+
+export const dealEvents = pgTable(
+  "deal_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    deal_id: uuid("deal_id")
+      .notNull()
+      .references(() => deals.id, { onDelete: "restrict" }),
+    actor_id: uuid("actor_id").references(() => users.id, { onDelete: "set null" }),
+    actor_role: text("actor_role").notNull(),
+    event_type: text("event_type").notNull(),
+    from_status: text("from_status"),
+    to_status: text("to_status"),
+    metadata: jsonb("metadata").notNull().default({}),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dealIdx: index("idx_deal_events_deal").on(t.deal_id, t.created_at),
+    actorIdx: index("idx_deal_events_actor").on(t.actor_id, t.created_at),
+  })
+);
