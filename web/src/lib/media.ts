@@ -111,29 +111,37 @@ export function useUploader(opts: UploaderOpts): UploaderState {
     async (incoming: File[]) => {
       if (incoming.length === 0) return;
 
-      // Local cap check — applied synchronously before issuing initiates.
-      // FileUploader also slices to remainingSlots, but we double-guard for
-      // direct programmatic calls.
-      const currentCount = files.length;
-      const cap = maxFiles ?? Infinity;
-      const remaining = Math.max(0, cap - currentCount);
-      const accepted = incoming.slice(0, remaining);
-      if (accepted.length === 0) return;
-
-      // Seed pending chips synchronously so the UI reflects all queued uploads
-      // before any network call.
-      const queued: { localId: string; file: File }[] = accepted.map((file) => ({
+      // Pre-generate stable ids so the setFiles updater is pure (strict-mode
+      // double-invoke safe) and we can read `queued` after the commit.
+      const candidates = incoming.map((file) => ({
         localId: crypto.randomUUID(),
         file,
       }));
-      setFiles((prev) => [
-        ...prev,
-        ...queued.map(({ localId, file }) => ({
-          id: localId,
-          file,
-          status: "uploading" as const,
-        })),
-      ]);
+      const cap = maxFiles ?? Infinity;
+
+      // Atomic cap reservation: do the cap check *inside* a setFiles updater so
+      // two near-simultaneous addFiles() calls don't both see the pre-update
+      // length and overshoot maxFiles. Closure-based `files.length` is stale
+      // between updates — this pattern reserves slots in the same tick.
+      // The updater reserves a prefix of `candidates`; `queued` mirrors that
+      // prefix length below using the same arithmetic (single source of truth
+      // is `cap - prev.length` which we capture via a ref).
+      const reservedCountRef = { value: 0 };
+      setFiles((prev) => {
+        const remaining = Math.max(0, cap - prev.length);
+        const take = Math.min(remaining, candidates.length);
+        reservedCountRef.value = take;
+        return [
+          ...prev,
+          ...candidates.slice(0, take).map(({ localId, file }) => ({
+            id: localId,
+            file,
+            status: "uploading" as const,
+          })),
+        ];
+      });
+      const queued = candidates.slice(0, reservedCountRef.value);
+      if (queued.length === 0) return;
 
       await Promise.all(
         queued.map(async ({ localId, file }) => {
@@ -298,7 +306,6 @@ export function useUploader(opts: UploaderOpts): UploaderState {
       );
     },
     [
-      files.length,
       maxFiles,
       maxSizeBytes,
       allowedMimes,
