@@ -19,6 +19,7 @@ import { paymentsRoutes } from "./routes/payments.routes.js";
 import { disputesRoutes } from "./routes/disputes.routes.js";
 import { adminRoutes } from "./routes/admin.routes.js";
 import { consumeOutboxOnce } from "./services/notifications.service.js";
+import { startCronScheduler } from "./services/cron.js";
 import { ensureBuckets } from "./services/s3.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -48,6 +49,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   ensureBuckets().catch((e) => {
     server.log.warn({ err: e }, "ensureBuckets failed");
   });
+
+  // Cron scheduler — state-machine self-completion (auto-complete deals,
+  // expire pending, escalate disputes, kyc expired/stale-claim, retention).
+  if (env.NODE_ENV !== "test") {
+    startCronScheduler(60);
+  }
 
   // Notifications worker — polls outbox every 2s, drains to notifications.
   // Single-active via SELECT FOR UPDATE SKIP LOCKED; safe to run multiple

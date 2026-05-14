@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "../db/client.js";
 import { userRoles } from "../db/schema.js";
 import * as svc from "../services/admin.service.js";
+import { runAllJobs } from "../services/cron.js";
 
 async function requireAdmin(
   req: FastifyRequest,
@@ -84,6 +85,11 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
   );
 
   // admin-only (moderators excluded from PII-bearing audit log).
+  server.post("/admin/cron/run", { preHandler: server.authenticate }, async (req, reply) => {
+    if (!(await requireAdmin(req, reply, ["admin"]))) return;
+    return runAllJobs();
+  });
+
   server.get("/admin/actions", { preHandler: server.authenticate }, async (req, reply) => {
     if (!(await requireAdmin(req, reply, ["admin"]))) return;
     const q = z
