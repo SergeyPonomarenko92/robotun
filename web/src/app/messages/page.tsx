@@ -13,13 +13,17 @@ import { MessageBubble } from "@/components/organisms/MessageBubble";
 import { Composer } from "@/components/organisms/Composer";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { InlineAlert } from "@/components/ui/InlineAlert";
+import { ContactInfoBlockBanner } from "@/components/organisms/ContactInfoBlockBanner";
 import { useRequireAuth } from "@/lib/auth";
 import {
   useConversations,
   useConversationMessages,
   sendMessage,
   markConversationRead,
+  blockConversationApi,
+  unblockConversationApi,
 } from "@/lib/messaging";
 
 export default function MessagesPage() {
@@ -113,6 +117,16 @@ export default function MessagesPage() {
       }));
   }, [conversations.items, scopeFilter, search]);
 
+  // Live contact-info warning before send (UX hint; server runs canonical
+  // detection on submit and auto-redacts).
+  const draftHasContact = React.useMemo(() => {
+    const t = draft.trim();
+    if (t.length < 5) return false;
+    return /\+?\d[\d\s\-()]{8,}\d|[\w.+-]+@[\w.-]+\.[a-z]{2,}|@[a-z0-9_]{4,}|https?:\/\/|www\.|viber|whatsapp|telegram|тел[\.:]/i.test(
+      t
+    );
+  }, [draft]);
+
   const send = async () => {
     if (sending || !activeId) return;
     const body = draft.trim();
@@ -127,6 +141,21 @@ export default function MessagesPage() {
       conversations.refresh();
     } else {
       setSendError(r.error.message);
+    }
+  };
+
+  const toggleBlock = async () => {
+    if (!activeConvo) return;
+    setSendError(null);
+    try {
+      if (activeConvo.blocked_by) {
+        await unblockConversationApi(activeConvo.id);
+      } else {
+        await blockConversationApi(activeConvo.id);
+      }
+      conversations.refresh();
+    } catch {
+      setSendError("Не вдалось виконати дію — спробуйте ще раз");
     }
   };
 
@@ -181,6 +210,11 @@ export default function MessagesPage() {
                           Закрито
                         </Badge>
                       )}
+                      {activeConvo.blocked_by && (
+                        <Badge tone="danger" size="sm" shape="square">
+                          Заблоковано
+                        </Badge>
+                      )}
                     </div>
                     <div className="text-caption text-muted truncate">
                       {activeConvo.scope === "deal"
@@ -188,7 +222,36 @@ export default function MessagesPage() {
                         : "Перед-угода"}
                     </div>
                   </div>
+                  {/* Block / unblock — disabled if counterparty did the
+                      blocking (only blocker lifts per spec semantics). */}
+                  {activeConvo.status === "active" &&
+                    (activeConvo.blocked_by === me.id ||
+                      activeConvo.blocked_by === null) && (
+                      <Button
+                        size="sm"
+                        variant={
+                          activeConvo.blocked_by ? "secondary" : "ghost"
+                        }
+                        onClick={toggleBlock}
+                      >
+                        {activeConvo.blocked_by
+                          ? "Розблокувати"
+                          : "Заблокувати"}
+                      </Button>
+                    )}
                 </header>
+
+                {activeConvo.blocked_by && (
+                  <div className="px-5 pt-4">
+                    <ContactInfoBlockBanner
+                      mode={
+                        activeConvo.blocked_by === me.id
+                          ? "blocked"
+                          : "blocked_pending_admin"
+                      }
+                    />
+                  </div>
+                )}
 
                 {/* Messages */}
                 <div
@@ -251,8 +314,12 @@ export default function MessagesPage() {
                     onChange={setDraft}
                     onSend={send}
                     loading={sending}
-                    blocked={activeConvo.status !== "active"}
+                    blocked={
+                      activeConvo.status !== "active" ||
+                      !!activeConvo.blocked_by
+                    }
                     maxLength={4000}
+                    contactInfoDetected={draftHasContact}
                   />
                 </div>
               </>

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorize, store } from "../../_mock/store";
 import {
+  blockerOf,
   findConversation,
   isParty,
   unreadCountFor,
@@ -40,6 +41,7 @@ export async function GET(req: Request, ctx: Ctx) {
     last_message_at: c.last_message_at,
     last_message_preview: c.last_message_preview,
     unread_count: unreadCountFor(auth.user.id, c.id),
+    blocked_by: blockerOf(c.id),
     created_at: c.created_at,
   });
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorize, store } from "../_mock/store";
 import {
+  blockerOf,
   listConversationsForUser,
   unreadCountFor,
   upsertConversation,
@@ -28,6 +29,7 @@ function projectionFor(callerId: string, c: ReturnType<typeof listConversationsF
     last_message_at: c.last_message_at,
     last_message_preview: c.last_message_preview,
     unread_count: unreadCountFor(callerId, c.id),
+    blocked_by: blockerOf(c.id),
     created_at: c.created_at,
   };
 }

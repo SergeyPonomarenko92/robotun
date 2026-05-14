@@ -21,6 +21,8 @@ export type Conversation = {
   last_message_at: string | null;
   last_message_preview: string | null;
   unread_count: number;
+  /** User id who set the block (null = not blocked). Same caller can lift. */
+  blocked_by: string | null;
   created_at: string;
 };
 
@@ -88,6 +90,30 @@ export async function markConversationRead(conversationId: string) {
   } catch {
     // best-effort; UI doesn't gate on this
   }
+}
+
+export async function blockConversationApi(conversationId: string) {
+  return apiFetch(
+    `/conversations/${encodeURIComponent(conversationId)}/block`,
+    { method: "POST" }
+  );
+}
+export async function unblockConversationApi(conversationId: string) {
+  return apiFetch(
+    `/conversations/${encodeURIComponent(conversationId)}/block`,
+    { method: "DELETE" }
+  );
+}
+export async function reportMessageApi(
+  conversationId: string,
+  messageId: string,
+  reason: "spam" | "harassment" | "contact_info" | "inappropriate" | "other",
+  note?: string
+) {
+  return apiFetch(
+    `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/report`,
+    { method: "POST", body: JSON.stringify({ reason, note }) }
+  );
 }
 
 export async function upsertConversation(

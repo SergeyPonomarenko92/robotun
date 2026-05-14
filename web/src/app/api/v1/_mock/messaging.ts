@@ -35,6 +35,17 @@ export type MockMessage = {
   gdpr_erased_at: string | null;
 };
 
+export type MessageReport = {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  reporter_id: string;
+  reason: "spam" | "harassment" | "contact_info" | "inappropriate" | "other";
+  note: string | null;
+  status: "open" | "actioned" | "dismissed";
+  created_at: string;
+};
+
 declare global {
   // eslint-disable-next-line no-var
   var __ROBOTUN_MESSAGING__:
@@ -42,6 +53,11 @@ declare global {
         conversations: Map<string, MockConversation>;
         messages: Map<string, MockMessage[]>;
         readMarks: Map<string, string>; // key=user_id+":"+convo_id → ISO ts
+        // Conversation-level blocks. Key=convo_id; value=user_id of blocker.
+        blocks: Map<string, string>;
+        reports: MessageReport[];
+        // Per-user rolling 7d window of contact-info hits per REQ-011.
+        contactHits: Map<string, string[]>; // user_id → ISO ts[]
       }
     | undefined;
 }
@@ -52,9 +68,112 @@ function db() {
       conversations: new Map(),
       messages: new Map(),
       readMarks: new Map(),
+      blocks: new Map(),
+      reports: [],
+      contactHits: new Map(),
     };
   }
   return globalThis.__ROBOTUN_MESSAGING__;
+}
+
+// ---------------------------------------------------------------------------
+// Contact-info detection (REQ-011 — simplified mock).
+// ---------------------------------------------------------------------------
+// Detects bare phones (UA + intl), emails, telegram/instagram handles,
+// http(s) URLs. Real backend uses a more robust grammar; mock-grade is
+// enough to exercise the auto-redact + auto-block UI states.
+const CONTACT_PATTERNS: RegExp[] = [
+  /\+?\d[\d\s\-()]{8,}\d/, // phone (10+ digits with optional separators)
+  /[\w.+-]+@[\w.-]+\.[a-z]{2,}/i, // email
+  /@[a-z0-9_]{4,}/i, // telegram/instagram-style handle
+  /(?:https?:\/\/|www\.)\S+/i, // URLs
+  /viber|whatsapp|telegram|тел[\.:]/i, // contact channel mentions
+];
+
+export function detectContactInfo(body: string): boolean {
+  return CONTACT_PATTERNS.some((re) => re.test(body));
+}
+
+function redactBody(body: string): string {
+  let out = body;
+  for (const re of CONTACT_PATTERNS) {
+    out = out.replace(new RegExp(re.source, re.flags + "g"), "▒▒▒");
+  }
+  return out;
+}
+
+const CONTACT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const CONTACT_HIT_THRESHOLD = 5;
+
+function recordContactHit(userId: string): number {
+  const now = Date.now();
+  const arr = (db().contactHits.get(userId) ?? []).filter(
+    (ts) => now - new Date(ts).getTime() < CONTACT_WINDOW_MS
+  );
+  arr.push(new Date(now).toISOString());
+  db().contactHits.set(userId, arr);
+  return arr.length;
+}
+
+// ---------------------------------------------------------------------------
+// Block / unblock (REQ-?; supports two-party block per spec §4).
+// ---------------------------------------------------------------------------
+export function blockConversation(
+  convoId: string,
+  blockerId: string
+): boolean {
+  const c = db().conversations.get(convoId);
+  if (!c || !isParty(c, blockerId)) return false;
+  db().blocks.set(convoId, blockerId);
+  return true;
+}
+export function unblockConversation(
+  convoId: string,
+  callerId: string
+): boolean {
+  const blockerId = db().blocks.get(convoId);
+  if (!blockerId) return false;
+  // Only the user who set the block can lift it (spec semantics).
+  if (blockerId !== callerId) return false;
+  db().blocks.delete(convoId);
+  return true;
+}
+export function blockerOf(convoId: string): string | null {
+  return db().blocks.get(convoId) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Reports
+// ---------------------------------------------------------------------------
+export type ReportInput = {
+  conversation_id: string;
+  message_id: string;
+  reporter_id: string;
+  reason: MessageReport["reason"];
+  note?: string | null;
+};
+export function reportMessage(
+  input: ReportInput
+): { ok: true; report: MessageReport } | { ok: false; error: "not_found" | "not_party" } {
+  const c = db().conversations.get(input.conversation_id);
+  if (!c) return { ok: false, error: "not_found" };
+  if (!isParty(c, input.reporter_id))
+    return { ok: false, error: "not_party" };
+  const list = db().messages.get(c.id) ?? [];
+  const m = list.find((x) => x.id === input.message_id);
+  if (!m) return { ok: false, error: "not_found" };
+  const report: MessageReport = {
+    id: uuid(),
+    conversation_id: input.conversation_id,
+    message_id: input.message_id,
+    reporter_id: input.reporter_id,
+    reason: input.reason,
+    note: input.note ?? null,
+    status: "open",
+    created_at: new Date().toISOString(),
+  };
+  db().reports.push(report);
+  return { ok: true, report };
 }
 
 function uuid(): string {
@@ -161,14 +280,15 @@ export function listConversationsForUser(
 const BODY_MAX = 4000;
 
 export type SendResult =
-  | { ok: true; message: MockMessage }
+  | { ok: true; message: MockMessage; auto_blocked?: boolean }
   | {
       ok: false;
       error:
         | "body_too_long"
         | "body_empty"
         | "conversation_locked"
-        | "not_party";
+        | "not_party"
+        | "blocked";
     };
 
 export function sendMessage(input: {
@@ -183,16 +303,35 @@ export function sendMessage(input: {
   if (c.status === "locked" || c.status === "archived") {
     return { ok: false, error: "conversation_locked" };
   }
-  const body = input.body.trim();
-  if (body.length === 0) return { ok: false, error: "body_empty" };
-  if (body.length > BODY_MAX) return { ok: false, error: "body_too_long" };
+  if (db().blocks.has(c.id)) {
+    return { ok: false, error: "blocked" };
+  }
+  const rawBody = input.body.trim();
+  if (rawBody.length === 0) return { ok: false, error: "body_empty" };
+  if (rawBody.length > BODY_MAX) return { ok: false, error: "body_too_long" };
+
+  // REQ-011: contact-info detection → auto-redact + count toward 5-in-7d
+  // auto-block threshold. Mock auto-blocks the conversation when threshold
+  // is reached (real impl gates the first auto-block on admin confirmation
+  // via Module 9 queue).
+  const hasContact = detectContactInfo(rawBody);
+  const finalBody = hasContact ? redactBody(rawBody) : rawBody;
+  let autoBlocked = false;
+  if (hasContact) {
+    const hits = recordContactHit(input.sender_id);
+    if (hits >= CONTACT_HIT_THRESHOLD) {
+      db().blocks.set(c.id, input.sender_id);
+      autoBlocked = true;
+    }
+  }
+
   const m: MockMessage = {
     id: uuid(),
     conversation_id: c.id,
     sender_id: input.sender_id,
-    body,
-    body_scrubbed: false,
-    contact_info_detected: false, // wired in phase 2
+    body: finalBody,
+    body_scrubbed: hasContact,
+    contact_info_detected: hasContact,
     admin_visible: false,
     created_at: new Date().toISOString(),
     edited_at: null,
@@ -203,8 +342,8 @@ export function sendMessage(input: {
   list.push(m);
   db().messages.set(c.id, list);
   c.last_message_at = m.created_at;
-  c.last_message_preview = body.slice(0, 120);
-  return { ok: true, message: m };
+  c.last_message_preview = finalBody.slice(0, 120);
+  return { ok: true, message: m, auto_blocked: autoBlocked };
 }
 
 export type ListMessagesResult = {
