@@ -816,3 +816,43 @@ export const conversationReads = pgTable(
     pk: uniqueIndex("uq_conv_reads").on(t.conversation_id, t.user_id),
   })
 );
+
+/**
+ * Module 11 — Payments (MVP cut).
+ *
+ * Drastic simplification: no PSP integration, no escrow/ledger tables.
+ * "Payment" per deal is a VIEW over deals state — held when active/in_review,
+ * released on completed, refunded on cancelled-from-active. Only the
+ * provider-side payout flow gets a real table (withdraw requests).
+ *
+ * Out of scope (TODO): LiqPay/Fondy/Stripe stubs, double-entry ledger
+ * (PAY-PAT-001), pre-auth holds with TTL, chargeback flow,
+ * reconciliation locks, KYC payout gate (enforced inline), manual
+ * review threshold, fee accounting, refunds workflow.
+ */
+export const payoutStatusEnum = pgEnum("payout_status", [
+  "requested",
+  "processing",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+export const payouts = pgTable(
+  "payouts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider_id: uuid("provider_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    amount_kopecks: integer("amount_kopecks").notNull(),
+    /** Masked card / IBAN tail for display only. */
+    target_last4: text("target_last4"),
+    status: payoutStatusEnum("status").notNull().default("requested"),
+    failure_reason: text("failure_reason"),
+    requested_at: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    processed_at: timestamp("processed_at", { withTimezone: true }),
+    completed_at: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    providerIdx: index("idx_payouts_provider").on(t.provider_id, t.requested_at),
+  })
+);
