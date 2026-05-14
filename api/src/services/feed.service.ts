@@ -32,8 +32,9 @@ type FeedItem = {
   tags: string[];
 };
 
+type FeedPage = { items: FeedItem[]; next_cursor: string | null; has_more: boolean };
 type FeedResult =
-  | { ok: true; items: FeedItem[]; next_cursor: string | null; has_more: boolean }
+  | { ok: true; value: FeedPage }
   | { ok: false; error: { code: string; status: number } };
 
 export async function listFeed(opts: {
@@ -125,7 +126,12 @@ export async function listFeed(opts: {
            rv.avg_rating, COALESCE(rv.review_count, 0) AS review_count,
            ${scoreExpr} AS score
       FROM listings l
-      LEFT JOIN users u ON u.id = l.provider_id
+      -- INNER (not LEFT): listings.chk_provider_id_archived guarantees
+      -- provider_id IS NOT NULL when status='active', so every row in the
+      -- feed filter has a matching users row. INNER also lets Postgres
+      -- short-circuit before the LATERAL subqueries, removing the
+      -- LEFT-JOIN-then-WHERE-filter footgun.
+      INNER JOIN users u ON u.id = l.provider_id
       LEFT JOIN LATERAL (
         SELECT AVG(overall_rating)::float AS avg_rating, COUNT(*)::int AS review_count
           FROM reviews
@@ -178,11 +184,13 @@ export async function listFeed(opts: {
 
   return {
     ok: true,
-    items: slice.map((r) => ({
-      ...r,
-      published_at: typeof r.published_at === "string" ? r.published_at : r.published_at.toISOString(),
-    })),
-    next_cursor: nextCursor,
-    has_more: hasMore,
+    value: {
+      items: slice.map((r) => ({
+        ...r,
+        published_at: typeof r.published_at === "string" ? r.published_at : r.published_at.toISOString(),
+      })),
+      next_cursor: nextCursor,
+      has_more: hasMore,
+    },
   };
 }

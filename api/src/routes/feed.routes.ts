@@ -16,8 +16,6 @@ export const feedRoutes: FastifyPluginAsync = async (server) => {
     if (!parsed.success) return reply.code(400).send({ error: "invalid_query" });
     const r = await svc.listFeed(parsed.data);
     if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
-    const { ok: _ok, ...rest } = r;
-    void _ok;
-    return rest;
+    return r.value;
   });
 };

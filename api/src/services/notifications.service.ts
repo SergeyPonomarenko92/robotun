@@ -371,14 +371,23 @@ export async function listPreferences(userId: string) {
 }
 
 export async function setPreference(userId: string, code: string, channel: string, enabled: boolean): Promise<Result<{ ok: true }>> {
+  // TS-side guard for a fast 422 + clearer error. DB-side trigger
+  // (notif_prefs_mandatory, P0009) is the second layer that catches any
+  // direct SQL writer bypassing the API.
   if (!enabled && isMandatoryCode(code)) {
     return { ok: false, error: { code: "cannot_opt_out_mandatory", status: 422 } };
   }
-  await db.execute(
-    dsql`INSERT INTO notification_preferences (user_id, notification_code, channel, enabled)
-         VALUES (${userId}, ${code}, ${channel}, ${enabled})
-         ON CONFLICT (user_id, notification_code, channel)
-         DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()`
-  );
+  try {
+    await db.execute(
+      dsql`INSERT INTO notification_preferences (user_id, notification_code, channel, enabled)
+           VALUES (${userId}, ${code}, ${channel}, ${enabled})
+           ON CONFLICT (user_id, notification_code, channel)
+           DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()`
+    );
+  } catch (e) {
+    const ec = (e as { code?: string; cause?: { code?: string } }).code ?? (e as { cause?: { code?: string } }).cause?.code;
+    if (ec === "P0009") return { ok: false, error: { code: "cannot_opt_out_mandatory", status: 422 } };
+    throw e;
+  }
   return { ok: true, value: { ok: true } };
 }
