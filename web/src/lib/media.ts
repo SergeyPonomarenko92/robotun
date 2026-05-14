@@ -220,6 +220,9 @@ export function useUploader(opts: UploaderOpts): UploaderState {
             return;
           }
           localToMediaRef.current.set(localId, init.media_id);
+          // Mirror onto the state row so derivations (mediaIds, getMediaId)
+          // can read from React state instead of a ref during render.
+          updateFile(localId, { media_id: init.media_id });
 
           // 4b. Sync terminal failure (non-KYC purposes resolve immediately).
           if (confirmRes.status === "quarantine_rejected") {
@@ -294,7 +297,16 @@ export function useUploader(opts: UploaderOpts): UploaderState {
         })
       );
     },
-    [files.length, maxFiles, maxSizeBytes, allowedMimes, purpose, updateFile]
+    [
+      files.length,
+      maxFiles,
+      maxSizeBytes,
+      allowedMimes,
+      purpose,
+      updateFile,
+      initiatePath,
+      confirmPath,
+    ]
   );
 
   const removeFile = React.useCallback((localId: string) => {
@@ -333,8 +345,7 @@ export function useUploader(opts: UploaderOpts): UploaderState {
     const out: string[] = [];
     for (const f of files) {
       if (f.status !== "ready") continue;
-      const mid = localToMediaRef.current.get(f.id);
-      if (mid) out.push(mid);
+      if (f.media_id) out.push(f.media_id);
     }
     return out;
   }, [files]);

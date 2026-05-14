@@ -10,6 +10,9 @@ export type UploadedFile = {
   status: AttachmentStatus;
   progress?: number;
   error?: string;
+  /** Server media_id once the upload has been initiated. Derived from state
+   *  (not a ref) so consumers can subscribe and `mediaIds` stays accurate. */
+  media_id?: string;
 };
 
 type FileUploaderProps = {
