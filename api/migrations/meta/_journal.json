@@ -8,6 +8,13 @@
       "when": 1778754609781,
       "tag": "0000_white_nighthawk",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778756718726,
+      "tag": "0001_complete_scream",
+      "breakpoints": true
     }
   ]
 }
