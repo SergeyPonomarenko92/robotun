@@ -154,6 +154,38 @@ export const store = {
     const u = db().users.get(userId);
     if (u) u.ver += 1;
   },
+  listUsers(opts: {
+    q?: string | null;
+    status?: MockUser["status"] | null;
+    role?: Role | null;
+    limit?: number;
+  }): MockUser[] {
+    const q = opts.q?.trim().toLowerCase();
+    const out: MockUser[] = [];
+    for (const u of db().users.values()) {
+      if (opts.status && u.status !== opts.status) continue;
+      if (opts.role && !u.roles.includes(opts.role)) continue;
+      if (q) {
+        const hay = (u.email + " " + u.display_name).toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
+      out.push(u);
+    }
+    out.sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    if (opts.limit) return out.slice(0, opts.limit);
+    return out;
+  },
+  setUserStatus(id: string, status: MockUser["status"]): MockUser | null {
+    const u = db().users.get(id);
+    if (!u) return null;
+    u.status = status;
+    // Per Auth SEC: bump ver to invalidate outstanding access tokens.
+    u.ver += 1;
+    return u;
+  },
   createSession(userId: string): MockSession {
     const refresh = uuid() + uuid().replace(/-/g, "");
     const s: MockSession = {
