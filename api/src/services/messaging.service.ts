@@ -248,7 +248,25 @@ export async function listMessages(userId: string, conversationId: string, opts:
     hasMore && last
       ? Buffer.from(JSON.stringify({ t: last.created_at.toISOString(), i: last.id }), "utf8").toString("base64")
       : null;
-  return { items: slice.reverse(), next_cursor: next, has_more: hasMore };
+  // FE Message shape (web/src/lib/messaging.ts:37) — fields not yet
+  // implemented (body_scrubbed, contact_info_detected, admin_visible,
+  // attachment_ids, edited_at, deleted_at, gdpr_erased_at) default to
+  // safe MVP values.
+  const items = slice.reverse().map((m) => ({
+    id: m.id,
+    conversation_id: m.conversation_id,
+    sender_id: m.sender_id,
+    body: m.body,
+    body_scrubbed: false,
+    contact_info_detected: false,
+    admin_visible: false,
+    attachment_ids: [] as string[],
+    created_at: m.created_at.toISOString(),
+    edited_at: null,
+    deleted_at: null,
+    gdpr_erased_at: null,
+  }));
+  return { items, next_cursor: next, has_more: hasMore };
 }
 
 export async function sendMessage(args: {

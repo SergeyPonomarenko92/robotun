@@ -44,6 +44,16 @@ export const paymentsRoutes: FastifyPluginAsync = async (server) => {
     return reply.code(201).send(r.value);
   });
 
+  server.get(
+    "/admin/payouts",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
+      const q = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) }).parse(req.query ?? {});
+      return svc.listAdminPayouts(q);
+    }
+  );
+
   server.post<{ Params: { id: string } }>(
     "/admin/payouts/:id/complete",
     { preHandler: server.authenticate },

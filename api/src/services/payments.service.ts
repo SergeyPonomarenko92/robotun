@@ -84,18 +84,32 @@ async function computeWallet(executor: Tx, providerId: string) {
     dsql`SELECT COALESCE(SUM(agreed_price), 0)::bigint AS s FROM deals
           WHERE provider_id = ${providerId} AND status = 'completed'`
   );
+  const held = await executor.execute<{ s: number | null }>(
+    dsql`SELECT COALESCE(SUM(agreed_price), 0)::bigint AS s FROM deals
+          WHERE provider_id = ${providerId}
+            AND status IN ('active','in_review','disputed')`
+  );
+  const pending = await executor.execute<{ s: number | null }>(
+    dsql`SELECT COALESCE(SUM(amount_kopecks), 0)::bigint AS s FROM payouts
+          WHERE provider_id = ${providerId}
+            AND status IN ('requested','processing')`
+  );
   const paidOut = await executor.execute<{ s: number | null }>(
     dsql`SELECT COALESCE(SUM(amount_kopecks), 0)::bigint AS s FROM payouts
           WHERE provider_id = ${providerId} AND status IN ('completed','processing','requested')`
   );
-  // NOTE: Number() coerces bigint→number; safe under 2^53 kopecks (~90T UAH).
-  // Switch to BigInt + string serialization once aggregates approach that.
   const earnedNum = Number(earned[0]?.s ?? 0);
+  const heldNum = Number(held[0]?.s ?? 0);
+  const pendingNum = Number(pending[0]?.s ?? 0);
   const paidNum = Number(paidOut[0]?.s ?? 0);
   return {
+    // FE-canonical fields (web/src/lib/payments.ts WalletBalance):
+    available_kopecks: Math.max(earnedNum - paidNum, 0),
+    held_kopecks: heldNum,
+    pending_payout_kopecks: pendingNum,
+    // Extended fields for own UIs/legacy callers:
     earned_kopecks: earnedNum,
     paid_out_kopecks: paidNum,
-    available_kopecks: Math.max(earnedNum - paidNum, 0),
     currency: "UAH",
   };
 }
@@ -188,6 +202,51 @@ export async function listPayouts(providerId: string, opts: { limit: number }) {
     .orderBy(desc(payouts.requested_at))
     .limit(limit);
   return { items: rows.map(projectPayout) };
+}
+
+/** Admin payouts list — FE AdminPayoutRow = Payout + payee sub-object. */
+export async function listAdminPayouts(opts: { limit: number }) {
+  const limit = Math.min(Math.max(opts.limit, 1), 200);
+  const rows = await db.execute<{
+    id: string;
+    provider_id: string;
+    amount_kopecks: number;
+    status: string;
+    target_last4: string | null;
+    requested_at: Date | string;
+    completed_at: Date | string | null;
+    p_name: string | null;
+    p_avatar: string | null;
+  }>(
+    dsql`SELECT p.id, p.provider_id, p.amount_kopecks, p.status, p.target_last4,
+                p.requested_at, p.completed_at,
+                u.display_name AS p_name, u.avatar_url AS p_avatar
+           FROM payouts p
+           LEFT JOIN users u ON u.id = p.provider_id
+          ORDER BY p.requested_at DESC
+          LIMIT ${limit}`
+  );
+  return {
+    items: rows.map((r) => ({
+      id: r.id,
+      user_id: r.provider_id,
+      amount_kopecks: r.amount_kopecks,
+      status: (r.status === "completed" ? "paid" : r.status) as "requested" | "processing" | "paid" | "failed" | "cancelled",
+      method_last4: r.target_last4 ?? "",
+      created_at: typeof r.requested_at === "string" ? new Date(r.requested_at).toISOString() : r.requested_at.toISOString(),
+      paid_at: r.completed_at
+        ? typeof r.completed_at === "string"
+          ? new Date(r.completed_at).toISOString()
+          : r.completed_at.toISOString()
+        : null,
+      payee: {
+        id: r.provider_id,
+        display_name: r.p_name ?? "",
+        avatar_url: r.p_avatar ?? undefined,
+      },
+    })),
+    total: rows.length,
+  };
 }
 
 /* -------------------------- admin payout actions ------------------------- */
