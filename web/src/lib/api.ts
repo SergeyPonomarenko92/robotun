@@ -13,7 +13,20 @@
  */
 
 const REFRESH_KEY = "robotun.refresh";
-const API_BASE = "/api/v1";
+/**
+ * If NEXT_PUBLIC_API_BASE is set at build time, all /api/v1/* requests go
+ * to that origin (real backend at :4000 during local dev). Unset → relative
+ * "/api/v1" → in-repo Next.js mock route handlers (legacy/MVP behavior).
+ *
+ * Mixed-mode operation: setting the env routes EVERY request to the real
+ * backend; unported modules will 404 until they land. Use per-feature flags
+ * in subsequent commits if you need granular cutover.
+ */
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_BASE
+    ? `${process.env.NEXT_PUBLIC_API_BASE.replace(/\/$/, "")}/api/v1`
+    : "/api/v1"
+);
 
 let accessToken: string | null = null;
 let refreshInFlight: Promise<string | null> | null = null;
