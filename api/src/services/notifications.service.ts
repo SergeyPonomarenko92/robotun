@@ -191,12 +191,23 @@ const MANDATORY_CODES = new Set([
  */
 export async function consumeOutboxOnce(): Promise<number> {
   return await db.transaction(async (tx) => {
+    // Bootstrap the cursor row on cold start — guards against the silent-
+    // dead-worker mode if migration 0012 didn't run or the row was wiped.
+    // ON CONFLICT DO NOTHING so concurrent replicas don't fight over it.
+    await tx.execute(
+      dsql`INSERT INTO notification_consumer_cursors (consumer_name, last_seen_id)
+            VALUES (${CONSUMER_NAME}, 0) ON CONFLICT DO NOTHING`
+    );
     // Single-active per consumer via FOR UPDATE on the cursor row.
     const cursorRows = await tx.execute<{ last_seen_id: number }>(
       dsql`SELECT last_seen_id FROM notification_consumer_cursors
             WHERE consumer_name = ${CONSUMER_NAME} FOR UPDATE`
     );
-    if (cursorRows.length === 0) return 0; // cursor row missing — bootstrap.
+    if (cursorRows.length === 0) {
+      // Should be unreachable after the upsert above; defensive log.
+      console.warn(`[notifications] cursor row missing for ${CONSUMER_NAME}`);
+      return 0;
+    }
     const lastSeen = Number(cursorRows[0]!.last_seen_id);
 
     // Hand-build the IN-list (constant, no user input) since drizzle's

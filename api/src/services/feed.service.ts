@@ -64,7 +64,9 @@ export async function listFeed(opts: {
   } else {
     asOf = new Date();
   }
-  params.push(asOf);
+  // sql.unsafe binds raw params — Date objects aren't serialized; push the
+  // ISO string and cast at the SQL site.
+  params.push(asOf.toISOString());
   const asOfIdx = params.length;
 
   const filters: string[] = [`l.status = 'active'`, `u.status = 'active'`];
@@ -110,6 +112,10 @@ export async function listFeed(opts: {
     cursorPredicate = ` AND (${scoreExpr}, l.id::text) < ($${si}::float, $${ii}::text)`;
   }
 
+  // Aggregates filtered by `revealed_at <= $as_of` (reviews) and
+  // `updated_at <= $as_of` (deals) — locks the rating + completed_deals
+  // inputs to the cursor's snapshot so score values stay monotonic across
+  // pages even under concurrent review/deal write activity.
   const sqlText = `
     SELECT l.id, l.title, l.cover_url, l.city, l.region, l.category_id,
            l.price_amount, l.price_amount_max, l.pricing_type, l.currency,
@@ -124,12 +130,16 @@ export async function listFeed(opts: {
         SELECT AVG(overall_rating)::float AS avg_rating, COUNT(*)::int AS review_count
           FROM reviews
          WHERE reviewee_id = l.provider_id AND reviewer_role = 'client'
-           AND status = 'published' AND revealed_at IS NOT NULL
+           AND status = 'published'
+           AND revealed_at IS NOT NULL
+           AND revealed_at <= $${asOfIdx}::timestamptz
       ) rv ON true
       LEFT JOIN LATERAL (
         SELECT COUNT(*)::int AS completed_count
           FROM deals
-         WHERE provider_id = l.provider_id AND status = 'completed'
+         WHERE provider_id = l.provider_id
+           AND status = 'completed'
+           AND updated_at <= $${asOfIdx}::timestamptz
       ) dc ON true
      WHERE ${filters.join(" AND ")}${cursorPredicate}
      ORDER BY score DESC, l.id DESC

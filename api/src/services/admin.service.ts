@@ -24,16 +24,24 @@ async function audit(tx: Tx, args: {
   ip?: string | null;
   user_agent?: string | null;
 }) {
-  await tx.insert(adminActions).values({
-    actor_admin_id: args.actor_admin_id,
-    target_user_id: args.target_user_id ?? null,
-    target_aggregate_type: args.target_aggregate_type ?? null,
-    target_aggregate_id: args.target_aggregate_id ?? null,
-    action: args.action,
-    metadata: args.metadata ?? {},
-    ip: args.ip ?? null,
-    user_agent: args.user_agent ?? null,
-  });
+  // target_user_id_denorm carries the UUID through GDPR-erase (FK SET NULL
+  // wipes target_user_id but the denorm column is unconstrained, so the
+  // per-user audit timeline survives erasure).
+  await tx.execute(
+    dsql`INSERT INTO admin_actions
+            (actor_admin_id, target_user_id, target_user_id_denorm,
+             target_aggregate_type, target_aggregate_id,
+             action, metadata, ip, user_agent)
+          VALUES (${args.actor_admin_id},
+                  ${args.target_user_id ?? null},
+                  ${args.target_user_id ?? null},
+                  ${args.target_aggregate_type ?? null},
+                  ${args.target_aggregate_id ?? null},
+                  ${args.action},
+                  ${JSON.stringify(args.metadata ?? {})}::jsonb,
+                  ${args.ip ?? null},
+                  ${args.user_agent ?? null})`
+  );
 }
 
 /* ----------------------------- unified queue ----------------------------- */
@@ -104,7 +112,11 @@ export async function suspendUser(args: {
 }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
     // Re-read admin role inside the tx (closes race vs. concurrent role revoke).
-    const actorRoles = await tx.select({ role: userRoles.role }).from(userRoles).where(eq(userRoles.user_id, args.admin_id));
+    // FOR SHARE on role rows blocks a concurrent revoke (which would take
+    // ROW EXCLUSIVE on DELETE) until this tx commits.
+    const actorRoles = await tx.execute<{ role: string }>(
+      dsql`SELECT role FROM user_roles WHERE user_id = ${args.admin_id} FOR SHARE`
+    );
     if (!actorRoles.some((r) => r.role === "admin")) {
       return { ok: false, error: { code: "forbidden", status: 403 } };
     }
@@ -114,9 +126,10 @@ export async function suspendUser(args: {
     const u = rows[0]!;
     if (u.status === "suspended") return { ok: false, error: { code: "already_suspended", status: 409 } };
 
-    // Snapshot payout_enabled so activate can restore it. Suspension already
-    // gates monetary egress via account_suspended check in payouts; flipping
-    // payout_enabled here would orphan it on the next /activate.
+    // Historical snapshot of payout_enabled (for audit only — activate does
+    // NOT restore from this). Suspension gates monetary egress via the
+    // account_suspended check in payouts, so we don't flip payout_enabled
+    // here and avoid the orphan-on-activate trap.
     await tx
       .update(users)
       .set({ status: "suspended", ver: u.ver + 1 })
@@ -149,7 +162,11 @@ export async function activateUser(args: {
   ua?: string | null;
 }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
-    const actorRoles = await tx.select({ role: userRoles.role }).from(userRoles).where(eq(userRoles.user_id, args.admin_id));
+    // FOR SHARE on role rows blocks a concurrent revoke (which would take
+    // ROW EXCLUSIVE on DELETE) until this tx commits.
+    const actorRoles = await tx.execute<{ role: string }>(
+      dsql`SELECT role FROM user_roles WHERE user_id = ${args.admin_id} FOR SHARE`
+    );
     if (!actorRoles.some((r) => r.role === "admin")) {
       return { ok: false, error: { code: "forbidden", status: 403 } };
     }
