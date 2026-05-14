@@ -44,11 +44,13 @@ export const reviewsRoutes: FastifyPluginAsync = async (server) => {
         .object({
           listing_id: z.string().uuid().optional(),
           reviewee_id: z.string().uuid().optional(),
-          limit: z.coerce.number().int().min(1).max(50).default(20),
+          limit: z.coerce.number().int().min(1).max(50).default(10),
+          cursor: z.string().optional(),
+          rating: z.coerce.number().int().min(1).max(5).optional(),
         })
         .parse(req.query ?? {});
-      if (q.listing_id) return svc.listForListing(q.listing_id, { limit: q.limit });
-      if (q.reviewee_id) return svc.listForUser(q.reviewee_id, { limit: q.limit });
+      if (q.listing_id) return svc.listForListing(q.listing_id, q);
+      if (q.reviewee_id) return svc.listForUser(q.reviewee_id, q);
       return reply.code(400).send({ error: "missing_filter" });
     }
   );
@@ -56,7 +58,14 @@ export const reviewsRoutes: FastifyPluginAsync = async (server) => {
   server.get<{ Params: { id: string } }>(
     "/listings/:id/reviews",
     async (req) => {
-      const r = await svc.listForListing(req.params.id, { limit: 50 });
+      const q = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(50).default(10),
+          cursor: z.string().optional(),
+          rating: z.coerce.number().int().min(1).max(5).optional(),
+        })
+        .parse(req.query ?? {});
+      const r = await svc.listForListing(req.params.id, q);
       const aggr = await svc.aggregatesFor("listing", req.params.id);
       return { ...r, ...aggr };
     }
@@ -65,7 +74,13 @@ export const reviewsRoutes: FastifyPluginAsync = async (server) => {
   server.get<{ Params: { id: string } }>(
     "/users/:id/reviews",
     async (req) => {
-      const r = await svc.listForUser(req.params.id, { limit: 50 });
+      const q = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(50).default(10),
+          cursor: z.string().optional(),
+        })
+        .parse(req.query ?? {});
+      const r = await svc.listForUser(req.params.id, q);
       const aggr = await svc.aggregatesFor("user", req.params.id);
       return { ...r, ...aggr };
     }

@@ -197,94 +197,170 @@ export async function createReply(args: {
 
 /* -------------------------------- READS --------------------------------- */
 
+/**
+ * FE shape (web/src/lib/reviews.ts:5):
+ *   { id, rating, body, created_at, author: {display_name, avatar_url?},
+ *     deal_ref?, reply?, status }
+ *
+ * Internal fields (overall_rating, quality_rating, reviewee_id,
+ * reviewer_role, etc.) are still in the row but not surfaced here —
+ * admin/own views fetch them via a separate projection if needed.
+ */
 type PublicReview = {
   id: string;
-  deal_id: string;
-  listing_id: string | null;
-  reviewer_id: string | null;
-  reviewee_id: string;
-  reviewer_role: "client" | "provider";
-  overall_rating: number;
-  quality_rating: number | null;
-  communication_rating: number | null;
-  timeliness_rating: number | null;
-  comment: string | null;
-  revealed_at: string;
-  reply: { id: string; body: string; author_id: string | null; created_at: string } | null;
+  rating: number;
+  body: string | null;
+  created_at: string;
+  author: { display_name: string; avatar_url?: string };
+  deal_ref?: string;
+  reply?: { body: string; created_at: string };
+  status: "published";
 };
 
 async function projectReviews(rows: { id: string }[]): Promise<PublicReview[]> {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
-  const fullRows = await db
-    .select()
-    .from(reviews)
-    .where(inArray(reviews.id, ids));
-  const repliesRows = await db
-    .select()
-    .from(reviewReplies)
-    .where(inArray(reviewReplies.review_id, ids));
-  const repByReview = new Map(repliesRows.map((r) => [r.review_id, r]));
-  return fullRows.map((r) => {
-    const rep = repByReview.get(r.id);
-    return {
+  const fullRows = await db.execute<{
+    id: string;
+    overall_rating: number;
+    comment: string | null;
+    deal_id: string;
+    created_at: string;
+    revealed_at: string | null;
+    reviewer_name: string | null;
+    reviewer_avatar: string | null;
+    reply_body: string | null;
+    reply_created_at: string | null;
+  }>(
+    dsql`SELECT r.id, r.overall_rating, r.comment, r.deal_id,
+                r.created_at, r.revealed_at,
+                u.display_name AS reviewer_name, u.avatar_url AS reviewer_avatar,
+                rep.body AS reply_body, rep.created_at AS reply_created_at
+           FROM reviews r
+           LEFT JOIN users u ON u.id = r.reviewer_id
+           LEFT JOIN review_replies rep ON rep.review_id = r.id
+          WHERE r.id = ANY(${ids}::uuid[])`
+  );
+  // Preserve incoming ids order.
+  const byId = new Map(fullRows.map((r) => [r.id, r]));
+  return rows
+    .map((row) => byId.get(row.id))
+    .filter((r): r is NonNullable<typeof r> => Boolean(r))
+    .map((r) => ({
       id: r.id,
-      deal_id: r.deal_id,
-      listing_id: r.listing_id,
-      reviewer_id: r.reviewer_id,
-      reviewee_id: r.reviewee_id,
-      reviewer_role: r.reviewer_role,
-      overall_rating: r.overall_rating,
-      quality_rating: r.quality_rating,
-      communication_rating: r.communication_rating,
-      timeliness_rating: r.timeliness_rating,
-      comment: r.comment,
-      revealed_at: r.revealed_at!.toISOString(),
-      reply: rep
+      rating: r.overall_rating,
+      body: r.comment,
+      created_at: new Date(r.revealed_at ?? r.created_at).toISOString(),
+      author: {
+        display_name: r.reviewer_name ?? "Видалений користувач",
+        avatar_url: r.reviewer_avatar ?? undefined,
+      },
+      deal_ref: r.deal_id,
+      reply: r.reply_body
         ? {
-            id: rep.id,
-            body: rep.body,
-            author_id: rep.author_id,
-            created_at: rep.created_at.toISOString(),
+            body: r.reply_body,
+            created_at: new Date(r.reply_created_at!).toISOString(),
           }
-        : null,
-    };
-  });
+        : undefined,
+      status: "published" as const,
+    }));
 }
 
-export async function listForListing(listingId: string, opts: { limit: number }) {
-  const limit = Math.min(Math.max(opts.limit, 1), 50);
-  const r = await db
-    .select({ id: reviews.id })
-    .from(reviews)
-    .where(
-      and(
-        eq(reviews.listing_id, listingId),
-        eq(reviews.status, "published"),
-        eq(reviews.reviewer_role, "client"),
-        isNotNull(reviews.revealed_at)
-      )
-    )
-    .orderBy(desc(reviews.revealed_at))
-    .limit(limit);
-  return { items: await projectReviews(r) };
+function decodeReviewCursor(c: string | undefined): { t: string; i: string } | null {
+  if (!c) return null;
+  try {
+    const o = JSON.parse(Buffer.from(c, "base64").toString("utf8"));
+    if (typeof o?.t === "string" && typeof o?.i === "string") return o;
+  } catch {}
+  return null;
 }
 
-export async function listForUser(userId: string, opts: { limit: number }) {
+export async function listForListing(
+  listingId: string,
+  opts: { limit: number; cursor?: string; rating?: number }
+) {
   const limit = Math.min(Math.max(opts.limit, 1), 50);
+  const baseWhere = [
+    eq(reviews.listing_id, listingId),
+    eq(reviews.status, "published"),
+    eq(reviews.reviewer_role, "client"),
+    isNotNull(reviews.revealed_at),
+  ];
+  if (opts.rating && opts.rating >= 1 && opts.rating <= 5) {
+    baseWhere.push(eq(reviews.overall_rating, opts.rating));
+  }
+  const where = [...baseWhere];
+  const cur = decodeReviewCursor(opts.cursor);
+  if (cur) {
+    where.push(dsql`(${reviews.revealed_at}, ${reviews.id}) < (${new Date(cur.t)}, ${cur.i}::uuid)`);
+  }
   const r = await db
-    .select({ id: reviews.id })
+    .select({ id: reviews.id, revealed_at: reviews.revealed_at })
     .from(reviews)
-    .where(
-      and(
-        eq(reviews.reviewee_id, userId),
-        eq(reviews.status, "published"),
-        isNotNull(reviews.revealed_at)
+    .where(and(...where))
+    .orderBy(desc(reviews.revealed_at), desc(reviews.id))
+    .limit(limit + 1);
+  const hasMore = r.length > limit;
+  const slice = r.slice(0, limit);
+  const last = slice[slice.length - 1];
+  const nextCursor = hasMore && last?.revealed_at
+    ? Buffer.from(JSON.stringify({ t: last.revealed_at.toISOString(), i: last.id }), "utf8").toString("base64")
+    : null;
+  // Total ignores cursor but honors rating filter.
+  const totalRows = await (opts.rating && opts.rating >= 1 && opts.rating <= 5
+    ? db.execute<{ n: number }>(
+        dsql`SELECT COUNT(*)::int AS n FROM reviews
+              WHERE listing_id = ${listingId}
+                AND status = 'published' AND reviewer_role='client' AND revealed_at IS NOT NULL
+                AND overall_rating = ${opts.rating}`
       )
-    )
-    .orderBy(desc(reviews.revealed_at))
-    .limit(limit);
-  return { items: await projectReviews(r) };
+    : db.execute<{ n: number }>(
+        dsql`SELECT COUNT(*)::int AS n FROM reviews
+              WHERE listing_id = ${listingId}
+                AND status = 'published' AND reviewer_role='client' AND revealed_at IS NOT NULL`
+      ));
+  return {
+    items: await projectReviews(slice),
+    next_cursor: nextCursor,
+    total: totalRows[0]?.n ?? 0,
+    has_more: hasMore,
+  };
+}
+
+export async function listForUser(userId: string, opts: { limit: number; cursor?: string }) {
+  const limit = Math.min(Math.max(opts.limit, 1), 50);
+  const where = [
+    eq(reviews.reviewee_id, userId),
+    eq(reviews.status, "published"),
+    isNotNull(reviews.revealed_at),
+  ];
+  const cur = decodeReviewCursor(opts.cursor);
+  if (cur) {
+    where.push(dsql`(${reviews.revealed_at}, ${reviews.id}) < (${new Date(cur.t)}, ${cur.i}::uuid)`);
+  }
+  const r = await db
+    .select({ id: reviews.id, revealed_at: reviews.revealed_at })
+    .from(reviews)
+    .where(and(...where))
+    .orderBy(desc(reviews.revealed_at), desc(reviews.id))
+    .limit(limit + 1);
+  const hasMore = r.length > limit;
+  const slice = r.slice(0, limit);
+  const last = slice[slice.length - 1];
+  const nextCursor = hasMore && last?.revealed_at
+    ? Buffer.from(JSON.stringify({ t: last.revealed_at.toISOString(), i: last.id }), "utf8").toString("base64")
+    : null;
+  const totalRows = await db.execute<{ n: number }>(
+    dsql`SELECT COUNT(*)::int AS n FROM reviews
+          WHERE reviewee_id = ${userId}
+            AND status = 'published' AND revealed_at IS NOT NULL`
+  );
+  return {
+    items: await projectReviews(slice),
+    next_cursor: nextCursor,
+    total: totalRows[0]?.n ?? 0,
+    has_more: hasMore,
+  };
 }
 
 export async function aggregatesFor(targetType: "listing" | "user", id: string) {
