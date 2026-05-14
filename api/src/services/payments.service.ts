@@ -152,6 +152,33 @@ export async function requestPayout(args: {
   });
 }
 
+/**
+ * FE-shape Payout (web/src/lib/payments.ts:5):
+ *   { id, user_id, amount_kopecks, status, method_last4, created_at, paid_at }
+ *   status: 'requested' | 'processing' | 'paid' | 'failed' (note: 'paid' not 'completed')
+ */
+type PayoutFE = {
+  id: string;
+  user_id: string;
+  amount_kopecks: number;
+  status: "requested" | "processing" | "paid" | "failed" | "cancelled";
+  method_last4: string;
+  created_at: string;
+  paid_at: string | null;
+};
+
+function projectPayout(row: typeof payouts.$inferSelect): PayoutFE {
+  return {
+    id: row.id,
+    user_id: row.provider_id,
+    amount_kopecks: row.amount_kopecks,
+    status: (row.status === "completed" ? "paid" : row.status) as PayoutFE["status"],
+    method_last4: row.target_last4 ?? "",
+    created_at: row.requested_at.toISOString(),
+    paid_at: row.completed_at?.toISOString() ?? null,
+  };
+}
+
 export async function listPayouts(providerId: string, opts: { limit: number }) {
   const limit = Math.min(Math.max(opts.limit, 1), 100);
   const rows = await db
@@ -160,7 +187,7 @@ export async function listPayouts(providerId: string, opts: { limit: number }) {
     .where(eq(payouts.provider_id, providerId))
     .orderBy(desc(payouts.requested_at))
     .limit(limit);
-  return { items: rows };
+  return { items: rows.map(projectPayout) };
 }
 
 /* -------------------------- admin payout actions ------------------------- */
