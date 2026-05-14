@@ -338,17 +338,86 @@ export function isMandatoryCode(code: string): boolean {
 
 /* ----------------------------- public reads ------------------------------ */
 
-export async function listMine(userId: string, opts: { limit: number; unread_only?: boolean }) {
+/** FE-shape Notification (web/src/lib/notifications.ts:17). */
+type NotificationFE = {
+  id: string;
+  user_id: string;
+  notification_code: string;
+  aggregate_type: string;
+  aggregate_id: string | null;
+  title: string;
+  body: string | null;
+  href: string | null;
+  mandatory: boolean;
+  read_at: string | null;
+  created_at: string;
+};
+
+function projectNotification(row: typeof notifications.$inferSelect): NotificationFE {
+  // Deep-link derivation by aggregate type.
+  let href: string | null = null;
+  switch (row.aggregate_type) {
+    case "deal":
+      href = `/deals/${row.aggregate_id}`;
+      break;
+    case "review":
+      href = `/reviews/${row.aggregate_id}`;
+      break;
+    case "message":
+    case "conversation":
+      href = `/messages/${row.aggregate_id}`;
+      break;
+    case "payout":
+      href = `/wallet/payouts/${row.aggregate_id}`;
+      break;
+    case "kyc":
+      href = `/kyc`;
+      break;
+    case "listing":
+      href = `/listings/${row.aggregate_id}`;
+      break;
+    default:
+      href = null;
+  }
+  return {
+    id: row.id,
+    user_id: row.recipient_user_id,
+    notification_code: row.notification_code,
+    aggregate_type: row.aggregate_type,
+    aggregate_id: row.aggregate_id,
+    title: row.title,
+    body: row.body,
+    href,
+    mandatory: isMandatoryCode(row.notification_code),
+    read_at: row.read_at?.toISOString() ?? null,
+    created_at: row.created_at.toISOString(),
+  };
+}
+
+export async function listMine(userId: string, opts: { limit: number; unread_only?: boolean; cursor?: string }) {
   const limit = Math.min(Math.max(opts.limit, 1), 100);
   const where = [eq(notifications.recipient_user_id, userId)];
   if (opts.unread_only) where.push(isNull(notifications.read_at));
+  if (opts.cursor) {
+    try {
+      const cur = JSON.parse(Buffer.from(opts.cursor, "base64").toString("utf8")) as { t: string; i: string };
+      where.push(dsql`(${notifications.created_at}, ${notifications.id}) < (${new Date(cur.t)}, ${cur.i}::uuid)`);
+    } catch {}
+  }
   const rows = await db
     .select()
     .from(notifications)
     .where(and(...where))
-    .orderBy(desc(notifications.created_at))
-    .limit(limit);
-  return { items: rows };
+    .orderBy(desc(notifications.created_at), desc(notifications.id))
+    .limit(limit + 1);
+  const hasMore = rows.length > limit;
+  const slice = rows.slice(0, limit);
+  const last = slice[slice.length - 1];
+  const next_cursor =
+    hasMore && last
+      ? Buffer.from(JSON.stringify({ t: last.created_at.toISOString(), i: last.id }), "utf8").toString("base64")
+      : null;
+  return { items: slice.map(projectNotification), next_cursor };
 }
 
 export async function unreadCount(userId: string): Promise<number> {

@@ -13,6 +13,7 @@ async function isAdmin(userId: string): Promise<boolean> {
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   unread_only: z.coerce.boolean().default(false),
+  cursor: z.string().optional(),
 });
 
 const prefSchema = z.object({
@@ -22,10 +23,13 @@ const prefSchema = z.object({
 });
 
 export const notificationsRoutes: FastifyPluginAsync = async (server) => {
-  server.get("/notifications", { preHandler: server.authenticate }, async (req) => {
+  const listHandler = async (req: import("fastify").FastifyRequest) => {
     const q = listQuery.parse(req.query ?? {});
     return svc.listMine(req.auth!.user_id, q);
-  });
+  };
+  server.get("/notifications", { preHandler: server.authenticate }, listHandler);
+  // FE-canonical path: /me/notifications.
+  server.get("/me/notifications", { preHandler: server.authenticate }, listHandler);
 
   server.get("/notifications/unread-count", { preHandler: server.authenticate }, async (req) => {
     return { count: await svc.unreadCount(req.auth!.user_id) };
