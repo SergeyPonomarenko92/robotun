@@ -7,6 +7,7 @@ import { sql } from "./db/client.js";
 import authenticate from "./plugins/authenticate.js";
 import { authRoutes, usersRoutes } from "./routes/auth.routes.js";
 import { categoriesRoutes } from "./routes/categories.routes.js";
+import { listingsRoutes } from "./routes/listings.routes.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -52,6 +53,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(authRoutes);
       await api.register(usersRoutes);
       await api.register(categoriesRoutes);
+      await api.register(listingsRoutes);
     },
     { prefix: "/api/v1" }
   );

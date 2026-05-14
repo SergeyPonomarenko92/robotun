@@ -15,6 +15,13 @@
       "when": 1778756718726,
       "tag": "0001_complete_scream",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778760392860,
+      "tag": "0002_military_carmella_unuscione",
+      "breakpoints": true
     }
   ]
 }

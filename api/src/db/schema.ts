@@ -13,6 +13,7 @@ import {
   integer,
   smallint,
   bigserial,
+  date,
   jsonb,
   timestamp,
   pgEnum,
@@ -202,3 +203,100 @@ export const outboxEvents = pgTable(
     aggregateIdx: index("idx_outbox_aggregate").on(t.aggregate_type, t.aggregate_id),
   })
 );
+
+/**
+ * Module 5 — listings (MVP cut, see service comment for scope).
+ *
+ * Reduced from spec-architecture-listings.md: no in_review/admin moderation,
+ * no reports/appeals/snapshots/audit-partitioned/bulk-jobs/geo-refs/FTS-
+ * dictionary. trusted=everyone (auto-active on publish). Cover/gallery as
+ * URL strings — Module 6 Media will replace with FK arrays.
+ */
+export const listingStatusEnum = pgEnum("listing_status", [
+  "draft",
+  "in_review",
+  "active",
+  "paused",
+  "archived",
+]);
+
+export const listingPricingTypeEnum = pgEnum("listing_pricing_type", [
+  "fixed",
+  "hourly",
+  "range",
+  "starting_from",
+  "discuss",
+]);
+
+export const listingServiceTypeEnum = pgEnum("listing_service_type", [
+  "on_site",
+  "remote",
+  "both",
+]);
+
+export const listings = pgTable(
+  "listings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider_id: uuid("provider_id").references(() => users.id, { onDelete: "set null" }),
+    category_id: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "restrict" }),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    status: listingStatusEnum("status").notNull().default("draft"),
+    pricing_type: listingPricingTypeEnum("pricing_type").notNull(),
+    /** Stored as minor units (kopecks) per CLAUDE.md "Money as integer minor units". */
+    price_amount: integer("price_amount"),
+    price_amount_max: integer("price_amount_max"),
+    currency: text("currency"),
+    service_type: listingServiceTypeEnum("service_type").notNull().default("both"),
+    city: text("city"),
+    region: text("region"),
+    tags: text("tags").array().notNull().default([]),
+    cover_url: text("cover_url"),
+    gallery_urls: text("gallery_urls").array().notNull().default([]),
+    response_sla_minutes: integer("response_sla_minutes"),
+    version: integer("version").notNull().default(1),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    published_at: timestamp("published_at", { withTimezone: true }),
+    archived_at: timestamp("archived_at", { withTimezone: true }),
+  },
+  (t) => ({
+    activeCursorIdx: index("idx_listings_active_cursor").on(t.published_at, t.id),
+    providerStatusIdx: index("idx_listings_provider_status").on(t.provider_id, t.status, t.created_at),
+    categoryActiveIdx: index("idx_listings_category_active").on(t.category_id, t.status, t.published_at),
+  })
+);
+
+/**
+ * Wizard autosave storage. Ephemeral / capped-per-user. Distinct from
+ * listings.status='draft' which is the spec model — this table is a UI
+ * convenience for the multi-step wizard before commit-to-listing.
+ */
+export const listingDrafts = pgTable(
+  "listing_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    owner_user_id: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    payload: jsonb("payload").notNull().default({}),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    ownerIdx: index("idx_listing_drafts_owner").on(t.owner_user_id, t.updated_at),
+  })
+);
+
+export const providerListingCaps = pgTable("provider_listing_caps", {
+  provider_id: uuid("provider_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  active_count: integer("active_count").notNull().default(0),
+  draft_count: integer("draft_count").notNull().default(0),
+  created_today: integer("created_today").notNull().default(0),
+  today_date: date("today_date").notNull().defaultNow(),
+});
