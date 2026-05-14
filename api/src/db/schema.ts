@@ -885,3 +885,32 @@ export const disputeEvidence = pgTable(
     dealIdx: index("idx_dispute_evidence_deal").on(t.deal_id),
   })
 );
+
+/**
+ * Module 12 — Admin tooling (MVP cut).
+ *
+ * Immutable admin_actions audit table. Unified queue assembled at read
+ * time from existing module tables (category_proposals.pending +
+ * kyc_verifications.submitted). No 4-eyes approval, no MFA challenge,
+ * no admin_sessions short-TTL, no bulk operations, no permission matrix
+ * RBAC (relies on user_roles role check).
+ */
+export const adminActions = pgTable(
+  "admin_actions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    actor_admin_id: uuid("actor_admin_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    target_user_id: uuid("target_user_id").references(() => users.id, { onDelete: "set null" }),
+    target_aggregate_type: text("target_aggregate_type"),
+    target_aggregate_id: uuid("target_aggregate_id"),
+    action: text("action").notNull(),
+    metadata: jsonb("metadata").notNull().default({}),
+    ip: text("ip"),
+    user_agent: text("user_agent"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    actorIdx: index("idx_admin_actions_actor").on(t.actor_admin_id, t.created_at),
+    targetUserIdx: index("idx_admin_actions_target_user").on(t.target_user_id, t.created_at),
+  })
+);
