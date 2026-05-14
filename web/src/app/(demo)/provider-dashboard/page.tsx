@@ -59,7 +59,9 @@ import { MoneyInput } from "@/components/ui/MoneyInput";
 import { InlineAlert } from "@/components/ui/InlineAlert";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
-import { Loader2 } from "lucide-react";
+import { Loader2, FileEdit, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { listDrafts, deleteDraft, type Draft } from "@/lib/listings";
 
 const PROVIDER_USER = {
   id: "p1",
@@ -432,7 +434,10 @@ export default function ProviderDashboardPage() {
               </TabsContent>
 
               <TabsContent value="listings">
-                <div className="border border-hairline rounded-[var(--radius-md)] bg-paper overflow-hidden mt-2">
+                <div className="mt-2">
+                  <DraftsSection />
+                </div>
+                <div className="border border-hairline rounded-[var(--radius-md)] bg-paper overflow-hidden mt-3">
                   <header className="hidden md:grid grid-cols-[1fr_120px_120px_140px_60px] gap-4 px-5 py-3 border-b border-hairline bg-canvas">
                     <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
                       Послуга
@@ -1030,3 +1035,111 @@ function ListingRow({ item }: { item: ListingRow }) {
 /* unused-import guard: keep Tag in tree for future filter chips */
 const _keep = Tag;
 void _keep;
+
+function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diffMs / 60_000);
+  if (min < 1) return "щойно";
+  if (min < 60) return `${min} хв тому`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} год тому`;
+  const d = Math.floor(h / 24);
+  return `${d} дн тому`;
+}
+
+function DraftsSection() {
+  const [drafts, setDrafts] = React.useState<Draft[] | null>(null);
+  const [error, setError] = React.useState(false);
+  const refresh = React.useCallback(() => {
+    setError(false);
+    listDrafts()
+      .then(setDrafts)
+      .catch(() => setError(true));
+  }, []);
+  React.useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  if (drafts === null && !error) {
+    return (
+      <div className="border border-hairline rounded-[var(--radius-md)] bg-paper h-16 animate-pulse" />
+    );
+  }
+  if (error) {
+    return (
+      <div className="border border-hairline rounded-[var(--radius-md)] bg-paper px-5 py-4 text-caption text-muted">
+        Не вдалось завантажити чернетки.{" "}
+        <button
+          type="button"
+          onClick={refresh}
+          className="underline text-ink hover:text-accent"
+        >
+          Спробувати знову
+        </button>
+      </div>
+    );
+  }
+  if (drafts!.length === 0) return null;
+
+  return (
+    <section
+      aria-label="Чернетки"
+      className="border border-hairline rounded-[var(--radius-md)] bg-paper overflow-hidden"
+    >
+      <header className="flex items-center justify-between gap-3 px-5 py-3 border-b border-hairline bg-canvas">
+        <div className="flex items-center gap-2">
+          <FileEdit size={14} className="text-muted" aria-hidden />
+          <span className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
+            Чернетки
+          </span>
+          <span className="font-mono text-micro tabular-nums text-ink-soft">
+            {drafts!.length}
+          </span>
+        </div>
+      </header>
+      <ul className="divide-y divide-hairline">
+        {drafts!.map((d) => {
+          const title = d.payload.title?.trim() || "Без назви";
+          return (
+            <li
+              key={d.id}
+              className="flex items-center justify-between gap-3 px-5 py-3"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-body text-ink truncate">{title}</div>
+                <div className="text-caption text-muted">
+                  Оновлено {relativeTime(d.updated_at)}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <Link
+                  href={`/provider/listings/new?draft=${encodeURIComponent(d.id)}`}
+                  className="inline-flex items-center px-3 py-1.5 rounded-[var(--radius-sm)] text-caption font-medium text-ink hover:bg-ink/5"
+                >
+                  Продовжити
+                </Link>
+                <button
+                  type="button"
+                  aria-label={`Видалити чернетку ${title}`}
+                  onClick={async () => {
+                    try {
+                      await deleteDraft(d.id);
+                      setDrafts((prev) =>
+                        prev ? prev.filter((x) => x.id !== d.id) : prev
+                      );
+                    } catch {
+                      refresh();
+                    }
+                  }}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] text-muted hover:text-danger hover:bg-danger-soft"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}

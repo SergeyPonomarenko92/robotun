@@ -49,11 +49,16 @@ import { Tooltip } from "@/components/ui/Tooltip";
 import { useRequireAuth } from "@/lib/auth";
 import {
   createListing,
+  createDraft,
+  getDraft,
+  useDraftAutosave,
   type CreateListingError,
+  type DraftPayload,
   type ListingDetail,
+  type SaveStatus,
 } from "@/lib/listings";
-import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Loader2, AlertTriangle } from "lucide-react";
 
 const USER_FALLBACK = {
   id: "u1",
@@ -118,6 +123,53 @@ const STEPS_DATA: { id: WizardStepId; label: string; hint: string }[] = [
 
 type WizardStepId = "basics" | "media" | "pricing" | "review";
 
+function formatSaveTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit" });
+}
+
+function DraftSaveIndicator({
+  status,
+  hasDraft,
+}: {
+  status: SaveStatus;
+  hasDraft: boolean;
+}) {
+  if (!hasDraft && status.kind === "idle") {
+    return (
+      <span className="text-caption text-muted">
+        Чернетка з'явиться після перших правок
+      </span>
+    );
+  }
+  if (status.kind === "saving") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-caption text-muted">
+        <Loader2 size={12} className="animate-spin" aria-hidden />
+        Зберігаємо…
+      </span>
+    );
+  }
+  if (status.kind === "error") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-caption text-danger">
+        <AlertTriangle size={12} aria-hidden />
+        {status.message}
+      </span>
+    );
+  }
+  if (status.kind === "saved") {
+    return (
+      <span className="text-caption text-success">
+        Збережено о {formatSaveTime(status.at)}
+      </span>
+    );
+  }
+  return (
+    <span className="text-caption text-muted">Чернетка готова</span>
+  );
+}
+
 const TITLE_MAX = 90;
 const DESC_MAX = 2000;
 const DESC_MIN = 80;
@@ -125,6 +177,7 @@ const DESC_MIN = 80;
 export default function ListingCreateWizard() {
   const auth = useRequireAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const categoriesState = useCategories();
   const [activeId, setActiveId] = React.useState<WizardStepId>("basics");
   const [visited, setVisited] = React.useState<Set<WizardStepId>>(
@@ -135,6 +188,13 @@ export default function ListingCreateWizard() {
   const [submitting, setSubmitting] = React.useState(false);
   const [submitError, setSubmitError] = React.useState<CreateListingError | null>(null);
   const [created, setCreated] = React.useState<ListingDetail | null>(null);
+
+  // ---------- draft autosave state ----------
+  const [draftId, setDraftId] = React.useState<string | null>(null);
+  const [draftHydrating, setDraftHydrating] = React.useState<boolean>(
+    !!searchParams.get("draft")
+  );
+  const draftCreatingRef = React.useRef(false);
 
   // ---------- form state ----------
   // Real /provider/listings/new starts blank — provider fills it in. The demo
@@ -193,6 +253,173 @@ export default function ListingCreateWizard() {
   const [responseSlaMin, setResponseSlaMin] = React.useState<number>(15);
 
   const [previewOpen, setPreviewOpen] = React.useState(false);
+
+  // ---------- draft hydration (?draft=<id>) ----------
+  // Mark draft as hydrated (or hydration attempted) so we never re-fetch the
+  // same id and never overwrite user edits made after hydration.
+  const hydratedIdsRef = React.useRef<Set<string>>(new Set());
+  // Track if user touched the gallery during this session — until they do,
+  // hydration-restored gallery_media_ids must NOT be wiped by autosave (the
+  // uploader starts empty after refresh and we cannot rebind file blobs).
+  const galleryTouchedRef = React.useRef(false);
+  const [hydratedGalleryMediaIds, setHydratedGalleryMediaIds] = React.useState<
+    string[] | null
+  >(null);
+  const [hydratedCoverMediaId, setHydratedCoverMediaId] = React.useState<
+    string | null
+  >(null);
+
+  React.useEffect(() => {
+    if (!auth) return;
+    const id = searchParams.get("draft");
+    if (!id) {
+      setDraftHydrating(false);
+      return;
+    }
+    if (hydratedIdsRef.current.has(id)) return;
+    hydratedIdsRef.current.add(id);
+    let alive = true;
+    (async () => {
+      try {
+        const draft = await getDraft(id);
+        if (!alive) return;
+        const p = draft.payload;
+        if (typeof p.title === "string") setTitle(p.title);
+        if (typeof p.description === "string") setDescription(p.description);
+        if (typeof p.city === "string") setCity(p.city);
+        if (Array.isArray(p.tags)) setTags(p.tags);
+        if (p.category_path?.l1 && p.category_path?.l2 && p.category_path?.l3) {
+          setCategory(p.category_path as CategoryPath);
+        }
+        if (p.pricing_type) setPriceModel(p.pricing_type);
+        if (typeof p.price_amount_kopecks === "number")
+          setPriceKopecks(p.price_amount_kopecks);
+        if (typeof p.escrow_deposit === "boolean") setEscrowDeposit(p.escrow_deposit);
+        if (typeof p.response_sla_minutes === "number")
+          setResponseSlaMin(p.response_sla_minutes);
+        if (Array.isArray(p.gallery_media_ids))
+          setHydratedGalleryMediaIds(p.gallery_media_ids);
+        if (p.cover_media_id) setHydratedCoverMediaId(p.cover_media_id);
+        setDraftId(draft.id);
+      } catch {
+        // 404/403 — clear the dead `?draft=` param so we don't loop, then
+        // start fresh. Lazy-create kicks in on first edit.
+        const url = new URL(window.location.href);
+        url.searchParams.delete("draft");
+        router.replace(url.pathname + url.search, { scroll: false });
+      } finally {
+        if (alive) setDraftHydrating(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [auth, searchParams, router]);
+
+  // ---------- lazy draft creation on first edit ----------
+  const hasContent =
+    !!title.trim() ||
+    !!description.trim() ||
+    !!city.trim() ||
+    tags.length > 0 ||
+    !!category ||
+    priceKopecks !== null;
+  React.useEffect(() => {
+    if (!auth || draftId || draftHydrating || draftCreatingRef.current) return;
+    if (!hasContent) return;
+    draftCreatingRef.current = true;
+    (async () => {
+      try {
+        const draft = await createDraft();
+        // Mark as already-hydrated so the URL replace below doesn't trigger
+        // a redundant GET on the freshly-created (empty) draft.
+        hydratedIdsRef.current.add(draft.id);
+        setDraftId(draft.id);
+        // Reflect in URL so refresh / dashboard "Resume" can retrieve it.
+        const url = new URL(window.location.href);
+        url.searchParams.set("draft", draft.id);
+        router.replace(url.pathname + url.search, { scroll: false });
+      } catch {
+        // Ignore — user can still publish without a draft row.
+      } finally {
+        draftCreatingRef.current = false;
+      }
+    })();
+  }, [auth, draftId, draftHydrating, hasContent, router]);
+
+  // ---------- autosave snapshot ----------
+  // Built from current state every render; useDraftAutosave debounces +
+  // diff-checks JSON.stringify so we don't hit the network on identical state.
+  // Gallery is included only after the user has touched it this session —
+  // otherwise hydrated draft.gallery_media_ids would be wiped (uploader has
+  // no way to re-bind file blobs after refresh). uploader.getMediaId is
+  // useCallback'd in lib/media.ts so passing it as a dep is stable.
+  const liveGalleryMediaIds = React.useMemo(
+    () =>
+      gallery
+        .map((g) => uploader.getMediaId(g.id))
+        .filter((mid): mid is string => mid !== null),
+    [gallery, uploader.getMediaId]
+  );
+  const liveCoverMediaId = React.useMemo(
+    () => (coverLocalId ? uploader.getMediaId(coverLocalId) : null),
+    [coverLocalId, uploader.getMediaId]
+  );
+
+  // Mark gallery as touched once the user uploads or removes a file.
+  React.useEffect(() => {
+    if (uploader.files.length > 0) galleryTouchedRef.current = true;
+  }, [uploader.files.length]);
+
+  const autosavePayload: DraftPayload = React.useMemo(() => {
+    // Convention: send `null` for cleared text fields so the mock merger
+    // can distinguish "untouched" (omitted) from "explicit clear" (null).
+    const galleryFields = galleryTouchedRef.current
+      ? {
+          gallery_media_ids: liveGalleryMediaIds,
+          cover_media_id: liveCoverMediaId,
+        }
+      : hydratedGalleryMediaIds !== null
+        ? {
+            gallery_media_ids: hydratedGalleryMediaIds,
+            cover_media_id: hydratedCoverMediaId,
+          }
+        : {};
+    return {
+      title: title.trim() || null,
+      description: description.trim() || null,
+      city: city.trim() || null,
+      tags,
+      category_path: category
+        ? { l1: category.l1, l2: category.l2, l3: category.l3 }
+        : undefined,
+      pricing_type: priceModel,
+      price_amount_kopecks: priceKopecks,
+      escrow_deposit: escrowDeposit,
+      response_sla_minutes: responseSlaMin,
+      ...galleryFields,
+    };
+  }, [
+    title,
+    description,
+    city,
+    tags,
+    category,
+    priceModel,
+    priceKopecks,
+    escrowDeposit,
+    responseSlaMin,
+    liveGalleryMediaIds,
+    liveCoverMediaId,
+    hydratedGalleryMediaIds,
+    hydratedCoverMediaId,
+  ]);
+
+  const saveStatus = useDraftAutosave({
+    draftId,
+    payload: autosavePayload,
+    enabled: !submitting && !created && !draftHydrating,
+  });
 
   // ---------- validation ----------
   const errors: Partial<Record<WizardStepId, string[]>> = {};
@@ -294,6 +521,8 @@ export default function ListingCreateWizard() {
           return { media_id: mid, alt: g.alt, is_cover: !!g.isCover };
         })
         .filter((g): g is { media_id: string; alt: string; is_cover: boolean } => g !== null),
+      // Atomic publish + draft cleanup (server deletes inside same handler).
+      draft_id: draftId ?? undefined,
     });
     setSubmitting(false);
     if (result.ok) {
@@ -467,9 +696,11 @@ export default function ListingCreateWizard() {
                 </Badge>
               </div>
               <p className="mt-3 text-caption text-muted leading-relaxed">
-                Чернетка зберігається автоматично. Опублікуємо лише після
-                перевірки модерацією.
+                Опублікуємо лише після перевірки модерацією.
               </p>
+              <div className="mt-2">
+                <DraftSaveIndicator status={saveStatus} hasDraft={!!draftId} />
+              </div>
             </>
           }
         />

@@ -8,6 +8,7 @@ import {
   validateListingAttachments,
   backfillListingIdFk,
 } from "../_mock/media";
+import { deleteDraft } from "../_mock/listing_drafts";
 
 /**
  * POST /api/v1/listings — create a listing.
@@ -36,6 +37,9 @@ type CreateListingBody = {
   escrow_deposit?: boolean;
   response_sla_minutes?: number;
   gallery?: { media_id: string; alt?: string; is_cover?: boolean }[];
+  /** Optional — when set, the draft row is deleted in the same request,
+   *  giving an atomic publish-and-cleanup transition (no orphan drafts). */
+  draft_id?: string;
 };
 
 const TITLE_MIN = 12;
@@ -190,6 +194,12 @@ export async function POST(req: Request) {
 
   userListingsStore.insert(detail);
   backfillListingIdFk(mediaIds, id);
+  // Atomic cleanup: if the wizard sent the draft id it was working from,
+  // remove the draft row so it disappears from the dashboard immediately
+  // (no client-side follow-up DELETE that could fail and leave an orphan).
+  if (body.draft_id) {
+    deleteDraft(body.draft_id, auth.user.id);
+  }
 
   return NextResponse.json(detail, { status: 201 });
 }
