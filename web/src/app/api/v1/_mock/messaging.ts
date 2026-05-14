@@ -373,6 +373,24 @@ export function sendMessage(input: {
   db().messages.set(c.id, list);
   c.last_message_at = m.created_at;
   c.last_message_preview = finalBody.slice(0, 120);
+
+  // Module 9 producer hook: notify recipient (the non-sender party).
+  // Dynamic import keeps messaging↔notifications coupling unidirectional
+  // for the mock; real backend uses outbox events.
+  const recipientId =
+    c.client_id === input.sender_id ? c.provider_id : c.client_id;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const notif = require("./notifications") as typeof import("./notifications");
+  notif.enqueueNotification({
+    user_id: recipientId,
+    notification_code: "message.created",
+    aggregate_type: "message",
+    aggregate_id: m.id,
+    title: "Нове повідомлення",
+    body: finalBody.length > 0 ? finalBody.slice(0, 120) : "Вкладення",
+    href: `/messages?c=${c.id}`,
+  });
+
   return { ok: true, message: m, auto_blocked: autoBlocked };
 }
 

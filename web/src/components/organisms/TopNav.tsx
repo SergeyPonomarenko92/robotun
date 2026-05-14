@@ -2,6 +2,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { Bell, MessageCircle, Plus, Menu as MenuIcon, ChevronDown, LogOut, Settings, User } from "lucide-react";
+import { useNotificationsUnreadCount } from "@/lib/notifications";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/cn";
@@ -72,6 +73,14 @@ export function TopNav({
         ? null
         : propUser;
   const handleLogout = onLogout ?? (() => void auth.logout());
+
+  // Live notifications badge — only polls while authenticated. Falls back to
+  // the explicit `notificationsUnread` prop for design-time stories.
+  const liveUnread = useNotificationsUnreadCount(
+    auth.status === "authenticated"
+  );
+  const effectiveNotificationsUnread =
+    auth.status === "authenticated" ? liveUnread : notificationsUnread;
   return (
     <header
       className={cn(
@@ -125,11 +134,11 @@ export function TopNav({
                   </span>
                 )}
               </Link>
-              <Link href="/inbox" aria-label="Сповіщення" className="relative inline-flex h-10 w-10 items-center justify-center rounded-[var(--radius-sm)] text-ink-soft hover:bg-paper hover:text-ink transition-colors">
+              <Link href="/me/notifications" aria-label="Сповіщення" className="relative inline-flex h-10 w-10 items-center justify-center rounded-[var(--radius-sm)] text-ink-soft hover:bg-paper hover:text-ink transition-colors">
                 <Bell size={18} />
-                {notificationsUnread > 0 && (
+                {effectiveNotificationsUnread > 0 && (
                   <span className="absolute top-1 right-1">
-                    <CountBadge value={notificationsUnread} tone="accent" />
+                    <CountBadge value={effectiveNotificationsUnread} tone="accent" />
                   </span>
                 )}
               </Link>
