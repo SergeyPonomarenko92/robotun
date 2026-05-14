@@ -12,7 +12,9 @@ export type AdminActionType =
   | "mfa.challenge.consumed"
   | "dispute.resolved"
   | "payout.completed"
-  | "kyc.document_streamed";
+  | "kyc.document_streamed"
+  | "user.suspend"
+  | "user.unsuspend";
 
 export type AdminAction = {
   id: string;

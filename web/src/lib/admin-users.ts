@@ -1,6 +1,7 @@
 "use client";
 import * as React from "react";
 import { apiFetch, ApiError } from "./api";
+import type { MfaChallenge } from "./deals";
 
 export type AdminUserStatus = "active" | "pending" | "suspended" | "deleted";
 export type AdminUserRole = "client" | "provider" | "admin" | "moderator" | "support";
@@ -74,6 +75,90 @@ export function useAdminUsers(filters: ListUsersFilters) {
   }, [refresh]);
   return { items, error, refresh };
 }
+
+// ---------------------------------------------------------------------------
+// Suspend / unsuspend (Module 12 §4.7 + ADM-SEC-006).
+// ---------------------------------------------------------------------------
+
+export type SuspendInput = {
+  reason: string;
+  mfa_challenge_id: string;
+  mfa_code: string;
+};
+
+export type SuspendError = {
+  message: string;
+  status: number;
+  /** Distinguishes which step failed so the modal can route back: MFA error
+   *  → step 1 (reissue), validation → step 0 (reason). */
+  step?: "reason" | "mfa";
+};
+
+async function callMutation(
+  path: string,
+  input: SuspendInput
+): Promise<
+  | { ok: true; status: AdminUserStatus }
+  | { ok: false; error: SuspendError }
+> {
+  try {
+    const r = await apiFetch<{ id: string; status: AdminUserStatus }>(path, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return { ok: true, status: r.status };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const body = e.body as { error?: string } | null;
+      const code = body?.error ?? "unknown";
+      // MFA errors → step:'mfa'; reason / state errors → step:'reason'.
+      const mfaErrors = new Set([
+        "mfa_missing",
+        "mfa_not_found",
+        "mfa_expired",
+        "mfa_consumed",
+        "mfa_wrong_admin",
+        "mfa_code_invalid",
+      ]);
+      const step: SuspendError["step"] = mfaErrors.has(code) ? "mfa" : "reason";
+      const message =
+        code === "reason_too_short"
+          ? "Причина має містити мінімум 10 символів"
+          : code === "cannot_suspend_self"
+            ? "Не можна зупинити власний обліковий запис"
+            : code === "already_suspended"
+              ? "Користувача вже зупинено"
+              : code === "not_suspended"
+                ? "Користувач не зупинений"
+                : code === "user_deleted"
+                  ? "Користувач видалений — дія недоступна"
+                  : mfaErrors.has(code)
+                    ? "Невірний або застарілий код MFA — потрібен новий"
+                    : e.message;
+      return { ok: false, error: { message, status: e.status, step } };
+    }
+    return {
+      ok: false,
+      error: { message: "Немає з'єднання", status: 0 },
+    };
+  }
+}
+
+export function suspendUser(userId: string, input: SuspendInput) {
+  return callMutation(
+    `/admin/users/${encodeURIComponent(userId)}/suspend`,
+    input
+  );
+}
+
+export function unsuspendUser(userId: string, input: SuspendInput) {
+  return callMutation(
+    `/admin/users/${encodeURIComponent(userId)}/unsuspend`,
+    input
+  );
+}
+
+export type { MfaChallenge };
 
 export function useAdminUser(id: string | null) {
   const [data, setData] = React.useState<AdminUserDetail | null>(null);

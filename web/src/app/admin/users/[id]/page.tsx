@@ -2,17 +2,23 @@
 import * as React from "react";
 import { use as usePromise } from "react";
 import Link from "next/link";
-import { ArrowLeft, AlertTriangle, Loader2 } from "lucide-react";
+import { ArrowLeft, AlertTriangle, Loader2, ShieldOff, ShieldCheck } from "lucide-react";
 
 import { AdminShell } from "@/components/organisms/AdminShell";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Modal } from "@/components/ui/Modal";
+import { InlineAlert } from "@/components/ui/InlineAlert";
 import { MoneyDisplay } from "@/components/ui/MoneyInput";
 import {
   useAdminUser,
+  suspendUser,
+  unsuspendUser,
   type AdminUserStatus,
   type AdminUserDetail,
 } from "@/lib/admin-users";
+import { createMfaChallenge, type MfaChallenge } from "@/lib/deals";
 
 const STATUS_LABEL: Record<AdminUserStatus, string> = {
   active: "Активний",
@@ -32,6 +38,9 @@ type PageProps = { params: Promise<{ id: string }> };
 export default function AdminUserDetailPage({ params }: PageProps) {
   const { id } = usePromise(params);
   const { data, error, refresh } = useAdminUser(id);
+  const [modalKind, setModalKind] = React.useState<
+    null | "suspend" | "unsuspend"
+  >(null);
 
   return (
     <AdminShell
@@ -69,9 +78,166 @@ export default function AdminUserDetailPage({ params }: PageProps) {
           <Loader2 size={20} className="animate-spin text-muted" aria-hidden />
         </div>
       ) : (
-        <UserBody user={data} />
+        <UserBody
+          user={data}
+          onSuspend={() => setModalKind("suspend")}
+          onUnsuspend={() => setModalKind("unsuspend")}
+        />
+      )}
+      {data && modalKind && (
+        <SuspensionModal
+          kind={modalKind}
+          user={data}
+          onClose={() => setModalKind(null)}
+          onDone={() => {
+            setModalKind(null);
+            refresh();
+          }}
+        />
       )}
     </AdminShell>
+  );
+}
+
+function SuspensionModal({
+  kind,
+  user,
+  onClose,
+  onDone,
+}: {
+  kind: "suspend" | "unsuspend";
+  user: AdminUserDetail;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [step, setStep] = React.useState<"reason" | "mfa">("reason");
+  const [reason, setReason] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
+  const [challenge, setChallenge] = React.useState<MfaChallenge | null>(null);
+  const [code, setCode] = React.useState("");
+
+  const isSuspend = kind === "suspend";
+  const title = isSuspend ? "Зупинити обліковий запис" : "Поновити обліковий запис";
+  const submitLabel = isSuspend ? "Зупинити" : "Поновити";
+  const action = isSuspend ? suspendUser : unsuspendUser;
+
+  const issueMfa = async () => {
+    if (busy || reason.trim().length < 10) {
+      setErr("Причина має містити мінімум 10 символів");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    const r = await createMfaChallenge();
+    setBusy(false);
+    if (r.ok) {
+      setChallenge(r.challenge);
+      setCode("");
+      setStep("mfa");
+    } else {
+      setErr(r.error.message);
+    }
+  };
+
+  const submit = async () => {
+    if (busy || !challenge || code.length !== 6) return;
+    setBusy(true);
+    setErr(null);
+    const r = await action(user.id, {
+      reason: reason.trim(),
+      mfa_challenge_id: challenge.id,
+      mfa_code: code,
+    });
+    setBusy(false);
+    if (r.ok) {
+      onDone();
+      return;
+    }
+    setErr(r.error.message);
+    if (r.error.step === "mfa") {
+      // Burnt / expired code → return to step 1, force re-issue.
+      setStep("reason");
+      setChallenge(null);
+      setCode("");
+    }
+  };
+
+  return (
+    <Modal open onOpenChange={(v) => !v && onClose()} title={title} size="md">
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <Avatar src={user.avatar_url} alt={user.display_name} size="sm" />
+          <div>
+            <div className="text-body text-ink">{user.display_name}</div>
+            <div className="text-caption text-muted">{user.email}</div>
+          </div>
+        </div>
+
+        {step === "reason" ? (
+          <div className="space-y-3">
+            <label className="block">
+              <span className="block text-caption text-ink-soft mb-1.5">
+                Причина {isSuspend ? "зупинки" : "поновлення"} (буде записано
+                в журнал)
+              </span>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={4}
+                className="w-full px-3 py-2 rounded-[var(--radius-sm)] border border-hairline bg-paper text-body text-ink focus:outline-none focus:border-accent"
+                placeholder="Мінімум 10 символів"
+                aria-label="Причина"
+              />
+            </label>
+            {err && <InlineAlert tone="danger">{err}</InlineAlert>}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <InlineAlert tone="info">
+              Введіть 6-значний код з MFA-додатку.{" "}
+              {challenge?.code && (
+                <>
+                  <span className="font-mono">DEMO:</span>{" "}
+                  <code className="font-mono text-ink">{challenge.code}</code>
+                </>
+              )}
+            </InlineAlert>
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+              className="w-full px-3 py-2 font-mono text-h3 tracking-[0.4em] text-center rounded-[var(--radius-sm)] border border-hairline bg-paper text-ink focus:outline-none focus:border-accent"
+              aria-label="6-значний MFA-код"
+              placeholder="••••••"
+            />
+            {err && <InlineAlert tone="danger">{err}</InlineAlert>}
+          </div>
+        )}
+
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Скасувати
+          </Button>
+          {step === "reason" ? (
+            <Button onClick={issueMfa} disabled={busy} variant={isSuspend ? "danger" : "primary"}>
+              {busy ? "…" : "Далі — MFA"}
+            </Button>
+          ) : (
+            <Button
+              onClick={submit}
+              disabled={busy || code.length !== 6}
+              variant={isSuspend ? "danger" : "primary"}
+            >
+              {busy ? "…" : submitLabel}
+            </Button>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -107,7 +273,15 @@ function ErrorBlock({
   );
 }
 
-function UserBody({ user }: { user: AdminUserDetail }) {
+function UserBody({
+  user,
+  onSuspend,
+  onUnsuspend,
+}: {
+  user: AdminUserDetail;
+  onSuspend: () => void;
+  onUnsuspend: () => void;
+}) {
   return (
     <div className="mt-8 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8">
       <div className="space-y-6 min-w-0">
@@ -222,10 +396,40 @@ function UserBody({ user }: { user: AdminUserDetail }) {
           <h3 className="font-mono text-micro uppercase tracking-[0.18em] text-muted">
             Дії
           </h3>
-          <p className="mt-3 text-caption text-muted">
-            Зупинення, поновлення та зміна ролей зʼявляться у наступному
-            кроці (потребують MFA та підтвердження другого адміна).
-          </p>
+          <div className="mt-3 space-y-2">
+            {user.status === "suspended" ? (
+              <Button
+                variant="primary"
+                className="w-full"
+                leftIcon={<ShieldCheck size={14} />}
+                onClick={onUnsuspend}
+                disabled={user.roles.includes("admin")}
+              >
+                Поновити обліковий запис
+              </Button>
+            ) : (
+              <Button
+                variant="danger"
+                className="w-full"
+                leftIcon={<ShieldOff size={14} />}
+                onClick={onSuspend}
+                disabled={
+                  user.status === "deleted" || user.roles.includes("admin")
+                }
+              >
+                Зупинити обліковий запис
+              </Button>
+            )}
+            <p className="text-caption text-muted">
+              Дія потребує MFA-підтвердження. Журналюється у{" "}
+              <code className="font-mono">admin_actions</code> з причиною.
+              {user.roles.includes("admin") && (
+                <span className="block mt-1 text-warning">
+                  Адмін-облік не може бути зупинено цим інтерфейсом.
+                </span>
+              )}
+            </p>
+          </div>
         </section>
       </aside>
     </div>
