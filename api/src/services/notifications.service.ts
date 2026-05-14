@@ -132,6 +132,21 @@ const TEMPLATES: Record<string, Template> = {
     body: (c) => `Причина: ${c.payload.rejection_code ?? "—"}. Можна подати повторно.`,
     recipients: async (_tx, p) => [String(p.provider_id ?? "")].filter(Boolean),
   },
+  "deal.dispute_resolved": {
+    code: "deal_dispute_resolved",
+    title: () => "Спір по угоді вирішено",
+    body: (c) => {
+      const outcome = String(c.payload.outcome ?? "");
+      if (outcome === "release_to_provider") return "Адміністратор підтвердив виплату виконавцю.";
+      if (outcome === "refund_to_client") return "Адміністратор підтвердив повернення коштів.";
+      if (outcome === "split") return "Адміністратор вирішив спір частковою виплатою.";
+      return "Спір вирішено адміністратором.";
+    },
+    recipients: async (tx, p) => {
+      const d = await dealParticipants(tx, String(p.deal_id));
+      return d ? [d.client_id, d.provider_id] : [];
+    },
+  },
   "review.submitted": {
     code: "review_for_reviewee",
     title: () => "Новий відгук",

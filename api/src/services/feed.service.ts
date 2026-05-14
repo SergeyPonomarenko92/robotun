@@ -95,11 +95,14 @@ export async function listFeed(opts: {
 
   // Score formula uses $asOf snapshot, NOT now(), so cursor pagination is
   // stable across requests.
+  // kyc_was_approved_at_as_of joins kyc_verifications with decided_at filter
+  // so a provider getting KYC-approved between page1 and page2 doesn't shift
+  // the score (+30) and break cursor ordering.
   const scoreExpr = `(
     100
     + COALESCE(rv.avg_rating, 0) * 10
     + LN(1 + COALESCE(dc.completed_count, 0)) * 20
-    + CASE WHEN u.kyc_status = 'approved' THEN 30 ELSE 0 END
+    + CASE WHEN kv.kyc_approved_at_snapshot IS NOT NULL THEN 30 ELSE 0 END
     + GREATEST(0, 60 - EXTRACT(EPOCH FROM ($${asOfIdx}::timestamptz - l.published_at)) / 86400) * 0.5
     + ${qBoostExpr}
   )`;
@@ -122,7 +125,7 @@ export async function listFeed(opts: {
            l.price_amount, l.price_amount_max, l.pricing_type, l.currency,
            l.provider_id, l.published_at, l.tags,
            u.display_name AS provider_name, u.avatar_url AS provider_avatar_url,
-           (u.kyc_status = 'approved') AS provider_kyc_approved,
+           (kv.kyc_approved_at_snapshot IS NOT NULL) AS provider_kyc_approved,
            rv.avg_rating, COALESCE(rv.review_count, 0) AS review_count,
            ${scoreExpr} AS score
       FROM listings l
@@ -132,6 +135,17 @@ export async function listFeed(opts: {
       -- short-circuit before the LATERAL subqueries, removing the
       -- LEFT-JOIN-then-WHERE-filter footgun.
       INNER JOIN users u ON u.id = l.provider_id
+      LEFT JOIN LATERAL (
+        -- Snapshot KYC-approval-as-of for cursor stability. Approved iff a
+        -- decided_at <= $as_of approval exists in kyc_verifications.
+        SELECT decided_at AS kyc_approved_at_snapshot
+          FROM kyc_verifications
+         WHERE provider_id = u.id
+           AND status = 'approved'
+           AND decided_at IS NOT NULL
+           AND decided_at <= $${asOfIdx}::timestamptz
+         LIMIT 1
+      ) kv ON true
       LEFT JOIN LATERAL (
         SELECT AVG(overall_rating)::float AS avg_rating, COUNT(*)::int AS review_count
           FROM reviews
