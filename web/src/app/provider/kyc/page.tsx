@@ -39,6 +39,7 @@ import { WizardActionBar } from "@/components/organisms/WizardActionBar";
 import { SuccessScreen } from "@/components/organisms/SuccessScreen";
 import { useRequireAuth } from "@/lib/auth";
 import { useRouter } from "next/navigation";
+import { submitKyc, useKycStatus } from "@/lib/kyc";
 
 type StepId = "doc" | "selfie" | "payout" | "review";
 
@@ -75,6 +76,9 @@ export default function KYCPage() {
   const [activeId, setActiveId] = React.useState<StepId>("doc");
   const [visited, setVisited] = React.useState<Set<StepId>>(new Set(["doc"]));
   const [submitted, setSubmitted] = React.useState(false);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const kycSnapshot = useKycStatus();
 
   // doc — real /provider/kyc starts blank; demo-style placeholders removed.
   const [docType, setDocType] = React.useState<DocType>("id_card");
@@ -199,7 +203,16 @@ export default function KYCPage() {
   }
   if (!auth.user.has_provider_role) return null;
 
-  if (submitted) {
+  // If the provider already has an active KYC application (submitted /
+  // in_review / approved) — show the success view instead of the wizard.
+  // `cancelled` / `rejected` / `expired` fall through so the user can resubmit.
+  const serverStatus = kycSnapshot.data?.status;
+  const showResultScreen =
+    submitted ||
+    serverStatus === "submitted" ||
+    serverStatus === "in_review" ||
+    serverStatus === "approved";
+  if (showResultScreen) {
     return <SubmittedScreen onAgain={() => setSubmitted(false)} />;
   }
 
@@ -338,6 +351,11 @@ export default function KYCPage() {
               </span>
             </div>
           </section>
+          {submitError && (
+            <div className="mt-6">
+              <InlineAlert tone="danger">{submitError}</InlineAlert>
+            </div>
+          )}
         </div>
       </main>
 
@@ -360,10 +378,38 @@ export default function KYCPage() {
             <Button
               variant="accent"
               rightIcon={<ShieldCheck size={14} />}
-              disabled={!allValid}
-              onClick={() => setSubmitted(true)}
+              disabled={!allValid || submitting}
+              onClick={async () => {
+                if (submitting) return;
+                setSubmitting(true);
+                setSubmitError(null);
+                const r = await submitKyc({
+                  doc_type: docType,
+                  doc_media_ids: [
+                    ...docFrontUploader.mediaIds,
+                    ...docBackUploader.mediaIds,
+                  ],
+                  legal_name: legalName,
+                  tax_id: taxId,
+                  payout_method: payoutMethod,
+                  payout_details: {
+                    card_number:
+                      payoutMethod === "card" ? cardNumber : undefined,
+                    iban: payoutMethod === "iban" ? iban : undefined,
+                    bank_name: bankName,
+                    account_holder: accountHolder,
+                  },
+                });
+                setSubmitting(false);
+                if (r.ok) {
+                  setSubmitted(true);
+                  kycSnapshot.refresh();
+                } else {
+                  setSubmitError(r.error.message);
+                }
+              }}
             >
-              Надіслати на перевірку
+              {submitting ? "Надсилаємо…" : "Надіслати на перевірку"}
             </Button>
           )
         }
