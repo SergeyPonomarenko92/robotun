@@ -9,7 +9,8 @@ export type MediaPurpose =
   | "listing_attachment"
   | "kyc_document"
   | "avatar"
-  | "dispute_evidence";
+  | "dispute_evidence"
+  | "message_attachment";
 
 const MIME_BY_PURPOSE: Record<MediaPurpose, readonly string[]> = {
   listing_cover: ["image/jpeg", "image/png", "image/webp"],
@@ -18,6 +19,7 @@ const MIME_BY_PURPOSE: Record<MediaPurpose, readonly string[]> = {
   kyc_document: ["image/jpeg", "image/png", "application/pdf"],
   avatar: ["image/jpeg", "image/png", "image/webp"],
   dispute_evidence: ["image/jpeg", "image/png", "image/webp", "application/pdf"],
+  message_attachment: ["image/jpeg", "image/png", "image/webp", "application/pdf"],
 };
 
 const MAX_BYTES_BY_PURPOSE: Record<MediaPurpose, number> = {
@@ -27,6 +29,7 @@ const MAX_BYTES_BY_PURPOSE: Record<MediaPurpose, number> = {
   kyc_document: 20 * 1024 * 1024,
   avatar: 5 * 1024 * 1024,
   dispute_evidence: 10 * 1024 * 1024,
+  message_attachment: 10 * 1024 * 1024,
 };
 
 /**

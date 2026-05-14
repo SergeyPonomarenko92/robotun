@@ -24,7 +24,11 @@ import {
   markConversationRead,
   blockConversationApi,
   unblockConversationApi,
+  editMessageApi,
+  deleteMessageApi,
 } from "@/lib/messaging";
+import { useUploader, getMediaStreamUrl } from "@/lib/media";
+import type { ComposerAttachment } from "@/components/organisms/Composer";
 
 export default function MessagesPage() {
   const auth = useRequireAuth("/login");
@@ -40,6 +44,22 @@ export default function MessagesPage() {
   const [draft, setDraft] = React.useState("");
   const [sending, setSending] = React.useState(false);
   const [sendError, setSendError] = React.useState<string | null>(null);
+  // Per-message edit state: id of the message currently being edited (only
+  // one at a time) + its draft body. Null when nobody is editing.
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [editDraft, setEditDraft] = React.useState("");
+
+  // Attachments uploader scoped to message_attachment purpose. Reset on
+  // conversation switch so a half-uploaded file from convo A doesn't show
+  // up in convo B.
+  const uploader = useUploader({
+    purpose: "message_attachment",
+    maxFiles: 5,
+  });
+  React.useEffect(() => {
+    uploader.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   // Auto-select first conversation once data arrives.
   React.useEffect(() => {
@@ -130,15 +150,57 @@ export default function MessagesPage() {
   const send = async () => {
     if (sending || !activeId) return;
     const body = draft.trim();
-    if (body.length === 0) return;
+    const attachmentIds = uploader.mediaIds;
+    if (body.length === 0 && attachmentIds.length === 0) return;
+    if (uploader.uploading || uploader.hasErrors) {
+      setSendError(
+        uploader.hasErrors
+          ? "Видаліть файли з помилкою"
+          : "Зачекайте завершення завантаження"
+      );
+      return;
+    }
     setSending(true);
     setSendError(null);
-    const r = await sendMessage(activeId, body);
+    const r = await sendMessage(activeId, body, attachmentIds);
     setSending(false);
     if (r.ok) {
       msgs.append(r.message);
       setDraft("");
+      uploader.reset();
       conversations.refresh();
+    } else {
+      setSendError(r.error.message);
+    }
+  };
+
+  const composerAttachments: ComposerAttachment[] = uploader.files.map((f) => ({
+    id: f.id,
+    fileName: f.file.name,
+    sizeBytes: f.file.size,
+    mimeType: f.file.type,
+    status: f.status,
+  }));
+
+  const submitEdit = async (messageId: string) => {
+    if (!activeId || !editDraft.trim()) return;
+    setSendError(null);
+    const r = await editMessageApi(activeId, messageId, editDraft.trim());
+    if (r.ok) {
+      setEditingId(null);
+      setEditDraft("");
+      msgs.refresh();
+    } else {
+      setSendError(r.error.message);
+    }
+  };
+
+  const doDelete = async (messageId: string) => {
+    if (!activeId) return;
+    setSendError(null);
+    const r = await deleteMessageApi(activeId, messageId);
+    if (r.ok) {
+      msgs.refresh();
     } else {
       setSendError(r.error.message);
     }
@@ -274,29 +336,102 @@ export default function MessagesPage() {
                         new Date(m.created_at).getTime() -
                           new Date(prev.created_at).getTime() <
                           5 * 60 * 1000;
+                      const isOwn = m.sender_id === me.id;
+                      const ageMs =
+                        Date.now() - new Date(m.created_at).getTime();
+                      const editable =
+                        isOwn &&
+                        !m.deleted_at &&
+                        ageMs < 10 * 60 * 1000 &&
+                        activeConvo.status === "active";
+                      const isEditing = editingId === m.id;
                       return (
-                        <MessageBubble
-                          key={m.id}
-                          groupedWithPrev={grouped}
-                          data={{
-                            id: m.id,
-                            body: m.body,
-                            createdAt: m.created_at,
-                            senderIsMe: m.sender_id === me.id,
-                            senderName:
-                              m.sender_id === me.id
-                                ? me.display_name
-                                : activeConvo.counterparty?.display_name,
-                            senderAvatarUrl:
-                              m.sender_id === me.id
-                                ? me.avatar_url
-                                : activeConvo.counterparty?.avatar_url,
-                            delivery: "sent",
-                            gdprErased: !!m.gdpr_erased_at,
-                            autoRedacted: m.body_scrubbed,
-                            adminVisible: m.admin_visible,
-                          }}
-                        />
+                        <div key={m.id} className="group">
+                          {isEditing ? (
+                            <div className="ml-auto max-w-[min(70%,560px)] border border-accent rounded-[var(--radius-md)] bg-paper p-3">
+                              <textarea
+                                value={editDraft}
+                                onChange={(e) => setEditDraft(e.target.value)}
+                                rows={3}
+                                maxLength={4000}
+                                className="w-full px-3 py-2 rounded-[var(--radius-sm)] border border-hairline bg-canvas text-body text-ink focus:outline-none focus:border-accent"
+                                aria-label="Редагування повідомлення"
+                              />
+                              <div className="flex items-center justify-end gap-2 mt-2">
+                                <button
+                                  type="button"
+                                  className="text-caption text-muted hover:text-ink"
+                                  onClick={() => {
+                                    setEditingId(null);
+                                    setEditDraft("");
+                                  }}
+                                >
+                                  Скасувати
+                                </button>
+                                <button
+                                  type="button"
+                                  className="text-caption text-accent font-medium hover:underline"
+                                  onClick={() => submitEdit(m.id)}
+                                >
+                                  Зберегти
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <MessageBubble
+                                groupedWithPrev={grouped}
+                                data={{
+                                  id: m.id,
+                                  body: m.deleted_at
+                                    ? "[повідомлення видалено]"
+                                    : m.body,
+                                  createdAt: m.created_at,
+                                  senderIsMe: isOwn,
+                                  senderName: isOwn
+                                    ? me.display_name
+                                    : activeConvo.counterparty?.display_name,
+                                  senderAvatarUrl: isOwn
+                                    ? me.avatar_url
+                                    : activeConvo.counterparty?.avatar_url,
+                                  delivery: "sent",
+                                  gdprErased: !!m.gdpr_erased_at,
+                                  autoRedacted: m.body_scrubbed,
+                                  adminVisible: m.admin_visible,
+                                  edited: !!m.edited_at,
+                                  attachments: m.attachments?.map((a) => ({
+                                    id: a.id,
+                                    name: a.filename,
+                                    thumbUrl: a.mime_type.startsWith("image/")
+                                      ? getMediaStreamUrl(a.id)
+                                      : undefined,
+                                  })),
+                                }}
+                              />
+                              {editable && (
+                                <div className="ml-auto flex items-center gap-3 max-w-[min(70%,560px)] mt-0.5 pr-3 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity text-caption text-muted">
+                                  <button
+                                    type="button"
+                                    className="hover:text-ink"
+                                    onClick={() => {
+                                      setEditingId(m.id);
+                                      setEditDraft(m.body ?? "");
+                                    }}
+                                  >
+                                    Редагувати
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="hover:text-danger"
+                                    onClick={() => doDelete(m.id)}
+                                  >
+                                    Видалити
+                                  </button>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
                       );
                     })
                   )}
@@ -313,13 +448,16 @@ export default function MessagesPage() {
                     value={draft}
                     onChange={setDraft}
                     onSend={send}
-                    loading={sending}
+                    loading={sending || uploader.uploading}
                     blocked={
                       activeConvo.status !== "active" ||
                       !!activeConvo.blocked_by
                     }
                     maxLength={4000}
                     contactInfoDetected={draftHasContact}
+                    attachments={composerAttachments}
+                    onAttachmentsAdd={(files) => uploader.addFiles(files)}
+                    onAttachmentRemove={(id) => uploader.removeFile(id)}
                   />
                 </div>
               </>

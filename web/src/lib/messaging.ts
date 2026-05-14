@@ -26,6 +26,14 @@ export type Conversation = {
   created_at: string;
 };
 
+export type MessageAttachment = {
+  id: string;
+  filename: string;
+  mime_type: string;
+  byte_size: number;
+  status: "awaiting_upload" | "awaiting_scan" | "ready" | "quarantine_rejected" | "scan_error_permanent" | "deleted";
+};
+
 export type Message = {
   id: string;
   conversation_id: string;
@@ -34,6 +42,8 @@ export type Message = {
   body_scrubbed: boolean;
   contact_info_detected: boolean;
   admin_visible: boolean;
+  attachment_ids: string[];
+  attachments?: MessageAttachment[];
   created_at: string;
   edited_at: string | null;
   deleted_at: string | null;
@@ -56,22 +66,94 @@ function localizeSendError(e: ApiError): SendError {
         ? "Порожнє повідомлення"
         : code === "conversation_locked"
           ? "Бесіду закрито"
-          : code === "not_found"
-            ? "Бесіду не знайдено"
-            : e.message;
+          : code === "blocked"
+            ? "Бесіду заблоковано"
+            : code === "too_many_attachments"
+              ? "Не більше 5 вкладень за раз"
+              : code === "attachments_size_exceeded"
+                ? "Сумарний розмір вкладень — до 25 МБ"
+                : code === "invalid_attachments"
+                  ? "Один або кілька файлів недійсні — додайте знову"
+                  : code === "edit_window_expired"
+                    ? "Минув 10-хвилинний інтервал на правки"
+                    : code === "not_sender"
+                      ? "Лише автор може змінити чи видалити"
+                      : code === "not_found"
+                        ? "Не знайдено"
+                        : e.message;
   return { status: e.status, code, message };
 }
 
 export async function sendMessage(
   conversationId: string,
-  body: string
+  body: string,
+  attachment_ids: string[] = []
 ): Promise<{ ok: true; message: Message } | { ok: false; error: SendError }> {
   try {
     const m = await apiFetch<Message>(
       `/conversations/${encodeURIComponent(conversationId)}/messages`,
-      { method: "POST", body: JSON.stringify({ body }) }
+      {
+        method: "POST",
+        body: JSON.stringify({ body, attachment_ids }),
+      }
     );
     return { ok: true, message: m };
+  } catch (e) {
+    if (e instanceof ApiError) return { ok: false, error: localizeSendError(e) };
+    return {
+      ok: false,
+      error: { status: 0, code: "network", message: "Немає з'єднання" },
+    };
+  }
+}
+
+export async function editMessageApi(
+  conversationId: string,
+  messageId: string,
+  body: string
+): Promise<{ ok: true; message: Message } | { ok: false; error: SendError }> {
+  try {
+    const m = await apiFetch<Message>(
+      `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
+      { method: "PUT", body: JSON.stringify({ body }) }
+    );
+    return { ok: true, message: m };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const sendErr = localizeSendError(e);
+      // Specialize edit-only error codes.
+      const code = sendErr.code;
+      if (code === "edit_window_expired") {
+        return {
+          ok: false,
+          error: { ...sendErr, message: "Минув 10-хвилинний інтервал на правки" },
+        };
+      }
+      if (code === "not_sender") {
+        return {
+          ok: false,
+          error: { ...sendErr, message: "Лише автор може змінити повідомлення" },
+        };
+      }
+      return { ok: false, error: sendErr };
+    }
+    return {
+      ok: false,
+      error: { status: 0, code: "network", message: "Немає з'єднання" },
+    };
+  }
+}
+
+export async function deleteMessageApi(
+  conversationId: string,
+  messageId: string
+): Promise<{ ok: true } | { ok: false; error: SendError }> {
+  try {
+    await apiFetch(
+      `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
+      { method: "DELETE" }
+    );
+    return { ok: true };
   } catch (e) {
     if (e instanceof ApiError) return { ok: false, error: localizeSendError(e) };
     return {

@@ -21,7 +21,8 @@ export type MediaPurpose =
   | "listing_attachment"
   | "kyc_document"
   | "avatar"
-  | "dispute_evidence";
+  | "dispute_evidence"
+  | "message_attachment";
 
 export type MediaStatus =
   | "awaiting_upload"
@@ -62,6 +63,7 @@ export type MockMediaObject = {
   created_at: string;
   dispute_evidence_id: string | null;
   listing_id: string | null;
+  message_id: string | null;
 };
 
 declare global {
@@ -97,6 +99,7 @@ const MAX_BYTES_BY_PURPOSE: Record<MediaPurpose, number> = {
   kyc_document: 20 * 1024 * 1024,
   avatar: 5 * 1024 * 1024,
   dispute_evidence: 10 * 1024 * 1024,
+  message_attachment: 10 * 1024 * 1024, // REQ-013 per-attachment cap
 };
 
 const MIME_BY_PURPOSE: Record<MediaPurpose, string[]> = {
@@ -106,6 +109,7 @@ const MIME_BY_PURPOSE: Record<MediaPurpose, string[]> = {
   kyc_document: ["image/jpeg", "image/png", "application/pdf"],
   avatar: ["image/jpeg", "image/png", "image/webp"],
   dispute_evidence: ["image/jpeg", "image/png", "image/webp", "application/pdf"],
+  message_attachment: ["image/jpeg", "image/png", "image/webp", "application/pdf"], // REQ-014
 };
 
 export const ALLOWED_PURPOSES: ReadonlySet<MediaPurpose> = new Set(
@@ -198,6 +202,7 @@ export function initiateUpload(params: {
     created_at,
     dispute_evidence_id: null,
     listing_id: null,
+    message_id: null,
   });
   return {
     ok: true,
@@ -422,4 +427,30 @@ export function backfillListingIdFk(ids: readonly string[], listing_id: string) 
     const obj = mediaStore.objects.get(id);
     if (obj) obj.listing_id = listing_id;
   }
+}
+
+/** Message-id back-fill after a message row is inserted (REQ-013). */
+export function backfillMessageIdFk(
+  ids: readonly string[],
+  message_id: string
+) {
+  for (const id of ids) {
+    const obj = mediaStore.objects.get(id);
+    if (obj) obj.message_id = message_id;
+  }
+}
+
+/** Sanitized snapshot for embedding inside message responses (filename +
+ *  mime + size + status — no storage_key). Returns null if the media is
+ *  unknown / deleted. */
+export function projectMessageAttachment(id: string) {
+  const obj = mediaStore.objects.get(id);
+  if (!obj || obj.status === "deleted") return null;
+  return {
+    id: obj.id,
+    filename: obj.original_filename,
+    mime_type: obj.mime_type,
+    byte_size: obj.byte_size,
+    status: obj.status,
+  };
 }

@@ -29,11 +29,18 @@ export type MockMessage = {
   body_scrubbed: boolean;
   contact_info_detected: boolean;
   admin_visible: boolean;
+  attachment_ids: string[];
   created_at: string;
   edited_at: string | null;
   deleted_at: string | null;
   gdpr_erased_at: string | null;
 };
+
+// REQ-005: 10-min edit/delete window for sender.
+const EDIT_WINDOW_MS = 10 * 60 * 1000;
+// REQ-013: per-message attachment caps.
+const ATTACHMENT_MAX_COUNT = 5;
+const ATTACHMENT_MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 
 export type MessageReport = {
   id: string;
@@ -288,13 +295,23 @@ export type SendResult =
         | "body_empty"
         | "conversation_locked"
         | "not_party"
-        | "blocked";
+        | "blocked"
+        | "too_many_attachments"
+        | "attachments_size_exceeded"
+        | "invalid_attachments";
     };
 
 export function sendMessage(input: {
   conversation_id: string;
   sender_id: string;
   body: string;
+  attachment_ids?: string[];
+  /** Hook injected by the route to verify attachment ownership / purpose /
+   *  status without circular imports between messaging ↔ media. */
+  validateAttachments?: (ids: readonly string[]) => {
+    valid: boolean;
+    total_bytes: number;
+  };
 }): SendResult {
   const c = db().conversations.get(input.conversation_id);
   if (!c || !isParty(c, input.sender_id)) {
@@ -307,8 +324,20 @@ export function sendMessage(input: {
     return { ok: false, error: "blocked" };
   }
   const rawBody = input.body.trim();
-  if (rawBody.length === 0) return { ok: false, error: "body_empty" };
+  const attachmentIds = input.attachment_ids ?? [];
+  // Allow attachment-only messages (image-only chat). Empty body only fails
+  // when there are also no attachments.
+  if (rawBody.length === 0 && attachmentIds.length === 0)
+    return { ok: false, error: "body_empty" };
   if (rawBody.length > BODY_MAX) return { ok: false, error: "body_too_long" };
+  if (attachmentIds.length > ATTACHMENT_MAX_COUNT)
+    return { ok: false, error: "too_many_attachments" };
+  if (attachmentIds.length > 0 && input.validateAttachments) {
+    const v = input.validateAttachments(attachmentIds);
+    if (!v.valid) return { ok: false, error: "invalid_attachments" };
+    if (v.total_bytes > ATTACHMENT_MAX_TOTAL_BYTES)
+      return { ok: false, error: "attachments_size_exceeded" };
+  }
 
   // REQ-011: contact-info detection → auto-redact + count toward 5-in-7d
   // auto-block threshold. Mock auto-blocks the conversation when threshold
@@ -329,10 +358,11 @@ export function sendMessage(input: {
     id: uuid(),
     conversation_id: c.id,
     sender_id: input.sender_id,
-    body: finalBody,
+    body: finalBody.length === 0 ? null : finalBody,
     body_scrubbed: hasContact,
     contact_info_detected: hasContact,
     admin_visible: false,
+    attachment_ids: attachmentIds,
     created_at: new Date().toISOString(),
     edited_at: null,
     deleted_at: null,
@@ -418,6 +448,106 @@ export function listMessages(input: {
           : null,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Edit / delete within 10-min sender window (REQ-005).
+// ---------------------------------------------------------------------------
+
+export type EditResult =
+  | { ok: true; message: MockMessage }
+  | {
+      ok: false;
+      error:
+        | "not_found"
+        | "not_sender"
+        | "edit_window_expired"
+        | "body_empty"
+        | "body_too_long"
+        | "conversation_locked";
+    };
+
+function findMessageInConvo(
+  convoId: string,
+  msgId: string
+): { c: MockConversation; m: MockMessage; idx: number } | null {
+  const c = db().conversations.get(convoId);
+  if (!c) return null;
+  const list = db().messages.get(c.id) ?? [];
+  const idx = list.findIndex((m) => m.id === msgId);
+  if (idx < 0) return null;
+  return { c, m: list[idx], idx };
+}
+
+export function editMessage(input: {
+  conversation_id: string;
+  message_id: string;
+  caller_id: string;
+  body: string;
+}): EditResult {
+  const r = findMessageInConvo(input.conversation_id, input.message_id);
+  if (!r) return { ok: false, error: "not_found" };
+  if (r.m.sender_id !== input.caller_id)
+    return { ok: false, error: "not_sender" };
+  if (r.c.status !== "active")
+    return { ok: false, error: "conversation_locked" };
+  if (r.m.deleted_at) return { ok: false, error: "not_found" };
+  const age = Date.now() - new Date(r.m.created_at).getTime();
+  if (age > EDIT_WINDOW_MS)
+    return { ok: false, error: "edit_window_expired" };
+  const body = input.body.trim();
+  if (body.length === 0) return { ok: false, error: "body_empty" };
+  if (body.length > BODY_MAX) return { ok: false, error: "body_too_long" };
+  // Re-run contact detection (an edit could introduce contacts).
+  const hasContact = detectContactInfo(body);
+  r.m.body = hasContact ? redactBody(body) : body;
+  r.m.body_scrubbed = hasContact;
+  r.m.contact_info_detected = hasContact;
+  r.m.edited_at = new Date().toISOString();
+  // Update preview if this was the most-recent message.
+  const list = db().messages.get(r.c.id) ?? [];
+  const last = list[list.length - 1];
+  if (last && last.id === r.m.id) {
+    r.c.last_message_preview = (r.m.body ?? "").slice(0, 120);
+  }
+  return { ok: true, message: r.m };
+}
+
+export type DeleteResult =
+  | { ok: true }
+  | {
+      ok: false;
+      error:
+        | "not_found"
+        | "not_sender"
+        | "edit_window_expired"
+        | "conversation_locked";
+    };
+
+export function deleteMessage(input: {
+  conversation_id: string;
+  message_id: string;
+  caller_id: string;
+}): DeleteResult {
+  const r = findMessageInConvo(input.conversation_id, input.message_id);
+  if (!r) return { ok: false, error: "not_found" };
+  if (r.m.sender_id !== input.caller_id)
+    return { ok: false, error: "not_sender" };
+  if (r.c.status !== "active")
+    return { ok: false, error: "conversation_locked" };
+  if (r.m.deleted_at) return { ok: true }; // idempotent
+  const age = Date.now() - new Date(r.m.created_at).getTime();
+  if (age > EDIT_WINDOW_MS)
+    return { ok: false, error: "edit_window_expired" };
+  r.m.deleted_at = new Date().toISOString();
+  r.m.body = null;
+  // If this was the conversation's last message, recompute preview from the
+  // most-recent surviving message.
+  const list = (db().messages.get(r.c.id) ?? []).filter((m) => !m.deleted_at);
+  const last = list[list.length - 1];
+  r.c.last_message_at = last?.created_at ?? null;
+  r.c.last_message_preview = last?.body?.slice(0, 120) ?? null;
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
