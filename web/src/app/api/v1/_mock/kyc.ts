@@ -129,3 +129,90 @@ export function submitApplication(input: SubmitInput): SubmitResult {
 export function getApplication(providerId: string): KycApplication | null {
   return db().get(providerId) ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Admin operations (Module 4 REQ-006…008).
+// ---------------------------------------------------------------------------
+
+export const REJECTION_CODES = [
+  "document_expired",
+  "document_unreadable",
+  "document_mismatch",
+  "selfie_mismatch",
+  "data_inconsistency",
+  "unsupported_document_type",
+  "incomplete_submission",
+  "fraud_suspicion",
+  "other",
+] as const;
+export type RejectionCode = (typeof REJECTION_CODES)[number];
+
+export function listApplicationsByStatus(
+  filter?: KycStatus | "open"
+): KycApplication[] {
+  const all = Array.from(db().values());
+  let filtered = all;
+  if (filter === "open") {
+    filtered = all.filter(
+      (a) => a.status === "submitted" || a.status === "in_review"
+    );
+  } else if (filter) {
+    filtered = all.filter((a) => a.status === filter);
+  }
+  return filtered.sort(
+    (a, b) =>
+      new Date(b.submitted_at).getTime() - new Date(a.submitted_at).getTime()
+  );
+}
+
+export function claimApplication(
+  providerId: string,
+  adminId: string
+): KycApplication | { error: "not_found" | "invalid_state" } {
+  const row = db().get(providerId);
+  if (!row) return { error: "not_found" };
+  if (row.status === "in_review") return row; // idempotent re-claim
+  if (row.status !== "submitted") return { error: "invalid_state" };
+  row.status = "in_review";
+  void adminId; // reviewed_by tracking омитнено в моку — real backend пише
+  return row;
+}
+
+export type ApproveResult =
+  | { ok: true; app: KycApplication }
+  | { ok: false; error: "not_found" | "invalid_state" };
+
+export function approveApplication(providerId: string): ApproveResult {
+  const row = db().get(providerId);
+  if (!row) return { ok: false, error: "not_found" };
+  if (row.status !== "submitted" && row.status !== "in_review") {
+    return { ok: false, error: "invalid_state" };
+  }
+  row.status = "approved";
+  row.reviewed_at = new Date().toISOString();
+  return { ok: true, app: row };
+}
+
+export type RejectResult =
+  | { ok: true; app: KycApplication }
+  | { ok: false; error: "not_found" | "invalid_state" | "invalid_code" };
+
+export function rejectApplication(
+  providerId: string,
+  code: string,
+  note: string | null
+): RejectResult {
+  const row = db().get(providerId);
+  if (!row) return { ok: false, error: "not_found" };
+  if (row.status !== "submitted" && row.status !== "in_review") {
+    return { ok: false, error: "invalid_state" };
+  }
+  if (!(REJECTION_CODES as readonly string[]).includes(code)) {
+    return { ok: false, error: "invalid_code" };
+  }
+  row.status = "rejected";
+  row.rejection_code = code;
+  row.reviewed_at = new Date().toISOString();
+  void note; // omitting note storage in the mock projection
+  return { ok: true, app: row };
+}

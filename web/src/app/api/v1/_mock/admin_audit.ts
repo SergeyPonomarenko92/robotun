@@ -16,7 +16,9 @@ export type AdminActionType =
   | "user.suspend"
   | "user.unsuspend"
   | "listing.force_archive"
-  | "listing.reinstate";
+  | "listing.reinstate"
+  | "kyc.approve"
+  | "kyc.reject";
 
 export type AdminAction = {
   id: string;

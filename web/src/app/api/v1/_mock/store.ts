@@ -178,6 +178,17 @@ export const store = {
     if (opts.limit) return out.slice(0, opts.limit);
     return out;
   },
+  setUserKycStatus(
+    id: string,
+    kyc_status: MockUser["kyc_status"],
+    payout_enabled: boolean | null = null
+  ): MockUser | null {
+    const u = db().users.get(id);
+    if (!u) return null;
+    u.kyc_status = kyc_status;
+    if (payout_enabled !== null) u.payout_enabled = payout_enabled;
+    return u;
+  },
   setUserStatus(id: string, status: MockUser["status"]): MockUser | null {
     const u = db().users.get(id);
     if (!u) return null;
