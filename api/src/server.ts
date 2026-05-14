@@ -14,6 +14,7 @@ import { dealsRoutes } from "./routes/deals.routes.js";
 import { reviewsRoutes } from "./routes/reviews.routes.js";
 import { notificationsRoutes } from "./routes/notifications.routes.js";
 import { feedRoutes } from "./routes/feed.routes.js";
+import { messagingRoutes } from "./routes/messaging.routes.js";
 import { consumeOutboxOnce } from "./services/notifications.service.js";
 import { ensureBuckets } from "./services/s3.js";
 
@@ -85,6 +86,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(reviewsRoutes);
       await api.register(notificationsRoutes);
       await api.register(feedRoutes);
+      await api.register(messagingRoutes);
     },
     { prefix: "/api/v1" }
   );

@@ -755,3 +755,64 @@ export const notificationPreferences = pgTable(
     pk: uniqueIndex("uq_pref_user_code_channel").on(t.user_id, t.notification_code, t.channel),
   })
 );
+
+/**
+ * Module 2 — Messaging (MVP cut).
+ *
+ * Two scopes: pre_deal (Client→Provider via listing inquiry) and deal
+ * (active/disputed deal scope). Single conversation per (client,
+ * provider, scope_anchor) per spec. MVP: polling-based reads (SSE
+ * deferred), no contact-info detection / moderation / attachments,
+ * simple last_read_at per participant.
+ */
+export const conversationKindEnum = pgEnum("conversation_kind", ["pre_deal", "deal"]);
+export const conversationStatusEnum = pgEnum("conversation_status", ["open", "blocked", "archived"]);
+
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: conversationKindEnum("kind").notNull(),
+    /** pre_deal anchors on listing_id; deal anchors on deal_id. */
+    listing_id: uuid("listing_id").references(() => listings.id, { onDelete: "set null" }),
+    deal_id: uuid("deal_id").references(() => deals.id, { onDelete: "set null" }),
+    client_id: uuid("client_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    provider_id: uuid("provider_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    status: conversationStatusEnum("status").notNull().default("open"),
+    last_message_at: timestamp("last_message_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index("idx_conversations_client").on(t.client_id, t.last_message_at),
+    providerIdx: index("idx_conversations_provider").on(t.provider_id, t.last_message_at),
+    listingPairUniq: uniqueIndex("uq_conv_pre_deal").on(t.kind, t.listing_id, t.client_id),
+    dealUniq: uniqueIndex("uq_conv_deal").on(t.kind, t.deal_id),
+  })
+);
+
+export const messages = pgTable(
+  "messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversation_id: uuid("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+    sender_id: uuid("sender_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    body: text("body").notNull(),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    convIdx: index("idx_messages_conv").on(t.conversation_id, t.created_at),
+  })
+);
+
+export const conversationReads = pgTable(
+  "conversation_reads",
+  {
+    conversation_id: uuid("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+    user_id: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    last_read_at: timestamp("last_read_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: uniqueIndex("uq_conv_reads").on(t.conversation_id, t.user_id),
+  })
+);
