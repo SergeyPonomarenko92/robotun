@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authorize, store } from "../../../../_mock/store";
 import { approveApplication } from "../../../../_mock/kyc";
 import { logAdminAction } from "../../../../_mock/admin_audit";
+import { enqueueNotification } from "../../../../_mock/notifications";
 
 type Ctx = { params: Promise<{ providerId: string }> };
 
@@ -43,6 +44,18 @@ export async function POST(_req: Request, ctx: Ctx) {
     target_id: providerId,
     target_user_id: providerId,
     metadata: { payout_enabled: provider?.mfa_enrolled ?? false },
+  });
+  enqueueNotification({
+    user_id: providerId,
+    notification_code: "kyc.approved",
+    aggregate_type: "user",
+    aggregate_id: providerId,
+    title: "KYC підтверджено",
+    body: provider?.mfa_enrolled
+      ? "Можна запитувати виплати."
+      : "Увімкніть MFA, щоб розблокувати виплати.",
+    href: "/provider/kyc",
+    mandatory: true,
   });
   return NextResponse.json({
     provider_id: providerId,

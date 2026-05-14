@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorize } from "../../../../_mock/store";
 import { completePayout } from "../../../../_mock/payments";
+import { enqueueNotification } from "../../../../_mock/notifications";
 import { consumeChallenge } from "../../../../_mock/mfa";
 import { logAdminAction } from "../../../../_mock/admin_audit";
 
@@ -68,6 +69,15 @@ export async function POST(
       amount_kopecks: result.amount_kopecks,
       method_last4: result.method_last4,
     },
+  });
+  enqueueNotification({
+    user_id: result.user_id,
+    notification_code: "payout.completed",
+    aggregate_type: "payout",
+    aggregate_id: result.id,
+    title: "Виплату зараховано",
+    body: `Кошти ${(result.amount_kopecks / 100).toFixed(2)} ₴ на ${result.method_last4 ?? "вашу картку"}.`,
+    href: "/provider-dashboard",
   });
 
   return NextResponse.json(result);

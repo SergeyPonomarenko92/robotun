@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authorize, store } from "../../../../_mock/store";
 import { rejectApplication, REJECTION_CODES } from "../../../../_mock/kyc";
 import { logAdminAction } from "../../../../_mock/admin_audit";
+import { enqueueNotification } from "../../../../_mock/notifications";
 
 type Ctx = { params: Promise<{ providerId: string }> };
 
@@ -50,6 +51,16 @@ export async function POST(req: Request, ctx: Ctx) {
     target_id: providerId,
     target_user_id: providerId,
     metadata: { rejection_code: code },
+  });
+  enqueueNotification({
+    user_id: providerId,
+    notification_code: "kyc.rejected",
+    aggregate_type: "user",
+    aggregate_id: providerId,
+    title: "KYC відхилено",
+    body: "Причина: " + code + ". Зверніться в підтримку або подайте заявку повторно.",
+    href: "/provider/kyc",
+    mandatory: true,
   });
   return NextResponse.json({
     provider_id: providerId,

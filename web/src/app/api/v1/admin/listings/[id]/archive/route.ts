@@ -6,6 +6,7 @@ import {
   isListingArchived,
 } from "../../../../_mock/listings";
 import { logAdminAction } from "../../../../_mock/admin_audit";
+import { enqueueNotification } from "../../../../_mock/notifications";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -55,6 +56,16 @@ export async function POST(req: Request, ctx: Ctx) {
     target_id: id,
     target_user_id: target.provider.id,
     metadata: { reason, title: target.title },
+  });
+  enqueueNotification({
+    user_id: target.provider.id,
+    notification_code: "listing.force_archived",
+    aggregate_type: "user",
+    aggregate_id: id,
+    title: "Лот архівовано модерацією",
+    body: `«${target.title}» прибрано з каталогу. Причина: ${reason}.`,
+    href: "/provider-dashboard",
+    mandatory: true,
   });
   return NextResponse.json({ id, archived: true });
 }

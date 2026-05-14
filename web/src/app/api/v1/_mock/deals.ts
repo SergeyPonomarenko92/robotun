@@ -199,6 +199,24 @@ export function resolveDispute(
     d.status = "completed";
     paymentHooks.onDealCompleted(d);
   }
+  // Notify both parties — Module 14 emits per-side events; mock collapses.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const notif = require("./notifications") as typeof import("./notifications");
+  for (const uid of [d.client_id, d.provider_id]) {
+    notif.enqueueNotification({
+      user_id: uid,
+      notification_code: "dispute.resolved",
+      aggregate_type: "deal",
+      aggregate_id: d.id,
+      title: "Диспут вирішено",
+      body:
+        body.verdict === "refund_client"
+          ? "Адмін повернув кошти клієнту."
+          : "Адмін відпустив кошти виконавцю.",
+      href: `/deals/${d.id}`,
+      mandatory: true,
+    });
+  }
   return { ok: true, deal: d };
 }
 
@@ -359,6 +377,9 @@ export const dealsStore = {
             d.provider_id = callerId;
           }
           paymentHooks.onDealAccepted(d);
+          notifyDealStatusChange(d, "deal.accepted", d.client_id);
+        } else {
+          notifyDealStatusChange(d, "deal.rejected", d.client_id);
         }
         return d;
 
@@ -367,12 +388,14 @@ export const dealsStore = {
         if (d.status !== "pending") return { error: "invalid_state" };
         d.status = "cancelled";
         // From pending: never had a hold (provider hadn't accepted yet).
+        notifyDealStatusChange(d, "deal.cancelled", d.provider_id);
         return d;
 
       case "submit":
         if (!isProvider) return { error: "forbidden" };
         if (d.status !== "active") return { error: "invalid_state" };
         d.status = "in_review";
+        notifyDealStatusChange(d, "deal.work_submitted", d.client_id);
         return d;
 
       case "approve":
@@ -380,16 +403,71 @@ export const dealsStore = {
         if (d.status !== "in_review") return { error: "invalid_state" };
         d.status = "completed";
         paymentHooks.onDealCompleted(d);
+        notifyDealStatusChange(d, "deal.completed", d.provider_id);
         return d;
 
       case "dispute":
         if (!isClient) return { error: "forbidden" };
         if (d.status !== "in_review") return { error: "invalid_state" };
         d.status = "disputed";
+        notifyDealStatusChange(d, "deal.disputed", d.provider_id);
         return d;
     }
   },
 };
+
+/** Shared producer for Module 9 deal-event notifications. Action-specific
+ *  copy mapped server-side so the recipient sees a one-liner without
+ *  the FE having to parse codes. */
+function notifyDealStatusChange(
+  d: MockDeal,
+  code:
+    | "deal.accepted"
+    | "deal.rejected"
+    | "deal.cancelled"
+    | "deal.work_submitted"
+    | "deal.completed"
+    | "deal.disputed",
+  recipientId: string
+): void {
+  const copy: Record<typeof code, { title: string; body: string }> = {
+    "deal.accepted": {
+      title: "Угоду прийнято",
+      body: "Виконавець прийняв вашу угоду — гроші заморожено в ескроу.",
+    },
+    "deal.rejected": {
+      title: "Угоду відхилено",
+      body: "Виконавець відмовив у вашій угоді.",
+    },
+    "deal.cancelled": {
+      title: "Угоду скасовано",
+      body: "Клієнт скасував очікувану угоду.",
+    },
+    "deal.work_submitted": {
+      title: "Роботу здано на перевірку",
+      body: "Виконавець позначив роботу як завершену — перевірте і затвердіть.",
+    },
+    "deal.completed": {
+      title: "Угоду завершено",
+      body: "Кошти відпущено на ваш гаманець.",
+    },
+    "deal.disputed": {
+      title: "Відкрито диспут",
+      body: "Клієнт ініціював диспут — підготуйте докази у вкладці угоди.",
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const notif = require("./notifications") as typeof import("./notifications");
+  notif.enqueueNotification({
+    user_id: recipientId,
+    notification_code: code,
+    aggregate_type: "deal",
+    aggregate_id: d.id,
+    title: copy[code].title,
+    body: copy[code].body,
+    href: `/deals/${d.id}`,
+  });
+}
 
 export type DealAction =
   | "accept"
@@ -486,6 +564,24 @@ export function cancelRequestTransition(
       // Hold was created on accept (status transitioned pending->active);
       // mutual cancel from active → release it.
       paymentHooks.onDealRefunded({ ...d, hadHold: true });
+      // Notify both sides — mutual cancel is bilateral closure.
+      notifyDealStatusChange(d, "deal.cancelled", d.client_id);
+      notifyDealStatusChange(d, "deal.cancelled", d.provider_id);
+    } else {
+      // One-sided request — notify the other party that a cancel request is
+      // pending their consent.
+      const otherId = isClient ? d.provider_id : d.client_id;
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const notif = require("./notifications") as typeof import("./notifications");
+      notif.enqueueNotification({
+        user_id: otherId,
+        notification_code: "deal.cancel_request",
+        aggregate_type: "deal",
+        aggregate_id: d.id,
+        title: "Запит на скасування угоди",
+        body: "Контрагент пропонує скасувати угоду — підтвердіть або відмовте.",
+        href: `/deals/${d.id}`,
+      });
     }
     return d;
   }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authorize, store } from "../../../../_mock/store";
 import { consumeChallenge } from "../../../../_mock/mfa";
 import { logAdminAction } from "../../../../_mock/admin_audit";
+import { enqueueNotification } from "../../../../_mock/notifications";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -83,6 +84,16 @@ export async function POST(req: Request, ctx: Ctx) {
     target_id: target.id,
     target_user_id: target.id,
     metadata: { reason },
+  });
+  enqueueNotification({
+    user_id: target.id,
+    notification_code: "user.suspended",
+    aggregate_type: "user",
+    aggregate_id: target.id,
+    title: "Обліковий запис зупинено",
+    body: "Доступ обмежено модератором. Зверніться у підтримку для деталей.",
+    href: "/",
+    mandatory: true,
   });
 
   return NextResponse.json({

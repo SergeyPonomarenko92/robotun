@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { authorize, store } from "../../../../_mock/store";
 import { consumeChallenge } from "../../../../_mock/mfa";
 import { logAdminAction } from "../../../../_mock/admin_audit";
+import { enqueueNotification } from "../../../../_mock/notifications";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -64,6 +65,15 @@ export async function POST(req: Request, ctx: Ctx) {
     target_id: target.id,
     target_user_id: target.id,
     metadata: { reason },
+  });
+  enqueueNotification({
+    user_id: target.id,
+    notification_code: "user.unsuspended",
+    aggregate_type: "user",
+    aggregate_id: target.id,
+    title: "Обліковий запис поновлено",
+    body: "Доступ відновлено. Можете користуватись платформою як раніше.",
+    href: "/",
   });
 
   return NextResponse.json({
