@@ -618,3 +618,76 @@ export const dealEvents = pgTable(
     actorIdx: index("idx_deal_events_actor").on(t.actor_id, t.created_at),
   })
 );
+
+/**
+ * Module 7 — Reviews (MVP cut).
+ *
+ * One review per (deal, reviewer_role). Client reviews provider (4 rating
+ * sub-scores); provider reviews client (overall only). Reply: single reply
+ * per review.
+ *
+ * Out of scope (TODO): blind-double-review mechanism (we publish+reveal
+ * immediately instead of waiting for both-submitted or 14d sweep), RLS,
+ * review_reply_audit history, review_reports moderation queue, GDPR
+ * PII NULL'ing, aggregate denorm columns on listings/provider_profiles.
+ */
+export const reviewStatusEnum = pgEnum("review_status", [
+  "pending",
+  "published",
+  "hidden",
+  "removed",
+]);
+
+export const reviewerRoleEnum = pgEnum("review_reviewer_role", ["client", "provider"]);
+
+export const reviews = pgTable(
+  "reviews",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    deal_id: uuid("deal_id")
+      .notNull()
+      .references(() => deals.id, { onDelete: "restrict" }),
+    listing_id: uuid("listing_id").references(() => listings.id, { onDelete: "set null" }),
+    reviewer_id: uuid("reviewer_id").references(() => users.id, { onDelete: "set null" }),
+    reviewee_id: uuid("reviewee_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    reviewer_role: reviewerRoleEnum("reviewer_role").notNull(),
+    overall_rating: smallint("overall_rating").notNull(),
+    quality_rating: smallint("quality_rating"),
+    communication_rating: smallint("communication_rating"),
+    timeliness_rating: smallint("timeliness_rating"),
+    comment: text("comment"),
+    status: reviewStatusEnum("status").notNull().default("published"),
+    both_submitted: boolean("both_submitted").notNull().default(false),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+    revealed_at: timestamp("revealed_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dealRoleUniq: uniqueIndex("uq_review_deal_role").on(t.deal_id, t.reviewer_role),
+    listingPubIdx: index("idx_reviews_listing_published").on(t.listing_id, t.revealed_at),
+    revieweePubIdx: index("idx_reviews_reviewee_published").on(t.reviewee_id, t.revealed_at),
+    dealIdx: index("idx_reviews_deal").on(t.deal_id),
+  })
+);
+
+export const reviewReplies = pgTable(
+  "review_replies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    review_id: uuid("review_id")
+      .notNull()
+      .references(() => reviews.id, { onDelete: "restrict" }),
+    author_id: uuid("author_id").references(() => users.id, { onDelete: "set null" }),
+    body: text("body").notNull(),
+    status: text("status").notNull().default("published"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    reviewUniq: uniqueIndex("uq_one_reply_per_review").on(t.review_id),
+    authorIdx: index("idx_review_replies_author").on(t.author_id),
+  })
+);

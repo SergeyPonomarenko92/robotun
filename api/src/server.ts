@@ -11,6 +11,7 @@ import { listingsRoutes } from "./routes/listings.routes.js";
 import { mediaRoutes } from "./routes/media.routes.js";
 import { kycRoutes } from "./routes/kyc.routes.js";
 import { dealsRoutes } from "./routes/deals.routes.js";
+import { reviewsRoutes } from "./routes/reviews.routes.js";
 import { ensureBuckets } from "./services/s3.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -67,6 +68,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(mediaRoutes);
       await api.register(kycRoutes);
       await api.register(dealsRoutes);
+      await api.register(reviewsRoutes);
     },
     { prefix: "/api/v1" }
   );

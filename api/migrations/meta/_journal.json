@@ -43,6 +43,13 @@
       "when": 1778766250398,
       "tag": "0005_narrow_puff_adder",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1778770551886,
+      "tag": "0006_unusual_zemo",
+      "breakpoints": true
     }
   ]
 }
