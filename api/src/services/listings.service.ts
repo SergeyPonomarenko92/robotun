@@ -13,7 +13,7 @@
  * will reinstate the gate.
  */
 import { and, desc, eq, ilike, or, sql as dsql } from "drizzle-orm";
-import { db } from "../db/client.js";
+import { db, sql } from "../db/client.js";
 import {
   categories,
   listings,
@@ -567,13 +567,35 @@ export async function listOwn(
   return { ok: true as const, value: { items: slice, next_cursor: cursor, has_more: hasMore } };
 }
 
+type ListingCard = {
+  id: string;
+  title: string;
+  cover_url: string;
+  price_from_kopecks: number;
+  price_unit: string;
+  city: string;
+  region?: string;
+  category: string;
+  category_id: string;
+  flags: string[];
+  provider: {
+    id: string;
+    name: string;
+    avatar_url?: string;
+    kyc_verified: boolean;
+    avg_rating: number;
+    reviews_count: number;
+    completed_deals_count: number;
+  };
+};
+
 export async function listPublic(opts: {
   q?: string;
   category_id?: string;
   city?: string;
   limit: number;
   cursor?: string;
-}): Promise<Result<{ items: unknown[]; next_cursor: string | null; has_more: boolean }>> {
+}): Promise<Result<{ items: ListingCard[]; next_cursor: string | null; has_more: boolean }>> {
   const limit = Math.min(Math.max(opts.limit, 1), 50);
   const where = [eq(listings.status, "active")];
   if (opts.category_id) where.push(eq(listings.category_id, opts.category_id));
@@ -596,38 +618,110 @@ export async function listPublic(opts: {
     );
   }
 
-  const rows = await db
-    .select({
-      id: listings.id,
-      title: listings.title,
-      cover_url: listings.cover_url,
-      city: listings.city,
-      region: listings.region,
-      category_id: listings.category_id,
-      price_amount: listings.price_amount,
-      price_amount_max: listings.price_amount_max,
-      pricing_type: listings.pricing_type,
-      currency: listings.currency,
-      provider_id: listings.provider_id,
-      published_at: listings.published_at,
-      tags: listings.tags,
-    })
-    .from(listings)
-    .where(and(...where))
-    .orderBy(desc(listings.published_at), desc(listings.id))
-    .limit(limit + 1);
+  // Use raw SQL for the LATERAL aggregates + JOIN — mirrors feed projection.
+  const safeQ = opts.q && opts.q.length >= 2 ? `%${opts.q.replace(/[\\%_]/g, (m) => "\\" + m)}%` : null;
+  const params: unknown[] = [];
+  const filt: string[] = [`l.status = 'active'`];
+  if (opts.category_id) { params.push(opts.category_id); filt.push(`l.category_id = $${params.length}::uuid`); }
+  if (opts.city) { params.push(opts.city); filt.push(`l.city = $${params.length}`); }
+  if (safeQ) {
+    params.push(safeQ);
+    filt.push(`(l.title ILIKE $${params.length} ESCAPE '\\' OR l.description ILIKE $${params.length} ESCAPE '\\')`);
+  }
+  let cursorPred = "";
+  if (opts.cursor) {
+    const cur = parseCursor(opts.cursor);
+    if (!cur) return err("invalid_cursor", 400);
+    params.push(cur.t); const ti = params.length;
+    params.push(cur.i); const ii = params.length;
+    cursorPred = ` AND (l.published_at, l.id::text) < ($${ti}::timestamptz, $${ii}::text)`;
+  }
+  const sqlText = `
+    SELECT l.id, l.title, l.cover_url, l.city, l.region,
+           l.category_id, c.name AS category_name,
+           l.price_amount, l.pricing_type,
+           l.provider_id, l.published_at,
+           u.display_name AS provider_name, u.avatar_url AS provider_avatar,
+           (u.kyc_approved_at IS NOT NULL) AS provider_kyc_approved,
+           rv.avg_rating, COALESCE(rv.reviews_count, 0) AS reviews_count,
+           COALESCE(dc.completed_deals_count, 0) AS completed_deals_count
+      FROM listings l
+      INNER JOIN users u ON u.id = l.provider_id
+      INNER JOIN categories c ON c.id = l.category_id
+      LEFT JOIN LATERAL (
+        SELECT AVG(overall_rating)::float AS avg_rating, COUNT(*)::int AS reviews_count
+          FROM reviews
+         WHERE reviewee_id = l.provider_id AND reviewer_role='client'
+           AND status='published' AND revealed_at IS NOT NULL
+      ) rv ON true
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS completed_deals_count
+          FROM deals
+         WHERE provider_id = l.provider_id AND status='completed'
+      ) dc ON true
+     WHERE ${filt.join(' AND ')}${cursorPred}
+     ORDER BY l.published_at DESC, l.id DESC
+     LIMIT ${limit + 1}
+  `;
+  const rows = (await sql.unsafe(sqlText, params as never[])) as unknown as Array<{
+    id: string;
+    title: string;
+    cover_url: string | null;
+    city: string | null;
+    region: string | null;
+    category_id: string;
+    category_name: string;
+    price_amount: number | null;
+    pricing_type: string;
+    provider_id: string | null;
+    provider_name: string | null;
+    provider_avatar: string | null;
+    provider_kyc_approved: boolean;
+    avg_rating: number | null;
+    reviews_count: number;
+    completed_deals_count: number;
+    published_at: Date | string | null;
+  }>;
 
   const hasMore = rows.length > limit;
   const slice = rows.slice(0, limit);
   const last = slice[slice.length - 1];
+  const lastPub = last?.published_at;
   const cursor =
-    hasMore && last && last.published_at
+    hasMore && lastPub
       ? Buffer.from(
-          JSON.stringify({ t: last.published_at.toISOString(), i: last.id }),
+          JSON.stringify({
+            t: typeof lastPub === "string" ? lastPub : lastPub.toISOString(),
+            i: last.id,
+          }),
           "utf8"
         ).toString("base64")
       : null;
-  return { ok: true as const, value: { items: slice, next_cursor: cursor, has_more: hasMore } };
+  const items: ListingCard[] = slice.map((r) => ({
+    id: r.id,
+    title: r.title,
+    cover_url: r.cover_url ?? PLACEHOLDER_COVER,
+    price_from_kopecks: r.price_amount ?? 0,
+    price_unit: priceUnitFor(r.pricing_type),
+    city: r.city ?? "",
+    region: r.region ?? undefined,
+    category: r.category_name,
+    category_id: r.category_id,
+    flags: [
+      ...(r.provider_kyc_approved ? ["kyc"] : []),
+      ...((r.completed_deals_count ?? 0) >= 10 ? ["trusted"] : []),
+    ],
+    provider: {
+      id: r.provider_id ?? "",
+      name: r.provider_name ?? "Виконавець",
+      avatar_url: r.provider_avatar ?? undefined,
+      kyc_verified: !!r.provider_kyc_approved,
+      avg_rating: r.avg_rating ?? 0,
+      reviews_count: r.reviews_count ?? 0,
+      completed_deals_count: r.completed_deals_count ?? 0,
+    },
+  }));
+  return { ok: true as const, value: { items, next_cursor: cursor, has_more: hasMore } };
 }
 
 export { project as projectListing };
