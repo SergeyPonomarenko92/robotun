@@ -124,8 +124,12 @@ export type Draft = {
   updated_at: string;
 };
 
-export async function createDraft(): Promise<Draft> {
-  return apiFetch<Draft>("/listings/drafts", { method: "POST" });
+export type EvictedDraftRef = { id: string; title: string };
+
+export type CreateDraftResponse = Draft & { evicted: EvictedDraftRef[] };
+
+export async function createDraft(): Promise<CreateDraftResponse> {
+  return apiFetch<CreateDraftResponse>("/listings/drafts", { method: "POST" });
 }
 
 export async function patchDraft(id: string, payload: DraftPayload): Promise<Draft> {

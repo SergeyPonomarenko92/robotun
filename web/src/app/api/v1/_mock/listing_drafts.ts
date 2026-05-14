@@ -58,7 +58,17 @@ function uuid(): string {
   return Math.random().toString(36).slice(2);
 }
 
-export function createDraft(ownerUserId: string): DraftRow {
+export type EvictedDraft = {
+  id: string;
+  title: string;
+};
+
+export type CreateDraftResult = {
+  draft: DraftRow;
+  evicted: EvictedDraft[];
+};
+
+export function createDraft(ownerUserId: string): CreateDraftResult {
   const now = new Date().toISOString();
   const row: DraftRow = {
     id: uuid(),
@@ -68,13 +78,21 @@ export function createDraft(ownerUserId: string): DraftRow {
     updated_at: now,
   };
   db().set(row.id, row);
-  // Evict oldest once cap exceeded.
+  // Evict oldest once cap exceeded — surface the loss to the caller so the
+  // UI can toast "Найстарішу чернетку «X» було видалено" instead of silent
+  // data loss (deep-review MEDIUM від 7dbb64e).
+  const evicted: EvictedDraft[] = [];
   const owned = listDraftsForUser(ownerUserId);
-  if (owned.length > MAX_PER_USER) {
-    const oldest = owned[owned.length - 1];
+  while (owned.length > MAX_PER_USER) {
+    const oldest = owned.pop();
+    if (!oldest) break;
     db().delete(oldest.id);
+    evicted.push({
+      id: oldest.id,
+      title: oldest.payload.title?.trim() || "Без назви",
+    });
   }
-  return row;
+  return { draft: row, evicted };
 }
 
 export type PatchResult =

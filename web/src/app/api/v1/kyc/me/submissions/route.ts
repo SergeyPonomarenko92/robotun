@@ -81,6 +81,19 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+    if (result.error === "resubmit_too_soon") {
+      const retry = result.retry_after_seconds ?? 0;
+      return NextResponse.json(
+        { error: "resubmit_too_soon", retry_after_seconds: retry },
+        { status: 429, headers: { "Retry-After": String(retry) } }
+      );
+    }
+    if (result.error === "submission_limit_reached") {
+      return NextResponse.json(
+        { error: "submission_limit_reached" },
+        { status: 429 }
+      );
+    }
     if (result.error === "already_submitted") {
       return NextResponse.json({ error: "already_submitted" }, { status: 409 });
     }

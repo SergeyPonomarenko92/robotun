@@ -7,8 +7,8 @@ export async function POST(req: Request) {
   if ("error" in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
-  const draft = createDraft(auth.user.id);
-  return NextResponse.json(draft, { status: 201 });
+  const { draft, evicted } = createDraft(auth.user.id);
+  return NextResponse.json({ ...draft, evicted }, { status: 201 });
 }
 
 export async function GET(req: Request) {

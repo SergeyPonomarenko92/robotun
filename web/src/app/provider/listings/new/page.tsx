@@ -195,6 +195,9 @@ export default function ListingCreateWizard() {
     !!searchParams.get("draft")
   );
   const draftCreatingRef = React.useRef(false);
+  /** Set when the lazy-create POST returned `evicted:[…]` — surface the
+   *  lost titles to the user (deep-review MEDIUM від 7dbb64e). */
+  const [evictedNote, setEvictedNote] = React.useState<string | null>(null);
 
   // ---------- form state ----------
   // Real /provider/listings/new starts blank — provider fills it in. The demo
@@ -335,6 +338,16 @@ export default function ListingCreateWizard() {
         // a redundant GET on the freshly-created (empty) draft.
         hydratedIdsRef.current.add(draft.id);
         setDraftId(draft.id);
+        if (draft.evicted.length > 0) {
+          const names = draft.evicted
+            .map((e) => `«${e.title}»`)
+            .join(", ");
+          setEvictedNote(
+            draft.evicted.length === 1
+              ? `Замінили найстарішу чернетку ${names}`
+              : `Замінили найстарiшi чернетки: ${names}`
+          );
+        }
         // Reflect in URL so refresh / dashboard "Resume" can retrieve it.
         const url = new URL(window.location.href);
         url.searchParams.set("draft", draft.id);
@@ -704,6 +717,14 @@ export default function ListingCreateWizard() {
             </>
           }
         />
+
+        {evictedNote && (
+          <div className="mt-6">
+            <InlineAlert tone="warning" onDismiss={() => setEvictedNote(null)}>
+              {evictedNote}. У вашому акаунті можна зберігати максимум 5 чернеток одночасно.
+            </InlineAlert>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-10 lg:gap-14">
           {/* ============ Stepper rail ============ */}

@@ -39,6 +39,14 @@ export type SubmitKycError = {
   status: number;
 };
 
+function formatHours(secs?: number): string {
+  if (!secs || secs <= 0) return "хвилину";
+  const h = Math.ceil(secs / 3600);
+  if (h <= 1) return "1 годину";
+  if (h < 24) return `${h} год`;
+  return `${Math.ceil(h / 24)} дн`;
+}
+
 export async function submitKyc(
   input: SubmitKycInput
 ): Promise<
@@ -56,16 +64,22 @@ export async function submitKyc(
       const body = e.body as
         | { error?: string; fields?: Record<string, string> }
         | null;
+      const retry = (body as { retry_after_seconds?: number } | null)
+        ?.retry_after_seconds;
       const message =
         e.status === 400 && body?.error === "validation_failed"
           ? "Перевірте поля форми"
-          : e.status === 409 && body?.error === "already_submitted"
-            ? "Заявка вже на розгляді"
-            : e.status === 409 && body?.error === "already_approved"
-              ? "Перевірку вже пройдено"
-              : e.status === 403
-                ? "Лише виконавець може подати KYC"
-                : "Сервіс тимчасово недоступний";
+          : e.status === 429 && body?.error === "resubmit_too_soon"
+            ? `Повторна подача дозволена через ${formatHours(retry)}`
+            : e.status === 429 && body?.error === "submission_limit_reached"
+              ? "Перевищено ліміт подач — зверніться у підтримку"
+              : e.status === 409 && body?.error === "already_submitted"
+                ? "Заявка вже на розгляді"
+                : e.status === 409 && body?.error === "already_approved"
+                  ? "Перевірку вже пройдено"
+                  : e.status === 403
+                    ? "Лише виконавець може подати KYC"
+                    : "Сервіс тимчасово недоступний";
       return {
         ok: false,
         error: { message, fields: body?.fields, status: e.status },

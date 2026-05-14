@@ -218,6 +218,20 @@ export function TopNav({
           placeholder="Шукати"
         />
       </div>
+      {/* Site-wide banner for suspended accounts. Auth re-read happens on
+       *  every token refresh, so a fresh /admin/users suspend invalidates
+       *  the previous JWT (ver bump) and the new one carries status. */}
+      {auth.status === "authenticated" && auth.user.status === "suspended" && (
+        <div className="bg-danger text-paper">
+          <div className="mx-auto max-w-7xl px-4 md:px-6 py-2.5 text-caption flex items-center gap-3">
+            <span aria-hidden>⚠</span>
+            <span>
+              Ваш обліковий запис зупинено модератором. Доступ до угод і
+              виплат обмежено. Зверніться в підтримку.
+            </span>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

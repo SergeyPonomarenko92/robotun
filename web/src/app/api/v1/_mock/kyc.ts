@@ -37,6 +37,10 @@ export type KycApplication = {
   submitted_at: string;
   reviewed_at: string | null;
   rejection_code: string | null;
+  /** REQ-012: count toward lifetime submission_limit. */
+  submission_count: number;
+  /** REQ-012: 24h cooling-off — set when status flips to 'rejected'. */
+  cooling_off_until: string | null;
 };
 
 declare global {
@@ -64,9 +68,19 @@ export type SubmitResult =
   | { ok: true; app: KycApplication }
   | {
       ok: false;
-      error: "validation_failed" | "already_submitted" | "already_approved";
+      error:
+        | "validation_failed"
+        | "already_submitted"
+        | "already_approved"
+        | "resubmit_too_soon"
+        | "submission_limit_reached";
       fields?: Record<string, string>;
+      /** Seconds until cooling-off window closes (resubmit_too_soon only). */
+      retry_after_seconds?: number;
     };
+
+const COOLING_OFF_MS = 24 * 60 * 60 * 1000;
+const SUBMISSION_LIMIT = 5;
 
 function validate(
   input: SubmitInput
@@ -105,6 +119,22 @@ export function submitApplication(input: SubmitInput): SubmitResult {
   ) {
     return { ok: false, error: "already_submitted" };
   }
+  // REQ-012: lifetime submission_limit (default 5).
+  const prevCount = existing?.submission_count ?? 0;
+  if (prevCount >= SUBMISSION_LIMIT) {
+    return { ok: false, error: "submission_limit_reached" };
+  }
+  // REQ-012: 24h cooling-off after a rejection.
+  if (existing?.cooling_off_until) {
+    const until = new Date(existing.cooling_off_until).getTime();
+    if (Date.now() < until) {
+      return {
+        ok: false,
+        error: "resubmit_too_soon",
+        retry_after_seconds: Math.ceil((until - Date.now()) / 1000),
+      };
+    }
+  }
   const fields = validate(input);
   if (Object.keys(fields).length > 0) {
     return { ok: false, error: "validation_failed", fields };
@@ -121,6 +151,10 @@ export function submitApplication(input: SubmitInput): SubmitResult {
     submitted_at: new Date().toISOString(),
     reviewed_at: null,
     rejection_code: null,
+    submission_count: prevCount + 1,
+    // Carry forward the cooling-off only if still in future (cleared on
+    // successful resubmit since we passed the gate above).
+    cooling_off_until: null,
   };
   db().set(input.provider_id, app);
   return { ok: true, app };
@@ -213,6 +247,7 @@ export function rejectApplication(
   row.status = "rejected";
   row.rejection_code = code;
   row.reviewed_at = new Date().toISOString();
+  row.cooling_off_until = new Date(Date.now() + COOLING_OFF_MS).toISOString();
   void note; // omitting note storage in the mock projection
   return { ok: true, app: row };
 }

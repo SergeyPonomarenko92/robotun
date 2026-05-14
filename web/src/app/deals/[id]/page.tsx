@@ -37,9 +37,11 @@ import {
   type DealAction,
   type DisputeReason,
 } from "@/lib/deals";
-import { AlertTriangle, ScrollText, Gavel } from "lucide-react";
+import { AlertTriangle, ScrollText, Gavel, MessageCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { FileUploader } from "@/components/ui/FileUploader";
 import { useUploader } from "@/lib/media";
+import { upsertConversation } from "@/lib/messaging";
 
 export default function DealPage() {
   const auth = useRequireAuth("/login");
@@ -252,6 +254,22 @@ function DealView({ deal, viewerId }: { deal: Deal; viewerId: string }) {
             },
           }}
         />
+
+        <div className="mb-6 -mt-4">
+          <DealMessageEntry
+            dealId={current.id}
+            counterpartyId={
+              role === "client"
+                ? current.provider.id
+                : current.client.id
+            }
+            counterpartyName={
+              role === "client"
+                ? current.provider.display_name
+                : current.client.display_name
+            }
+          />
+        </div>
 
         <div className="mb-12">
           <DealStateTracker
@@ -946,5 +964,43 @@ function EvidenceSlot({
         </p>
       )}
     </div>
+  );
+}
+
+function DealMessageEntry({
+  dealId,
+  counterpartyId,
+  counterpartyName,
+}: {
+  dealId: string;
+  counterpartyId: string;
+  counterpartyName: string;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = React.useState(false);
+  const open = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const c = await upsertConversation({
+        scope: "deal",
+        deal_id: dealId,
+        counterparty_user_id: counterpartyId,
+      });
+      router.push(`/messages?c=${encodeURIComponent(c.id)}`);
+    } catch {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button
+      variant="secondary"
+      size="sm"
+      leftIcon={<MessageCircle size={14} />}
+      onClick={open}
+      disabled={busy}
+    >
+      {busy ? "Відкриваємо…" : `Написати ${counterpartyName}`}
+    </Button>
   );
 }
