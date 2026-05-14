@@ -4,6 +4,8 @@ import helmet from "@fastify/helmet";
 import sensible from "@fastify/sensible";
 import { env } from "./config/env.js";
 import { sql } from "./db/client.js";
+import authenticate from "./plugins/authenticate.js";
+import { authRoutes, usersRoutes } from "./routes/auth.routes.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -15,7 +17,8 @@ export async function buildServer(): Promise<FastifyInstance> {
           : undefined,
     },
     disableRequestLogging: false,
-    bodyLimit: 1 * 1024 * 1024, // 1 MB — bumped per-route for media uploads later.
+    bodyLimit: 1 * 1024 * 1024,
+    trustProxy: true,
   });
 
   await server.register(helmet, { contentSecurityPolicy: false });
@@ -24,8 +27,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     credentials: true,
   });
   await server.register(sensible);
+  await server.register(authenticate);
 
-  // Health probe — used by docker-compose / k8s readiness checks.
   server.get("/health", async () => {
     const start = Date.now();
     let dbOk = false;
@@ -43,8 +46,13 @@ export async function buildServer(): Promise<FastifyInstance> {
     };
   });
 
-  // Module 1 routes appear in the next commit.
-  server.get("/api/v1/_ping", async () => ({ pong: true }));
+  await server.register(
+    async (api) => {
+      await api.register(authRoutes);
+      await api.register(usersRoutes);
+    },
+    { prefix: "/api/v1" }
+  );
 
   return server;
 }
