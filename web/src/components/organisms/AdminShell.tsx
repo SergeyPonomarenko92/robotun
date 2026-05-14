@@ -33,7 +33,7 @@ function useAdminQueueCounts(enabled: boolean): QueueCounts | null {
   return counts;
 }
 
-type TabId = "disputes" | "payouts" | "users" | "audit";
+type TabId = "disputes" | "payouts" | "users" | "listings" | "audit";
 type PipKind = "backlog" | "activity";
 type TabDef = {
   id: TabId;
@@ -53,14 +53,17 @@ function AdminTabBar({ counts }: { counts: QueueCounts | null }) {
       ? "payouts"
       : pathname.startsWith("/admin/users")
         ? "users"
-        : pathname.startsWith("/admin/audit")
-          ? "audit"
-          : null;
+        : pathname.startsWith("/admin/listings")
+          ? "listings"
+          : pathname.startsWith("/admin/audit")
+            ? "audit"
+            : null;
 
   const tabs: TabDef[] = [
     { id: "disputes", href: "/admin/disputes", label: "Диспути", count: counts?.disputes },
     { id: "payouts", href: "/admin/payouts", label: "Виплати", count: counts?.payouts },
     { id: "users", href: "/admin/users", label: "Користувачі" },
+    { id: "listings", href: "/admin/listings", label: "Лоти" },
     { id: "audit", href: "/admin/audit", label: "Журнал", count: counts?.audit, pipKind: "activity" },
   ];
 

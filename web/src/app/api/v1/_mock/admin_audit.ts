@@ -14,13 +14,15 @@ export type AdminActionType =
   | "payout.completed"
   | "kyc.document_streamed"
   | "user.suspend"
-  | "user.unsuspend";
+  | "user.unsuspend"
+  | "listing.force_archive"
+  | "listing.reinstate";
 
 export type AdminAction = {
   id: string;
   actor_admin_id: string;
   action: AdminActionType;
-  target_type: "deal" | "user" | "payout" | "media" | null;
+  target_type: "deal" | "user" | "payout" | "media" | "listing" | null;
   target_id: string | null;
   /** Denormalized — supports timeline-by-user queries without JOIN. */
   target_user_id: string | null;

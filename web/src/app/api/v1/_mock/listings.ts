@@ -240,12 +240,44 @@ function seededListings(): ListingProjection[] {
 declare global {
   // eslint-disable-next-line no-var
   var __ROBOTUN_USER_LISTINGS__: Map<string, ListingDetailProjection> | undefined;
+  // eslint-disable-next-line no-var
+  var __ROBOTUN_ARCHIVED_LISTINGS__: Set<string> | undefined;
 }
 function userDb(): Map<string, ListingDetailProjection> {
   if (!globalThis.__ROBOTUN_USER_LISTINGS__) {
     globalThis.__ROBOTUN_USER_LISTINGS__ = new Map();
   }
   return globalThis.__ROBOTUN_USER_LISTINGS__;
+}
+
+// ---------------------------------------------------------------------------
+// Admin moderation: force-archive set (Module 5 SEC-001 / spec table p.493).
+// Real backend uses listings.status='archived' column; mock keeps a Set on
+// globalThis so we don't have to mutate the seed projections.
+// ---------------------------------------------------------------------------
+function archivedDb(): Set<string> {
+  if (!globalThis.__ROBOTUN_ARCHIVED_LISTINGS__) {
+    globalThis.__ROBOTUN_ARCHIVED_LISTINGS__ = new Set();
+  }
+  return globalThis.__ROBOTUN_ARCHIVED_LISTINGS__;
+}
+export function isListingArchived(id: string): boolean {
+  return archivedDb().has(id);
+}
+export function archiveListing(id: string): boolean {
+  if (archivedDb().has(id)) return false;
+  archivedDb().add(id);
+  return true;
+}
+export function reinstateListing(id: string): boolean {
+  return archivedDb().delete(id);
+}
+export function listAllListingsForAdmin(): { listing: ListingProjection; archived: boolean }[] {
+  const all = [
+    ...userListingsStore.all().map((d) => stripDetail(d)),
+    ...seededListings(),
+  ];
+  return all.map((l) => ({ listing: l, archived: archivedDb().has(l.id) }));
 }
 
 export const userListingsStore = {
@@ -269,8 +301,12 @@ export const userListingsStore = {
 
 export function listAllListings(): ListingProjection[] {
   // User-created listings appear first (newest), then seeded.
+  // Force-archived listings (admin moderation) are filtered out so they
+  // disappear from feed / search; admin queue uses listAllListingsForAdmin().
   const userOnes = userListingsStore.all().map((d) => stripDetail(d));
-  return [...userOnes, ...seededListings()];
+  const all = [...userOnes, ...seededListings()];
+  if (archivedDb().size === 0) return all;
+  return all.filter((l) => !archivedDb().has(l.id));
 }
 
 function stripDetail(d: ListingDetailProjection): ListingProjection {
