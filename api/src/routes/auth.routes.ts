@@ -120,4 +120,22 @@ export const usersRoutes: FastifyPluginAsync = async (server) => {
       };
     }
   );
+
+  // Active sessions for the current user. Refresh-token hashes are never
+  // surfaced; FE renders { id, user_agent, ip, created_at, expires_at }.
+  server.get(
+    "/me/sessions",
+    { preHandler: server.authenticate },
+    async (req) => auth.listActiveSessions(req.auth!.user_id)
+  );
+
+  // Post-breach reset — revoke all active refresh sessions AND bump
+  // users.ver so existing access tokens fail at the next request (the
+  // authenticate plugin re-reads ver each call). Note: caller's own
+  // session is revoked too; FE must immediately redirect to login.
+  server.post(
+    "/me/sessions/logout-all",
+    { preHandler: server.authenticate },
+    async (req) => auth.revokeAllSessions(req.auth!.user_id)
+  );
 };

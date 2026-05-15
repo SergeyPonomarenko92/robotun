@@ -2,7 +2,7 @@
  * Module 1 §4 — auth business logic. Pure functions over the db layer
  * so route handlers stay thin.
  */
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { sessions, userRoles, users } from "../db/schema.js";
 import { env } from "../config/env.js";
@@ -225,6 +225,58 @@ export async function logout(refreshToken: string): Promise<void> {
     .update(sessions)
     .set({ revoked_at: new Date() })
     .where(and(eq(sessions.refresh_token_hash, hash), isNull(sessions.revoked_at)));
+}
+
+/** List active (non-revoked, non-expired) sessions for a user.
+ *  Refresh-token hashes deliberately omitted from the projection — caller
+ *  cannot derive any plaintext from the list, only see "I'm logged in on
+ *  these devices". */
+export async function listActiveSessions(userId: string) {
+  const rows = await db
+    .select({
+      id: sessions.id,
+      user_agent: sessions.user_agent,
+      ip: sessions.ip,
+      created_at: sessions.created_at,
+      expires_at: sessions.expires_at,
+    })
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.user_id, userId),
+        isNull(sessions.revoked_at),
+        gt(sessions.expires_at, new Date())
+      )
+    )
+    .orderBy(desc(sessions.created_at));
+  return {
+    items: rows.map((r) => ({
+      id: r.id,
+      user_agent: r.user_agent,
+      ip: r.ip,
+      created_at: r.created_at.toISOString(),
+      expires_at: r.expires_at.toISOString(),
+    })),
+  };
+}
+
+/** Revoke ALL active sessions for a user (post-breach reset). Also bumps
+ *  users.token_version so existing access tokens fail authentication at
+ *  the next request even before they expire. */
+export async function revokeAllSessions(userId: string): Promise<{ revoked: number }> {
+  const r = await db.transaction(async (tx) => {
+    const upd = await tx
+      .update(sessions)
+      .set({ revoked_at: new Date() })
+      .where(and(eq(sessions.user_id, userId), isNull(sessions.revoked_at)))
+      .returning({ id: sessions.id });
+    await tx
+      .update(users)
+      .set({ ver: dsql`${users.ver} + 1` })
+      .where(eq(users.id, userId));
+    return upd.length;
+  });
+  return { revoked: r };
 }
 
 // -------- Internal -------------------------------------------------------
