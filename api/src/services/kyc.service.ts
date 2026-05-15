@@ -601,6 +601,18 @@ export async function approve(args: { kyc_id: string; admin_id: string; audit?: 
         )
       );
 
+    // Module 6 REQ-012 — kyc_document media expires_at set on decision:
+    // 3 years for approved (matches ЦК ст. 257 retention for snapshot
+    // dispute artifacts). Media pipeline MUST NOT override.
+    await tx.execute(
+      dsql`UPDATE media_objects
+              SET expires_at = (${now.toISOString()}::timestamptz + interval '3 years')
+            WHERE id IN (
+              SELECT media_id FROM kyc_documents
+               WHERE kyc_verification_id = ${args.kyc_id} AND media_id IS NOT NULL
+            )`
+    );
+
     await logEvent(tx, {
       kv_id: args.kyc_id,
       provider_id: row.provider_id,
@@ -685,6 +697,16 @@ export async function reject(args: {
           eq(kycDocuments.verification_status, "pending")
         )
       );
+
+    // Module 6 REQ-012 — rejected KYC doc retention: decided_at + 90 days.
+    await tx.execute(
+      dsql`UPDATE media_objects
+              SET expires_at = (${now.toISOString()}::timestamptz + interval '90 days')
+            WHERE id IN (
+              SELECT media_id FROM kyc_documents
+               WHERE kyc_verification_id = ${args.kyc_id} AND media_id IS NOT NULL
+            )`
+    );
 
     await logEvent(tx, {
       kv_id: args.kyc_id,
