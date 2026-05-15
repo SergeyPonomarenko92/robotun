@@ -705,8 +705,118 @@ export const pauseListing = (provider: string, id: string) =>
   transition(provider, id, ["active"], "paused", "listing.paused");
 export const archiveListing = (provider: string, id: string) =>
   transition(provider, id, ["draft", "in_review", "active", "paused"], "archived", "listing.archived");
-export const publishListing = (provider: string, id: string) =>
-  transition(provider, id, ["draft", "paused"], "active", "listing.published");
+
+/**
+ * Module 5 REQ-002 + §4.4 + SEC-004 + AC-006 + AC-008 — publish path with
+ * trusted-provider recompute and system-pause gate.
+ *
+ *   - draft/paused → active (trusted) | in_review (non-trusted).
+ *   - paused: AC-008 — if auto_paused_reasons non-empty → 422
+ *     republish_blocked_by_system_pause. Provider must wait for the
+ *     consumer/appeal flow to clear the reasons.
+ *   - SEC-004: trusted recomputed every publish (no cache) under
+ *     SELECT FOR SHARE on users (we use the existing users.kyc_status
+ *     denorm; provider_profiles join could be substituted once that
+ *     table is denormalized further — same lock semantics).
+ *   - AC-006 path B: kyc_status != 'rejected' AND ≥3 distinct clients
+ *     with completed deals at agreed_price ≥ 100 UAH (10000 kopecks).
+ *   - AC-007 cross-module: if a provider_kyc_revoked reason was applied,
+ *     publish must fail until activate consumer clears it (AC-008 same path).
+ */
+export async function publishListing(
+  providerId: string,
+  listingId: string
+): Promise<Result<{ id: string; status: "active" | "in_review" }>> {
+  return await db.transaction(async (tx) => {
+    const lst = await tx.execute<{ provider_id: string | null; status: string; auto_paused_reasons: string[]; version: number }>(
+      dsql`SELECT provider_id, status, auto_paused_reasons, version FROM listings WHERE id = ${listingId} FOR UPDATE`
+    );
+    if (lst.length === 0) return err("listing_not_found", 404);
+    const row = lst[0]!;
+    if (row.provider_id !== providerId) return err("forbidden", 403);
+    if (!["draft", "paused", "in_review"].includes(row.status)) {
+      return err("invalid_transition", 409, { from: row.status, to: "active" });
+    }
+    // AC-008 — system-imposed pause must drain first.
+    if (row.status === "paused" && row.auto_paused_reasons.length > 0) {
+      return err("republish_blocked_by_system_pause", 422, { reasons: row.auto_paused_reasons });
+    }
+
+    // SEC-004 / AC-006 trusted recompute. FOR SHARE on the provider's
+    // users row holds the snapshot for the duration of the publish tx,
+    // so a concurrent KYC revocation can't slip past the gate.
+    const pRows = await tx.execute<{ kyc_status: string }>(
+      dsql`SELECT kyc_status FROM users WHERE id = ${providerId} FOR SHARE`
+    );
+    if (pRows.length === 0) return err("provider_not_found", 404);
+    const kycStatus = pRows[0]!.kyc_status;
+
+    let trusted = false;
+    if (kycStatus === "approved") {
+      trusted = true; // Path A.
+    } else if (kycStatus !== "rejected") {
+      // Path B — kyc_status NOT in {rejected, expired-mapped-to-rejected}.
+      // ≥3 distinct clients with status='completed' AND agreed_price >= 10000.
+      const dealsRow = await tx.execute<{ n: string }>(
+        dsql`SELECT COUNT(DISTINCT client_id)::text AS n
+               FROM deals
+              WHERE provider_id = ${providerId}
+                AND status = 'completed'
+                AND agreed_price >= 10000`
+      );
+      trusted = parseInt(dealsRow[0]?.n ?? "0", 10) >= 3;
+    }
+
+    // Going-active cap re-check on the active-count side (paused→active or
+    // first-time draft→active both bypass createListing's cap gate otherwise).
+    const targetStatus: "active" | "in_review" = trusted ? "active" : "in_review";
+    const goingActive = targetStatus === "active" && row.status !== "active";
+    if (goingActive) {
+      await tx.execute(
+        dsql`INSERT INTO provider_listing_caps (provider_id) VALUES (${providerId}) ON CONFLICT DO NOTHING`
+      );
+      const caps = await tx.execute<{ active_count: number }>(
+        dsql`SELECT active_count FROM provider_listing_caps WHERE provider_id = ${providerId} FOR UPDATE`
+      );
+      if ((caps[0]?.active_count ?? 0) >= CAP_ACTIVE) {
+        return err("cap_exceeded", 429, { code: "active_cap" });
+      }
+    }
+
+    const update: Partial<typeof listings.$inferInsert> = {
+      status: targetStatus,
+      version: row.version + 1,
+      updated_at: new Date(),
+    };
+    if (targetStatus === "active") update.published_at = new Date();
+    await tx.update(listings).set(update).where(eq(listings.id, listingId));
+
+    if (goingActive) {
+      await tx.execute(
+        dsql`UPDATE provider_listing_caps SET active_count = active_count + 1 WHERE provider_id = ${providerId}`
+      );
+    }
+
+    const eventType = targetStatus === "active" ? "listing.published" : "listing.submitted_for_review";
+    await tx.insert(outboxEvents).values({
+      aggregate_type: "listing",
+      aggregate_id: listingId,
+      event_type: eventType,
+      payload: { listing_id: listingId, from: row.status, to: targetStatus, trusted },
+    });
+    await tx.insert(listingAuditEvents).values({
+      listing_id: listingId,
+      actor_id: providerId,
+      actor_role: "provider",
+      event_type: eventType,
+      from_status: row.status,
+      to_status: targetStatus,
+      metadata: { trusted, kyc_status: kycStatus },
+    });
+
+    return { ok: true as const, value: { id: listingId, status: targetStatus } };
+  });
+}
 
 /* --------------------------------- READS --------------------------------- */
 
