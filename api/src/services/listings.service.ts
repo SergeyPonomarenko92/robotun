@@ -564,6 +564,143 @@ async function transition(
   });
 }
 
+/* ---------------------------- REPORTS / APPEALS --------------------------- */
+
+const REPORT_REASONS = ["spam", "fraud", "illegal_content", "misleading", "duplicate", "other"] as const;
+type ReportReason = (typeof REPORT_REASONS)[number];
+const REPORT_REASON_SET = new Set<string>(REPORT_REASONS);
+
+/**
+ * Module 5 REQ-006 — file abuse report. Reporter qualifying-snapshot is
+ * captured here (NOT recomputed by the auto-pause trigger), per the spec
+ * §4 schema GENERATED ALWAYS AS column. Snapshot reasons:
+ *   - kyc_approved        from users.kyc_status='approved'
+ *   - completed_deals     from deals.status='completed' AND client_id=reporter
+ *   - account_age_days    from now() - users.created_at
+ *
+ * The 5/24h-per-reporter + 2/24h-per-provider rate limits are enforced at
+ * service tier (DB scan, not Redis Lua — SEC-002 calls for Redis but MVP
+ * stays single-source-of-truth on Postgres until the rate-limit module
+ * lands).
+ */
+export async function reportListing(args: {
+  listing_id: string;
+  reporter_id: string;
+  reason: string;
+  description?: string;
+}): Promise<Result<{ report_id: string }>> {
+  if (!REPORT_REASON_SET.has(args.reason)) {
+    return err("validation_failed", 400, { fields: { reason: "invalid_enum" } });
+  }
+  if (args.description != null && args.description.length > 1000) {
+    return err("validation_failed", 400, { fields: { description: "max_length_1000" } });
+  }
+  return await db.transaction(async (tx) => {
+    const lst = await tx.execute<{ provider_id: string | null; status: string }>(
+      dsql`SELECT provider_id, status FROM listings WHERE id = ${args.listing_id}`
+    );
+    if (lst.length === 0) return err("listing_not_found", 404);
+    if (lst[0]!.provider_id === args.reporter_id) return err("self_report", 422);
+
+    // Rate-limit window 24h, scoped per-reporter + per-(reporter, provider).
+    const counts = await tx.execute<{ scope: string; n: string }>(
+      dsql`SELECT 'user'::text AS scope, COUNT(*)::text AS n
+             FROM listing_reports
+            WHERE reporter_id = ${args.reporter_id}
+              AND created_at > now() - interval '24 hours'
+           UNION ALL
+           SELECT 'pair', COUNT(*)::text
+             FROM listing_reports lr
+             JOIN listings l ON l.id = lr.listing_id
+            WHERE lr.reporter_id = ${args.reporter_id}
+              AND l.provider_id = ${lst[0]!.provider_id ?? null}
+              AND lr.created_at > now() - interval '24 hours'`
+    );
+    const userN = parseInt(counts.find((c) => c.scope === "user")?.n ?? "0", 10);
+    const pairN = parseInt(counts.find((c) => c.scope === "pair")?.n ?? "0", 10);
+    if (userN >= 5) return err("report_rate_limited", 429, { scope: "user_24h", limit: 5 });
+    if (pairN >= 2) return err("report_rate_limited", 429, { scope: "user_provider_24h", limit: 2 });
+
+    const repRows = await tx.execute<{
+      kyc_status: string;
+      created_at: Date;
+    }>(
+      dsql`SELECT kyc_status, created_at FROM users WHERE id = ${args.reporter_id}`
+    );
+    if (repRows.length === 0) return err("reporter_not_found", 404);
+    const ageDays = Math.floor(
+      (Date.now() - new Date(repRows[0]!.created_at).getTime()) / (24 * 3600 * 1000)
+    );
+    const completed = await tx.execute<{ n: string }>(
+      dsql`SELECT COUNT(*)::text AS n FROM deals
+            WHERE client_id = ${args.reporter_id} AND status = 'completed'`
+    );
+
+    try {
+      const insRows = await tx.execute<{ id: string }>(
+        dsql`INSERT INTO listing_reports (
+                listing_id, reporter_id, reason, description,
+                reporter_kyc_approved_at_report_time,
+                reporter_completed_deals_at_report_time,
+                reporter_account_age_days_at_report_time)
+              VALUES (
+                ${args.listing_id}, ${args.reporter_id}, ${args.reason},
+                ${args.description ?? null},
+                ${repRows[0]!.kyc_status === "approved"},
+                ${parseInt(completed[0]?.n ?? "0", 10)},
+                ${ageDays})
+              RETURNING id`
+      );
+      return { ok: true as const, value: { report_id: insRows[0]!.id } };
+    } catch (e) {
+      const ec = pgCode(e);
+      if (ec === "23505") return err("already_reported", 409);
+      throw e;
+    }
+  });
+}
+
+/**
+ * Module 5 REQ-007 — provider appeals a report_threshold auto-pause.
+ * One open appeal per listing (DB UNIQUE partial index).
+ */
+export async function appealPause(args: {
+  listing_id: string;
+  provider_id: string;
+}): Promise<Result<{ appeal_id: string }>> {
+  return await db.transaction(async (tx) => {
+    const lst = await tx.execute<{ provider_id: string | null; auto_paused_reasons: string[] }>(
+      dsql`SELECT provider_id, auto_paused_reasons FROM listings WHERE id = ${args.listing_id} FOR UPDATE`
+    );
+    if (lst.length === 0) return err("listing_not_found", 404);
+    if (lst[0]!.provider_id !== args.provider_id) return err("forbidden", 403);
+    if (!lst[0]!.auto_paused_reasons.includes("report_threshold")) {
+      return err("not_appealable", 422, { reasons: lst[0]!.auto_paused_reasons });
+    }
+    try {
+      const ins = await tx.execute<{ id: string }>(
+        dsql`INSERT INTO listing_appeals (listing_id, provider_id)
+              VALUES (${args.listing_id}, ${args.provider_id})
+              RETURNING id`
+      );
+      await tx.insert(listingAuditEvents).values({
+        listing_id: args.listing_id,
+        actor_id: args.provider_id,
+        actor_role: "provider",
+        event_type: "listing.appeal_filed",
+        from_status: "paused",
+        to_status: "paused",
+        metadata: { appeal_id: ins[0]!.id },
+      });
+      return { ok: true as const, value: { appeal_id: ins[0]!.id } };
+    } catch (e) {
+      const ec = pgCode(e);
+      if (ec === "23505") return err("appeal_already_open", 409);
+      throw e;
+    }
+  });
+}
+
 export const pauseListing = (provider: string, id: string) =>
   transition(provider, id, ["active"], "paused", "listing.paused");
 export const archiveListing = (provider: string, id: string) =>

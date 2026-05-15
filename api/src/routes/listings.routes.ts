@@ -228,6 +228,42 @@ export const listingsRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // Module 5 REQ-006 — abuse report.
+  const reportSchema = z.object({
+    reason: z.enum(["spam", "fraud", "illegal_content", "misleading", "duplicate", "other"]),
+    description: z.string().max(1000).optional(),
+  });
+  server.post<{ Params: { id: string } }>(
+    "/listings/:id/reports",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = reportSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await svc.reportListing({
+        listing_id: req.params.id,
+        reporter_id: req.auth!.user_id,
+        reason: parsed.data.reason,
+        description: parsed.data.description,
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      return reply.code(201).send(r.value);
+    }
+  );
+
+  // Module 5 REQ-007 — provider appeals report_threshold auto-pause.
+  server.post<{ Params: { id: string } }>(
+    "/listings/:id/appeal-pause",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const r = await svc.appealPause({
+        listing_id: req.params.id,
+        provider_id: req.auth!.user_id,
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      return reply.code(201).send(r.value);
+    }
+  );
+
   server.post<{ Params: { id: string } }>(
     "/listings/:id/archive",
     { preHandler: server.authenticate },
