@@ -214,6 +214,37 @@ const TEMPLATES: Record<string, Template> = {
     body: () => "Ваша послуга з'явилась у каталозі.",
     recipients: async (_tx, p) => [String(p.provider_id ?? "")].filter(Boolean),
   },
+  "listing.auto_paused": {
+    code: "listing_auto_paused_for_provider",
+    title: () => "Послугу автоматично призупинено",
+    body: (c) => {
+      const reason = String(c.payload.reason ?? "");
+      const map: Record<string, string> = {
+        report_threshold: "Перевищено поріг скарг.",
+        provider_suspended: "Обліковий запис призупинено адміністрацією.",
+        provider_kyc_revoked: "Відкликано KYC. Виплати заблоковано.",
+        category_archived: "Категорію переведено в архів.",
+      };
+      return map[reason] ?? "Послугу призупинено системою.";
+    },
+    recipients: async (tx, p) => {
+      const r = await tx.execute<{ provider_id: string | null }>(
+        dsql`SELECT provider_id FROM listings WHERE id = ${String(p.listing_id ?? "")}`
+      );
+      return r[0]?.provider_id ? [r[0].provider_id] : [];
+    },
+  },
+  "listing.submitted_for_review": {
+    code: "listing_submitted_for_review_for_provider",
+    title: () => "Послугу відправлено на модерацію",
+    body: () => "Очікуйте рішення модератора.",
+    recipients: async (tx, p) => {
+      const r = await tx.execute<{ provider_id: string | null }>(
+        dsql`SELECT provider_id FROM listings WHERE id = ${String(p.listing_id ?? "")}`
+      );
+      return r[0]?.provider_id ? [r[0].provider_id] : [];
+    },
+  },
   // Media-side outbox: uploader-facing UX so a rejected upload doesn't
   // sit in /me/uploads silently as a chip-error with no other signal.
   "media.quarantined": {
