@@ -270,6 +270,68 @@ export async function listActiveSessions(userId: string) {
   };
 }
 
+/* ----------------------------- ACCOUNT DELETE ------------------------ */
+
+type DeleteAccountError = { code: "wrong_password" | "user_not_found" | "already_deleted"; status: number };
+
+/**
+ * Soft-delete (GDPR Art.17 minimal). Anonymises the users row so FK
+ * references from deals/reviews/etc. stay valid but no PII leaks via
+ * profile reads. Cascade-erase of message bodies and review comments
+ * is handled by their owning modules' own GDPR sweeps; this service
+ * only touches Module-1-owned tables.
+ *
+ * Side effects:
+ *   - users.email   → 'deleted+'||id||'@robotun-deleted.invalid' (frees
+ *                     the original for re-registration; uniqueness
+ *                     preserved via the user_id suffix).
+ *   - users.display_name = 'Видалений користувач'
+ *   - users.password_hash = DUMMY_HASH (cannot log in)
+ *   - users.status = 'deleted', ver += 1
+ *   - DELETE sessions / push_subscriptions / password_reset_tokens /
+ *     email_verification_tokens for this user.
+ */
+export async function deleteAccount(args: {
+  user_id: string;
+  password: string;
+}): Promise<{ ok: true } | { ok: false; error: DeleteAccountError }> {
+  const u = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, args.user_id))
+    .limit(1);
+  if (u.length === 0) return { ok: false, error: { code: "user_not_found", status: 404 } };
+  const user = u[0]!;
+  if (user.status === "deleted") return { ok: false, error: { code: "already_deleted", status: 409 } };
+
+  const ok = await verifyPassword(user.password_hash, args.password);
+  if (!ok) return { ok: false, error: { code: "wrong_password", status: 403 } };
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(users)
+      .set({
+        email: `deleted+${args.user_id}@robotun-deleted.invalid`,
+        display_name: "Видалений користувач",
+        password_hash: DUMMY_HASH,
+        status: "deleted",
+        ver: dsql`${users.ver} + 1`,
+        kyc_status: "none",
+        payout_enabled: false,
+        email_verified: false,
+        email_verified_at: null,
+      })
+      .where(eq(users.id, args.user_id));
+    await tx.delete(sessions).where(eq(sessions.user_id, args.user_id));
+    await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.user_id, args.user_id));
+    await tx.delete(emailVerificationTokens).where(eq(emailVerificationTokens.user_id, args.user_id));
+    // push_subscriptions cascade via ON DELETE on user; but user row stays,
+    // so explicit delete.
+    await tx.execute(dsql`DELETE FROM push_subscriptions WHERE user_id = ${args.user_id}`);
+  });
+  return { ok: true };
+}
+
 /* ----------------------------- EMAIL VERIFY -------------------------- */
 
 const EMAIL_VERIFY_TTL_MS = 24 * 60 * 60 * 1000; // 24h

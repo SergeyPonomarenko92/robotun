@@ -151,6 +151,29 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
     return r.value;
   });
+
+  // Account deletion (GDPR Art.17). Requires password re-auth + the
+  // literal string "DELETE" as confirmation to prevent CSRF/double-click
+  // accidents. Anonymises the user record (does not DROP — FKs in
+  // deals/reviews/messages stay valid). FE redirects to / on 204.
+  const deleteSchema = z.object({
+    password: z.string().min(1).max(256),
+    confirmation: z.literal("DELETE"),
+  });
+  server.post(
+    "/me/account/delete",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = deleteSchema.safeParse(req.body);
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await auth.deleteAccount({
+        user_id: req.auth!.user_id,
+        password: parsed.data.password,
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      return reply.code(204).send();
+    }
+  );
 };
 
 export const usersRoutes: FastifyPluginAsync = async (server) => {
