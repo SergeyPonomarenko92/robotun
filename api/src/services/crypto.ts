@@ -17,10 +17,14 @@ import { env } from "../config/env.js";
 
 // -------- Password hashing (argon2id) -------------------------------------
 
+// SEC-001 — Argon2id parameters per spec: m=64 MiB, t=3, p=1.
+// Cost: ~150-300ms per hash on commodity hardware; the 300ms login floor
+// absorbs this. Stricter than OWASP minimum (m=19 MiB / t=2) which the
+// previous implementation used.
 const ARGON2_OPTS: argon2.Options = {
   type: argon2.argon2id,
-  memoryCost: 19 * 1024, // 19 MB
-  timeCost: 2,
+  memoryCost: 64 * 1024, // 64 MiB
+  timeCost: 3,
   parallelism: 1,
 };
 

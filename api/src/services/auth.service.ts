@@ -277,8 +277,11 @@ export async function login(
 
 // Stable dummy hash so login() can pay the argon2 cost even when the
 // email doesn't exist. Generated once at boot via hashPassword('dummy').
+// SEC-001 — DUMMY_HASH encoded with m=64 MiB / t=3 / p=1 so the
+// constant-time login floor absorbs the matching argon2.verify cost on
+// the email-not-found path (no parameter mismatch → no timing shortcut).
 const DUMMY_HASH =
-  "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  "$argon2id$v=19$m=65536,t=3,p=1$h05X0JW74QtrXZnwG/igvg$ARQ+RQG6KdQdUV0e6GT6Xe6ITt4+MrgySw0eMTqHIjU";
 
 // -------- Refresh-token rotation -----------------------------------------
 
