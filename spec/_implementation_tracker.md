@@ -57,7 +57,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 ### Security (SEC-001..SEC-010)
 - SEC-001 Argon2id m=64MiB, t=3, p=1 — 🟡 NEED VERIFY (default argon2 lib params).
 - SEC-002 10-char min + HIBP check — ✅ this turn. 12-char floor (≥ spec's 10); HIBP k-anonymity check on register/changePassword/resetPassword. Register wrapped in withFloor (timing oracle fix RISK-1); audit row on rejection (RISK-2); NaN count guard (RISK-5).
-- SEC-003 MFA mandatory for admin/moderator — ❌ MISSING enforcement at role grant.
+- SEC-003 MFA mandatory for admin/moderator — ✅ this turn. login + refresh both check (admin/mod OR has-role) && !mfa_enrolled → block. disableTotp 403 mfa_required_for_role for admin/mod (after pw+code verify so no oracle). Seed admin pre-enrolls with dev TOTP secret. **Deferred per critic**: RISK-1 spec amendment (AC-005 wording mfa_required vs mfa_enrollment_required), RISK-4 perf (cache is_privileged column), RISK-5 moderator route-gate consistency (spec ambiguous on which endpoints moderators access), RISK-6 require TOTP on resetPassword/changePassword for admins (next commit), RISK-7 seed rotation, RISK-8 distinct audit event mfa_enrollment_blocked.
 - SEC-004 MFA mandatory for provider before payout — ✅ d68d5a8.
 - SEC-005 RS256 + 90-day key rotation — 🟡 RS256 ✅; rotation procedural (not in code).
 - SEC-006 high-impact actions re-read role+status from DB — 🟡 NEED AUDIT site-by-site.
@@ -78,7 +78,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 - AC-002 second register for same email → 409 + no signal — ✅ (code is email_taken not email_in_use — rename TBD).
 - AC-003 login → 15min JWT + 30day refresh + audit — ✅.
 - AC-004 invalid creds → 401 + ≥300ms — ✅.
-- AC-005 admin without MFA → mfa_required, no token — 🟡 (works when admin.mfa_enrolled=true; ungated when admin.mfa_enrolled=false — SEC-003 gap).
+- AC-005 admin without MFA → mfa_required, no token — ✅ this turn (code emits `mfa_enrollment_required` for un-enrolled admin; spec AC-005 wording amendment deferred).
 - AC-006 kyc_approved + mfa=false → payout_enabled=false — ✅.
 - AC-007 POST /users/me/roles/provider creates provider_profiles + user_roles entry — ✅ this turn.
 - AC-008 refresh rotates atomically — ✅.
@@ -109,4 +109,4 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ## Active task
 
-**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅, SEC-002 ✅. Next: SEC-003 (MFA mandatory for admin/moderator at role-grant time), then SEC-010+AC-010 (10-session cap, oldest-revoke), AC-011 (6/min/IP login throttle at gateway).
+**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅, SEC-002 ✅, SEC-003 ✅, AC-005 ✅. Next: RISK-6 (TOTP required on resetPassword/changePassword for admin), then SEC-010+AC-010 (10-session cap), AC-011 (6/min/IP login throttle).

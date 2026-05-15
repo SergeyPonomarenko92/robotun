@@ -171,6 +171,7 @@ export type LoginError =
   | { code: "account_disabled" }
   | { code: "mfa_required" }
   | { code: "invalid_mfa_code" }
+  | { code: "mfa_enrollment_required" }
   | { code: "too_many_attempts"; retry_after_seconds: number };
 
 const LOGIN_LOCKOUT_THRESHOLD = 5;
@@ -221,6 +222,22 @@ export async function login(
     }
     // MFA gate. mfa_enrolled implies totp_secret IS NOT NULL; verifyTotp's
     // null-guard is the second layer.
+    // SEC-003: MFA mandatory + non-bypassable for admin/moderator. If
+    // the user holds either role and has NOT enrolled MFA, login fails
+    // with mfa_enrollment_required — they cannot complete login until
+    // an out-of-band enrollment path is used. Other users keep the
+    // existing mfa_enrolled-gated flow.
+    const priviledgedRoles = await db
+      .select({ role: userRoles.role })
+      .from(userRoles)
+      .where(eq(userRoles.user_id, user.id));
+    const isPrivileged = priviledgedRoles.some(
+      (r) => r.role === "admin" || r.role === "moderator"
+    );
+    if (isPrivileged && !user.mfa_enrolled) {
+      return { ok: false, error: { code: "mfa_enrollment_required" } };
+    }
+
     if (user.mfa_enrolled) {
       if (!input.totp_code) {
         return { ok: false, error: { code: "mfa_required" } };
@@ -300,6 +317,25 @@ export async function refresh(
   const user = userRows[0];
   if (!user) return { ok: false, error: { code: "invalid_refresh" } };
   if (user.status === "suspended" || user.status === "deleted") {
+    return { ok: false, error: { code: "user_disabled" } };
+  }
+
+  // SEC-003 critic RISK-2: re-check MFA against role on every refresh.
+  // Closes the 30-day session-lifetime bypass where MFA was stripped via
+  // out-of-band SQL after the session was issued. Revokes ALL sessions
+  // and refuses if the invariant is violated.
+  const refreshRoles = await db
+    .select({ role: userRoles.role })
+    .from(userRoles)
+    .where(eq(userRoles.user_id, user.id));
+  const refreshIsPrivileged = refreshRoles.some(
+    (r) => r.role === "admin" || r.role === "moderator"
+  );
+  if (refreshIsPrivileged && !user.mfa_enrolled) {
+    await db
+      .update(sessions)
+      .set({ revoked_at: new Date() })
+      .where(and(eq(sessions.user_id, user.id), isNull(sessions.revoked_at)));
     return { ok: false, error: { code: "user_disabled" } };
   }
 
@@ -884,7 +920,7 @@ async function consumeRecoveryCode(userId: string, code: string): Promise<boolea
 
 /** Disable: requires password re-auth AND a current TOTP code to defend
  *  against compromised-session attackers. */
-type DisableTotpError = { code: "wrong_password" | "not_enrolled" | "invalid_code"; status: number };
+type DisableTotpError = { code: "wrong_password" | "not_enrolled" | "invalid_code" | "mfa_required_for_role"; status: number };
 
 export async function disableTotp(args: {
   user_id: string;
@@ -899,10 +935,26 @@ export async function disableTotp(args: {
   if (u.length === 0 || !u[0]!.mfa_enrolled || !u[0]!.totp_secret) {
     return { ok: false, error: { code: "not_enrolled", status: 409 } };
   }
+  // SEC-003 critic RISK-3: password + TOTP verify BEFORE the role check
+  // so an attacker holding a stolen access token can't probe "is this
+  // user privileged?" by observing 403 mfa_required_for_role vs 403
+  // wrong_password. Both rejections now require the attacker to also
+  // supply a valid password + TOTP code — at which point they already
+  // have full account access and the disclosure is moot.
   const pwOk = await verifyPassword(u[0]!.password_hash, args.password);
   if (!pwOk) return { ok: false, error: { code: "wrong_password", status: 403 } };
   const codeOk = authenticator.check(args.code, u[0]!.totp_secret);
   if (!codeOk) return { ok: false, error: { code: "invalid_code", status: 422 } };
+  // Now the user has proven control of password + factor — only then do
+  // we surface the role-block.
+  const roles = await db
+    .select({ role: userRoles.role })
+    .from(userRoles)
+    .where(eq(userRoles.user_id, args.user_id));
+  const isPrivileged = roles.some((r) => r.role === "admin" || r.role === "moderator");
+  if (isPrivileged) {
+    return { ok: false, error: { code: "mfa_required_for_role", status: 403 } };
+  }
   await db.transaction(async (tx) => {
     await tx
       .update(users)

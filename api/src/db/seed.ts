@@ -18,8 +18,14 @@ type SeedUser = {
   kyc_status: "none" | "approved";
   payout_enabled: boolean;
   mfa_enrolled: boolean;
+  totp_secret?: string;
   roles: ("client" | "provider" | "admin")[];
 };
+
+// SEC-003: admin role REQUIRES MFA. Dev shortcut — fixed TOTP secret so
+// the operator can compute the 6-digit code with otplib.authenticator.
+// Print on seed run; never used in prod (seed only fires locally).
+const DEV_ADMIN_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
 
 const PASSWORD = "demo1234";
 
@@ -55,7 +61,10 @@ const SEEDS: SeedUser[] = [
     has_provider_role: false,
     kyc_status: "none",
     payout_enabled: false,
-    mfa_enrolled: false,
+    // SEC-003 mandates MFA for admin/moderator. Dev secret printed on
+    // seed run; FE/dev tools compute the 6-digit TOTP code with otplib.
+    mfa_enrolled: true,
+    totp_secret: DEV_ADMIN_TOTP_SECRET,
     roles: ["admin"],
   },
 ];
@@ -85,6 +94,7 @@ async function main() {
         kyc_status: s.kyc_status,
         payout_enabled: s.payout_enabled,
         mfa_enrolled: s.mfa_enrolled,
+        totp_secret: s.totp_secret ?? null,
       })
       .returning({ id: users.id });
     if (!u) throw new Error("seed insert returned no row");
@@ -92,6 +102,11 @@ async function main() {
       await db.insert(userRoles).values({ user_id: u.id, role: r });
     }
     console.log(`[seed] inserted ${s.email}`);
+    if (s.totp_secret) {
+      console.log(
+        `[seed]   ↑ MFA seeded; compute code via: node -e "console.log(require('otplib').authenticator.generate('${s.totp_secret}'))"`
+      );
+    }
   }
 }
 

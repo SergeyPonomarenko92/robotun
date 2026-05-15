@@ -105,7 +105,11 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       // code so the FE shows the second-factor prompt instead of "wrong
       // password". invalid_mfa_code also 401 to avoid leaking whether
       // password was right but code wrong vs password wrong.
-      if (r.error.code === "mfa_required" || r.error.code === "invalid_mfa_code") {
+      if (
+        r.error.code === "mfa_required" ||
+        r.error.code === "invalid_mfa_code" ||
+        r.error.code === "mfa_enrollment_required"
+      ) {
         return reply.code(401).send({ error: r.error.code });
       }
       if (r.error.code === "too_many_attempts") {
