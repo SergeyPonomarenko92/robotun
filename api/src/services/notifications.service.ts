@@ -9,6 +9,7 @@ import { and, desc, eq, inArray, isNull, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
   deals,
+  mediaObjects,
   notifications,
   notificationPreferences,
   outboxEvents,
@@ -175,6 +176,22 @@ const TEMPLATES: Record<string, Template> = {
     body: () => "Ваша послуга з'явилась у каталозі.",
     recipients: async (_tx, p) => [String(p.provider_id ?? "")].filter(Boolean),
   },
+  // Media-side outbox: uploader-facing UX so a rejected upload doesn't
+  // sit in /me/uploads silently as a chip-error with no other signal.
+  "media.quarantined": {
+    code: "media_quarantined_for_owner",
+    title: () => "Файл відхилено антивірусом",
+    body: (c) =>
+      `Один із завантажених файлів (${String(c.payload.purpose ?? "media")}) виявлено як небезпечний (${String(c.payload.signature ?? "unknown")}). Завантажте інший.`,
+    recipients: async (tx, p) => {
+      const r = await tx
+        .select({ owner_user_id: mediaObjects.owner_user_id })
+        .from(mediaObjects)
+        .where(eq(mediaObjects.id, String(p.media_id)))
+        .limit(1);
+      return r[0]?.owner_user_id ? [r[0].owner_user_id] : [];
+    },
+  },
 };
 
 /* ----------------------------- worker tick ------------------------------- */
@@ -193,6 +210,7 @@ const AGGREGATE_ALLOWLIST = [
   "message",
   "conversation",
   "payout",
+  "media",
 ];
 
 /** Notification codes which the user CANNOT opt out of (legal / security). */
