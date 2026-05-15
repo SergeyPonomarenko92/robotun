@@ -125,12 +125,18 @@ export async function getMine(providerId: string) {
     .from(kycDocuments)
     .where(eq(kycDocuments.kyc_verification_id, kv.id))
     .orderBy(desc(kycDocuments.uploaded_at));
+  const decidedAt = kv.decided_at?.toISOString() ?? null;
   return {
     id: kv.id,
+    // FE-canonical key (lib/kyc.ts KycSnapshot). Both fields kept so
+    // internal admin tooling can still resolve by kyc id.
+    provider_id: kv.provider_id,
     status: kv.status,
     submitted_at: kv.submitted_at?.toISOString() ?? null,
     review_started_at: kv.review_started_at?.toISOString() ?? null,
-    decided_at: kv.decided_at?.toISOString() ?? null,
+    decided_at: decidedAt,
+    // FE-canonical alias for decided_at.
+    reviewed_at: decidedAt,
     expires_at: kv.expires_at?.toISOString() ?? null,
     rejection_code: kv.rejection_code,
     rejection_note: kv.rejection_note,
