@@ -7,7 +7,7 @@
  *   POST /kyc/me/submissions     → bind ready media rows into a submission
  */
 import type { FastifyPluginAsync } from "fastify";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client.js";
 import { userRoles, users } from "../db/schema.js";
@@ -40,10 +40,15 @@ const rejectSchema = z.object({
 });
 
 async function requireAdmin(userId: string): Promise<boolean> {
+  // RISK-4 (SEC-006 from KYC spec, cross-ref Auth SEC-006): JOIN users +
+  // gate on users.status='active' so a suspended admin whose JWT is still
+  // live (≤15-min window) cannot pass the role check. Re-reads against
+  // primary DB on every call (no replica fallback).
   const rows = await db
     .select({ role: userRoles.role })
     .from(userRoles)
-    .where(eq(userRoles.user_id, userId));
+    .innerJoin(users, eq(users.id, userRoles.user_id))
+    .where(and(eq(userRoles.user_id, userId), eq(users.status, "active")));
   return rows.some((r) => r.role === "admin" || r.role === "moderator");
 }
 
@@ -146,6 +151,26 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
         return reply.code(claimR.error.status).send({ error: claimR.error.code });
       }
       const r = await svc.reject({ kyc_id: kycId, admin_id: req.auth!.user_id, ...parsed.data });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      return r.value;
+    }
+  );
+
+  // REQ-011 — admin force-rekyc. Sets payout_enabled=false immediately,
+  // flips kyc state to not_submitted, emits kyc.rekyc_required.
+  const flagRekycSchema = z.object({ reason: z.string().min(5).max(500) });
+  server.post<{ Params: { provider_id: string } }>(
+    "/admin/kyc/:provider_id/flag-rekyc",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
+      const parsed = flagRekycSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await svc.flagRekyc({
+        provider_id: req.params.provider_id,
+        admin_id: req.auth!.user_id,
+        reason: parsed.data.reason,
+      });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return r.value;
     }

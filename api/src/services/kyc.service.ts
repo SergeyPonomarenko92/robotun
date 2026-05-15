@@ -576,3 +576,76 @@ export async function reject(args: {
     return { ok: true as const, value: { id: args.kyc_id } };
   });
 }
+
+/** REQ-011 — admin force-rekyc. Immediately revokes payout enablement
+ *  and emits kyc.rekyc_required. Transitions the kyc_verifications row
+ *  back to 'not_submitted' so the provider can resubmit (subject to
+ *  cooling-off + submission_limit per REQ-012). */
+export async function flagRekyc(args: {
+  provider_id: string;
+  admin_id: string;
+  reason: string;
+}): Promise<Result<{ kyc_id: string }>> {
+  if (!args.reason || args.reason.trim().length < 5) {
+    return err("validation_failed", 400, { fields: { reason: "min_length_5" } });
+  }
+  return await db.transaction(async (tx) => {
+    const r = await tx.execute<{ id: string; provider_id: string; status: string }>(
+      dsql`SELECT id, provider_id, status FROM kyc_verifications
+            WHERE provider_id = ${args.provider_id} FOR UPDATE`
+    );
+    if (r.length === 0) return err("not_found", 404);
+    const row = r[0]!;
+    // RISK-2: only meaningful from approved/submitted/in_review states.
+    // Other states (already not_submitted / rejected / expired / cancelled)
+    // already have payout=false; returning 409 prevents an admin from
+    // racing a concurrent approval/review with an idempotent-looking call
+    // that silently overrides the reviewing admin.
+    if (!["approved", "submitted", "in_review"].includes(row.status)) {
+      return err("invalid_state", 409, { current_status: row.status });
+    }
+    await tx
+      .update(kycVerifications)
+      .set({
+        status: "not_submitted",
+        reviewed_by: null,
+        review_started_at: null,
+        // RISK-1: preserve decided_at so reconciliation Direction A can
+        // still distinguish "never approved" from "was approved, rekyc'd".
+        // Only last_decided_at moves to anchor follow-up cooling-off if
+        // ever introduced for the rekyc path.
+        last_decided_at: new Date(),
+        expires_at: null,
+        rejection_code: null,
+        rejection_note: null,
+        version: dsql`version + 1`,
+      })
+      .where(eq(kycVerifications.id, row.id));
+    await syncUserKycStatus(tx, args.provider_id, "none", { payout: false });
+
+    await logEvent(tx, {
+      kv_id: row.id,
+      provider_id: args.provider_id,
+      actor_id: args.admin_id,
+      actor_role: "admin",
+      event_type: "kyc.rekyc_required",
+      from_status: row.status,
+      to_status: "not_submitted",
+      metadata: { reason: args.reason },
+    });
+
+    await tx.insert(outboxEvents).values({
+      aggregate_type: "kyc",
+      aggregate_id: row.id,
+      event_type: "kyc.rekyc_required",
+      payload: {
+        kyc_id: row.id,
+        provider_id: args.provider_id,
+        reason: args.reason,
+        from_status: row.status,
+      },
+    });
+
+    return { ok: true as const, value: { kyc_id: row.id } };
+  });
+}
