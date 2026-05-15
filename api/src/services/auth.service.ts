@@ -6,6 +6,7 @@ import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { authAuditEvents, emailChangeTokens, emailVerificationTokens, mediaObjects, passwordResetTokens, providerProfiles, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
+import { checkPasswordBreached } from "./hibp.js";
 import { randomBytes } from "node:crypto";
 import { env } from "../config/env.js";
 import {
@@ -64,14 +65,31 @@ async function withFloor<T>(fn: () => Promise<T>): Promise<T> {
 
 export type RegisterError =
   | { code: "email_taken" }
-  | { code: "weak_password" };
+  | { code: "weak_password" }
+  | { code: "password_breached" };
 
 export async function register(
   input: RegisterInput
 ): Promise<{ ok: true; result: AuthSuccess } | { ok: false; error: RegisterError }> {
+  return withFloor(async () => registerImpl(input));
+}
+
+async function registerImpl(
+  input: RegisterInput
+): Promise<{ ok: true; result: AuthSuccess } | { ok: false; error: RegisterError }> {
   const email = input.email.trim().toLowerCase();
+  // SEC-002 — 12-char floor (stricter than spec's 10-char minimum, per
+  // ASVS L2 recommendation; both bounds satisfy SEC-002 since 12 ≥ 10).
   if (input.password.length < 12) {
     return { ok: false, error: { code: "weak_password" } };
+  }
+  // SEC-002: reject known-breached passwords (HIBP k-anonymity). Wrapped
+  // in withFloor at the public entry point so the HIBP round-trip cost
+  // does not leak via timing between breached/clean/already-registered
+  // outcomes (critic RISK-1).
+  const breach = await checkPasswordBreached(input.password);
+  if (breach.ok && breach.breached) {
+    return { ok: false, error: { code: "password_breached" } };
   }
   const existing = await db
     .select({ id: users.id })
@@ -474,7 +492,7 @@ export async function updateProfile(args: {
 
 /* ----------------------------- PASSWORD CHANGE ----------------------- */
 
-type ChangePasswordError = { code: "wrong_password" | "password_too_short" | "user_not_found"; status: number };
+type ChangePasswordError = { code: "wrong_password" | "password_too_short" | "user_not_found" | "password_breached"; status: number };
 
 /** Authenticated password change. Verifies old password (constant-time
  *  via argon2), updates hash, BUMPS ver to invalidate existing access
@@ -489,6 +507,11 @@ export async function changePassword(args: {
 }): Promise<{ ok: true } | { ok: false; error: ChangePasswordError }> {
   if (args.new_password.length < 12 || args.new_password.length > 256) {
     return { ok: false, error: { code: "password_too_short", status: 400 } };
+  }
+  // SEC-002: HIBP check on rotation.
+  const breach = await checkPasswordBreached(args.new_password);
+  if (breach.ok && breach.breached) {
+    return { ok: false, error: { code: "password_breached", status: 400 } };
   }
   const u = await db
     .select({ password_hash: users.password_hash })
@@ -1165,7 +1188,7 @@ export async function requestPasswordReset(args: {
   return { ok: true, user_id: uid };
 }
 
-type ResetPasswordError = { code: "password_too_short" | "token_invalid" | "token_used" | "token_expired"; status: number };
+type ResetPasswordError = { code: "password_too_short" | "password_breached" | "token_invalid" | "token_used" | "token_expired"; status: number };
 
 export async function resetPassword(args: {
   token: string;
@@ -1173,6 +1196,11 @@ export async function resetPassword(args: {
 }): Promise<{ ok: true; value: { user_id: string } } | { ok: false; error: ResetPasswordError }> {
   if (args.new_password.length < 12 || args.new_password.length > 256) {
     return { ok: false, error: { code: "password_too_short", status: 400 } };
+  }
+  // SEC-002: HIBP check on reset path too.
+  const breach = await checkPasswordBreached(args.new_password);
+  if (breach.ok && breach.breached) {
+    return { ok: false, error: { code: "password_breached", status: 400 } };
   }
   const tokenHash = sha256Hex(args.token);
   return await db.transaction(async (tx) => {

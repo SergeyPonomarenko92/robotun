@@ -56,7 +56,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ### Security (SEC-001..SEC-010)
 - SEC-001 Argon2id m=64MiB, t=3, p=1 — 🟡 NEED VERIFY (default argon2 lib params).
-- SEC-002 10-char min + HIBP check — 🟡 12-char min implemented (stricter than spec); HIBP NOT checked.
+- SEC-002 10-char min + HIBP check — ✅ this turn. 12-char floor (≥ spec's 10); HIBP k-anonymity check on register/changePassword/resetPassword. Register wrapped in withFloor (timing oracle fix RISK-1); audit row on rejection (RISK-2); NaN count guard (RISK-5).
 - SEC-003 MFA mandatory for admin/moderator — ❌ MISSING enforcement at role grant.
 - SEC-004 MFA mandatory for provider before payout — ✅ d68d5a8.
 - SEC-005 RS256 + 90-day key rotation — 🟡 RS256 ✅; rotation procedural (not in code).
@@ -109,4 +109,4 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ## Active task
 
-**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅. Next: SEC-002 (10-char min + HIBP check on register/change-password). Then SEC-003 (MFA mandatory for admin/moderator), SEC-010 (10-session cap with oldest-revoke), AC-010 same, AC-011 (6/min/IP login throttle).
+**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅, SEC-002 ✅. Next: SEC-003 (MFA mandatory for admin/moderator at role-grant time), then SEC-010+AC-010 (10-session cap, oldest-revoke), AC-011 (6/min/IP login throttle at gateway).

@@ -45,6 +45,15 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       ...meta(req),
     });
     if (!r.ok) {
+      // RISK-2: every rejected registration leaves an audit row so SOC
+      // can spot probe patterns (credential-stuffing recon). user_id NULL
+      // since no row was created.
+      void auth.logAuthEvent({
+        user_id: null,
+        event_type: "login_failure", // reusing code; v2 add register_failure.
+        ...meta(req),
+        metadata: { email: parsed.data.email, reason: r.error.code, surface: "register" },
+      });
       if (r.error.code === "email_taken") {
         return reply.code(409).send({ error: "email_taken" });
       }
@@ -52,6 +61,12 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
         return reply.code(400).send({
           error: "validation_failed",
           fields: { password: "too_short" },
+        });
+      }
+      if (r.error.code === "password_breached") {
+        return reply.code(400).send({
+          error: "password_breached",
+          message: "Цей пароль фігурує у відомих витоках. Оберіть інший.",
         });
       }
     } else {
