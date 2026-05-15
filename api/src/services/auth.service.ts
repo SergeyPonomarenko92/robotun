@@ -131,13 +131,39 @@ export type LoginError =
   | { code: "invalid_credentials" }
   | { code: "account_disabled" }
   | { code: "mfa_required" }
-  | { code: "invalid_mfa_code" };
+  | { code: "invalid_mfa_code" }
+  | { code: "too_many_attempts"; retry_after_seconds: number };
+
+const LOGIN_LOCKOUT_THRESHOLD = 5;
+const LOGIN_LOCKOUT_WINDOW_MIN = 15;
 
 export async function login(
   input: LoginInput
 ): Promise<{ ok: true; result: AuthSuccess } | { ok: false; error: LoginError }> {
   return withFloor(async () => {
     const email = input.email.trim().toLowerCase();
+
+    // Per-email lockout — count login_failure rows for this email in the
+    // last LOGIN_LOCKOUT_WINDOW_MIN minutes. >= threshold → 429.
+    // auth_audit_events already gets a row on every failure (logged from
+    // the route layer); no extra writes here. Failure rows have user_id
+    // NULL but metadata.email set.
+    const failures = await db.execute<{ n: number }>(
+      dsql`SELECT COUNT(*)::int AS n FROM auth_audit_events
+            WHERE event_type = 'login_failure'
+              AND metadata->>'email' = ${email}
+              AND created_at > now() - (${LOGIN_LOCKOUT_WINDOW_MIN}::int || ' minutes')::interval`
+    );
+    if ((failures[0]?.n ?? 0) >= LOGIN_LOCKOUT_THRESHOLD) {
+      return {
+        ok: false,
+        error: {
+          code: "too_many_attempts",
+          retry_after_seconds: LOGIN_LOCKOUT_WINDOW_MIN * 60,
+        },
+      };
+    }
+
     const rows = await db
       .select()
       .from(users)

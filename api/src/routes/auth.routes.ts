@@ -93,6 +93,13 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       if (r.error.code === "mfa_required" || r.error.code === "invalid_mfa_code") {
         return reply.code(401).send({ error: r.error.code });
       }
+      if (r.error.code === "too_many_attempts") {
+        reply.header("Retry-After", String(r.error.retry_after_seconds));
+        return reply.code(429).send({
+          error: "too_many_attempts",
+          retry_after_seconds: r.error.retry_after_seconds,
+        });
+      }
       return reply.code(401).send({ error: "invalid_credentials" });
     }
     void auth.logAuthEvent({
