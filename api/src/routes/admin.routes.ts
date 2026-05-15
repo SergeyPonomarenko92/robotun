@@ -17,6 +17,7 @@ import {
   sessionsPurge,
   passwordResetTokensPurge,
   emailVerificationTokensPurge,
+  authAuditPurge,
 } from "../services/cron.js";
 import { scanRetrySweep, regenerateMissingVariants } from "../services/media.service.js";
 import { drainEmailQueue } from "../services/notifications.service.js";
@@ -248,6 +249,7 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     sessions_purge: sessionsPurge,
     password_reset_tokens_purge: passwordResetTokensPurge,
     email_verification_tokens_purge: emailVerificationTokensPurge,
+    auth_audit_purge: authAuditPurge,
   };
   server.post<{ Params: { job: string } }>(
     "/admin/cron/run/:job",

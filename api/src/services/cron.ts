@@ -321,6 +321,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.sessions_purge = await sessionsPurge();
   results.password_reset_tokens_purge = await passwordResetTokensPurge();
   results.email_verification_tokens_purge = await emailVerificationTokensPurge();
+  results.auth_audit_purge = await authAuditPurge();
   return results;
 }
 
@@ -355,6 +356,16 @@ export async function emailVerificationTokensPurge(): Promise<number> {
     `DELETE FROM email_verification_tokens
       WHERE (used_at IS NULL AND expires_at < now() - interval '7 days')
          OR (used_at IS NOT NULL AND used_at < now() - interval '90 days')`
+  );
+}
+
+/** auth_audit_events retention — 1 year. Security incidents typically
+ *  surface within months; >1y data is mostly noise for ops. GDPR-bearing
+ *  metadata (IP, email) gets removed at this boundary. */
+export async function authAuditPurge(): Promise<number> {
+  return exec(
+    "auth_audit_purge",
+    `DELETE FROM auth_audit_events WHERE created_at < now() - interval '365 days'`
   );
 }
 
