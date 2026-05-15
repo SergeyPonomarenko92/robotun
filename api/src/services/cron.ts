@@ -401,6 +401,57 @@ export async function kycAnnualRekyc(): Promise<number> {
   );
 }
 
+/**
+ * Module 5 REQ-014 — auto-archive drafts with no provider-initiated
+ * listing_audit_events row in the last 90 days. System events do NOT
+ * reset the inactivity clock (filter actor_role='provider' in the latest
+ * lookup). Batch 200/tick, FOR UPDATE SKIP LOCKED.
+ *
+ * On flip: status='archived', archived_at=now(), version++, audit row
+ *   event_type='listing.draft_expired', outbox listing.archived with
+ *   reason='draft_inactivity'.
+ */
+export async function listingDraftAutoArchive(): Promise<number> {
+  return exec(
+    "listing_draft_auto_archive",
+    `
+    WITH due AS (
+      SELECT l.id, l.provider_id, l.status FROM listings l
+       WHERE l.status = 'draft'
+         AND NOT EXISTS (
+           SELECT 1 FROM listing_audit_events lae
+            WHERE lae.listing_id = l.id
+              AND lae.actor_role = 'provider'
+              AND lae.created_at > now() - interval '90 days'
+         )
+       ORDER BY l.created_at
+       LIMIT 200
+       FOR UPDATE SKIP LOCKED
+    ),
+    updated AS (
+      UPDATE listings l
+         SET status = 'archived',
+             archived_at = now(),
+             version = l.version + 1,
+             updated_at = now()
+        FROM due
+       WHERE l.id = due.id
+       RETURNING l.id, due.provider_id
+    ),
+    ev AS (
+      INSERT INTO listing_audit_events (listing_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
+      SELECT id, NULL, 'system', 'listing.draft_expired', 'draft', 'archived',
+             jsonb_build_object('reason', '90d_inactivity')
+        FROM updated
+    )
+    INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+    SELECT 'listing', id, 'listing.archived',
+           jsonb_build_object('listing_id', id, 'provider_id', provider_id, 'reason', 'draft_inactivity')
+      FROM updated
+    `
+  );
+}
+
 /* ----------------------------- retention -------------------------------- */
 
 export async function outboxRetention(): Promise<number> {
@@ -434,6 +485,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.kyc_pre_expiry_warn = await kycPreExpiryWarn();
   results.kyc_user_soft_delete_consumer = await kycUserSoftDeleteConsumer();
   results.kyc_annual_rekyc = await kycAnnualRekyc();
+  results.listing_draft_auto_archive = await listingDraftAutoArchive();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);
