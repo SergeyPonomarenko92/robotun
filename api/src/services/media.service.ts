@@ -38,8 +38,14 @@ import { scanBuffer } from "./clamav.js";
 
 // Purposes that get image variants generated after clean scan.
 const VARIANT_PURPOSES = new Set(["avatar", "listing_cover", "listing_gallery"]);
-const THUMBNAIL_SIZE = 256;
-const PREVIEW_WIDTH = 640;
+
+type VariantKind = "thumbnail" | "thumbnail_2x" | "preview" | "preview_2x";
+const VARIANT_SPECS: Record<VariantKind, { width: number; height?: number; fit?: "cover"; suffix: string }> = {
+  thumbnail:    { width: 256,  height: 256, fit: "cover", suffix: "__thumb.webp" },
+  thumbnail_2x: { width: 512,  height: 512, fit: "cover", suffix: "__thumb@2x.webp" },
+  preview:      { width: 640,                              suffix: "__preview.webp" },
+  preview_2x:   { width: 1280,                             suffix: "__preview@2x.webp" },
+};
 
 /** Generate one resized variant from the in-memory original. Best-effort —
  *  failures return null so the parent ready flip is unaffected. */
@@ -47,19 +53,18 @@ async function tryGenerateVariant(args: {
   bucket: BucketAlias;
   originalKey: string;
   originalBuffer: Buffer;
-  kind: "thumbnail" | "preview";
+  kind: VariantKind;
 }): Promise<string | null> {
   try {
+    const spec = VARIANT_SPECS[args.kind];
     const pipeline = sharp(args.originalBuffer);
-    if (args.kind === "thumbnail") {
-      pipeline.resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, { fit: "cover", position: "attention" });
+    if (spec.fit === "cover") {
+      pipeline.resize(spec.width, spec.height!, { fit: "cover", position: "attention" });
     } else {
-      // preview — constrain width, height auto.
-      pipeline.resize({ width: PREVIEW_WIDTH, withoutEnlargement: true });
+      pipeline.resize({ width: spec.width, withoutEnlargement: true });
     }
     const buf = await pipeline.webp({ quality: 80 }).toBuffer();
-    const suffix = args.kind === "thumbnail" ? "__thumb.webp" : "__preview.webp";
-    const key = `${args.originalKey}${suffix}`;
+    const key = `${args.originalKey}${spec.suffix}`;
     await uploadObject({
       bucket: args.bucket,
       key,
@@ -351,20 +356,21 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
 
   if (scan.result === "clean") {
     // Generate variants for image purposes. We already have the original
-    // buffer in memory from the scan; reuse it (saves two S3 GETs).
-    let thumbnailKey: string | null = null;
-    let previewKey: string | null = null;
+    // buffer in memory from the scan; reuse it (saves S3 GETs).
+    const variants: Record<string, string> = {};
     if (VARIANT_PURPOSES.has(m.purpose)) {
       const common = {
         bucket: m.bucket_alias as BucketAlias,
         originalKey: m.storage_key,
         originalBuffer: buf,
       } as const;
-      // Run sequentially — sharp internally uses libvips threads; parallel
-      // sharp calls on one buffer race the underlying file descriptor in
-      // some libvips versions.
-      thumbnailKey = await tryGenerateVariant({ ...common, kind: "thumbnail" });
-      previewKey = await tryGenerateVariant({ ...common, kind: "preview" });
+      // Sequential — sharp internally uses libvips threads; parallel sharp
+      // calls on one buffer race the underlying file descriptor in some
+      // libvips versions.
+      for (const kind of ["thumbnail", "thumbnail_2x", "preview", "preview_2x"] as const) {
+        const key = await tryGenerateVariant({ ...common, kind });
+        if (key) variants[kind] = key;
+      }
     }
     await db.transaction(async (tx) => {
       const upd = await tx
@@ -373,8 +379,11 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
           status: "ready",
           ready_at: now,
           scan_completed_at: now,
-          ...(thumbnailKey ? { thumbnail_key: thumbnailKey } : {}),
-          ...(previewKey ? { preview_key: previewKey } : {}),
+          variants,
+          // Legacy columns — drop in next migration cycle once FE audit
+          // confirms no consumer reads them directly.
+          ...(variants.thumbnail ? { thumbnail_key: variants.thumbnail } : {}),
+          ...(variants.preview ? { preview_key: variants.preview } : {}),
         })
         .where(and(eq(mediaObjects.id, mediaId), eq(mediaObjects.status, "awaiting_scan")))
         .returning({ id: mediaObjects.id });
@@ -387,8 +396,7 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
           media_id: mediaId,
           purpose: m.purpose,
           listing_id: m.listing_id,
-          has_thumbnail: thumbnailKey != null,
-          has_preview: previewKey != null,
+          variants: Object.keys(variants),
         },
       });
     });
@@ -516,11 +524,7 @@ export async function getMetadata(args: { user_id: string | null; media_id: stri
       height_px: m.height_px,
       status: m.status,
       created_at: m.created_at.toISOString(),
-      variants: [
-        "original",
-        ...(m.thumbnail_key ? ["thumbnail"] : []),
-        ...(m.preview_key ? ["preview"] : []),
-      ],
+      variants: ["original", ...Object.keys((m.variants as Record<string, string>) ?? {})],
     },
   };
 }
@@ -563,9 +567,17 @@ export async function getStreamUrl(args: {
   // original — caller asked for a specific shape).
   let key = m.storage_key;
   if (args.variant && args.variant !== "original") {
-    if (args.variant === "thumbnail" && m.thumbnail_key) key = m.thumbnail_key;
-    else if (args.variant === "preview" && m.preview_key) key = m.preview_key;
-    else return err("not_found", 404);
+    const variants = (m.variants as Record<string, string>) ?? {};
+    const v = variants[args.variant];
+    if (v) {
+      key = v;
+    } else {
+      // Legacy column fallback while we run on dual-write; remove after
+      // FE audit per the 0021 migration comment.
+      if (args.variant === "thumbnail" && m.thumbnail_key) key = m.thumbnail_key;
+      else if (args.variant === "preview" && m.preview_key) key = m.preview_key;
+      else return err("not_found", 404);
+    }
   }
 
   const url = await presignDownload({

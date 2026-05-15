@@ -365,10 +365,13 @@ export const mediaObjects = pgTable(
     height_px: integer("height_px"),
     is_public: boolean("is_public").notNull().default(false),
     // sharp-generated 256x256 webp thumbnail; same bucket, key suffix
-    // `__thumb.webp`. Only image purposes (avatar/listing_*) get this.
+    // `__thumb.webp`. LEGACY — kept for one cycle, read from `variants`.
     thumbnail_key: text("thumbnail_key"),
-    // sharp-generated 640px-wide webp preview; key suffix `__preview.webp`.
+    // sharp-generated 640px-wide webp preview; LEGACY — read from `variants`.
     preview_key: text("preview_key"),
+    // Canonical variants map: { thumbnail, preview, ... }. Future @2x sizes
+    // land here without further schema migrations.
+    variants: jsonb("variants").notNull().default({}),
     status: mediaStatusEnum("status").notNull().default("awaiting_upload"),
     scan_attempts: smallint("scan_attempts").notNull().default(0),
     last_scan_error: text("last_scan_error"),

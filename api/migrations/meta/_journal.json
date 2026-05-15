@@ -148,6 +148,13 @@
       "when": 1779000500000,
       "tag": "0020_push_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1779000600000,
+      "tag": "0021_media_variants_jsonb",
+      "breakpoints": true
     }
   ]
 }
