@@ -31,14 +31,62 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Per-aggregate-type CTA paths. Unrecognised types fall back to BRAND_URL
+// root — better than a 404 from a guess.
+const CTA_PATHS: Record<string, string> = {
+  deal: "/deals",
+  listing: "/listings",
+  review: "/reviews",
+  payment: "/provider-dashboard",
+  payout: "/provider-dashboard",
+  user: "/me",
+  message: "/messages",
+  conversation: "/messages",
+};
+
+// Per-notification-code CTA label override. Defaults to "Відкрити Robotun"
+// when not in the map. Keys are notification_code strings from the
+// template registry (notifications.service.ts).
+const CTA_LABELS: Record<string, string> = {
+  deal_accepted: "Переглянути угоду",
+  deal_submitted: "Перейти до перевірки",
+  deal_disputed_for_provider: "Відповісти на спір",
+  deal_completed: "Залишити відгук",
+  kyc_approved: "Налаштувати виплати",
+  kyc_rejected: "Виправити документи",
+  payout_completed: "Деталі виплати",
+  new_message_for_recipient: "Перейти у чат",
+  review_published: "Відповісти на відгук",
+};
+
+function ctaFor(args: {
+  aggregate_type?: string;
+  aggregate_id?: string;
+  code?: string;
+}): { url: string; label: string } {
+  const base = CTA_PATHS[args.aggregate_type ?? ""];
+  const url = base && args.aggregate_id
+    ? `${BRAND_URL}${base}/${encodeURIComponent(args.aggregate_id)}`
+    : BRAND_URL;
+  const label = (args.code && CTA_LABELS[args.code]) || "Відкрити Robotun";
+  return { url, label };
+}
+
 /** Wrap a notification's plain title+body in a minimal HTML shell. */
-export function renderHtml(args: { title: string; body: string }): string {
+export function renderHtml(args: {
+  title: string;
+  body: string;
+  aggregate_type?: string;
+  aggregate_id?: string;
+  code?: string;
+}): string {
   const title = escapeHtml(args.title);
   // Preserve paragraph breaks from plain text bodies.
   const bodyHtml = escapeHtml(args.body)
     .split(/\n\n+/)
     .map((p) => `<p style="margin:0 0 16px;line-height:1.55;">${p.replace(/\n/g, "<br/>")}</p>`)
     .join("");
+  const cta = ctaFor(args);
   return `<!doctype html>
 <html lang="uk">
 <head>
@@ -60,7 +108,7 @@ export function renderHtml(args: { title: string; body: string }): string {
         ${bodyHtml}
       </td></tr>
       <tr><td style="padding:0 32px 24px;">
-        <a href="${escapeHtml(BRAND_URL)}" style="display:inline-block;padding:10px 18px;background:#b3361b;color:#ffffff;text-decoration:none;font-size:14px;font-weight:500;border-radius:4px;">Відкрити Robotun</a>
+        <a href="${escapeHtml(cta.url)}" style="display:inline-block;padding:10px 18px;background:#b3361b;color:#ffffff;text-decoration:none;font-size:14px;font-weight:500;border-radius:4px;">${escapeHtml(cta.label)}</a>
       </td></tr>
       <tr><td style="padding:16px 32px;border-top:1px solid #e5e2db;font-size:11px;color:#a39d92;">
         Ви отримуєте цей лист тому що увімкнули email-сповіщення в налаштуваннях.
@@ -102,6 +150,9 @@ export async function sendEmail(args: {
   subject: string;
   text: string;
   html?: string;
+  aggregate_type?: string;
+  aggregate_id?: string;
+  code?: string;
 }): Promise<SendResult> {
   try {
     const info = await getTransport().sendMail({
@@ -109,10 +160,16 @@ export async function sendEmail(args: {
       to: args.to,
       subject: args.subject,
       text: args.text,
-      // Auto-render HTML shell if caller didn't supply one. Keeps
-      // drainEmailQueue ergonomic (only has plain text from the
-      // template registry).
-      html: args.html ?? renderHtml({ title: args.subject, body: args.text }),
+      // Auto-render HTML shell if caller didn't supply one. Per-code CTA
+      // URL + label come from the aggregate_type/code mapping in
+      // renderHtml.
+      html: args.html ?? renderHtml({
+        title: args.subject,
+        body: args.text,
+        aggregate_type: args.aggregate_type,
+        aggregate_id: args.aggregate_id,
+        code: args.code,
+      }),
     });
     return { ok: true, message_id: info.messageId };
   } catch (e) {

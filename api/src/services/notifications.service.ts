@@ -478,10 +478,15 @@ export async function drainEmailQueue(): Promise<number> {
     recipient_user_id: string;
     title: string;
     body: string;
+    aggregate_type: string;
+    aggregate_id: string;
+    notification_code: string;
     email: string | null;
     delivery_attempts: number;
   }>(
-    dsql`SELECT n.id, n.recipient_user_id, n.title, n.body, u.email, n.delivery_attempts
+    dsql`SELECT n.id, n.recipient_user_id, n.title, n.body,
+                n.aggregate_type, n.aggregate_id, n.notification_code,
+                u.email, n.delivery_attempts
            FROM notifications n
            JOIN users u ON u.id = n.recipient_user_id
           WHERE n.channel = 'email' AND n.status = 'pending'
@@ -500,7 +505,14 @@ export async function drainEmailQueue(): Promise<number> {
         .where(eq(notifications.id, r.id));
       continue;
     }
-    const res = await sendEmail({ to: r.email, subject: r.title, text: r.body });
+    const res = await sendEmail({
+      to: r.email,
+      subject: r.title,
+      text: r.body,
+      aggregate_type: r.aggregate_type,
+      aggregate_id: r.aggregate_id,
+      code: r.notification_code,
+    });
     if (res.ok) {
       await db
         .update(notifications)
