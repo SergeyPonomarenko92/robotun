@@ -152,6 +152,28 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     return r.value;
   });
 
+  // Password change — authenticated. Old password required for re-auth;
+  // new password obeys the same 12-char floor as register. All sessions
+  // revoked + ver bumped on success (FE must refresh).
+  const changePwdSchema = z.object({
+    old_password: z.string().min(1).max(256),
+    new_password: z.string().min(12).max(256),
+  });
+  server.post(
+    "/me/password",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = changePwdSchema.safeParse(req.body);
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await auth.changePassword({
+        user_id: req.auth!.user_id,
+        ...parsed.data,
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      return reply.code(204).send();
+    }
+  );
+
   // Account deletion (GDPR Art.17). Requires password re-auth + the
   // literal string "DELETE" as confirmation to prevent CSRF/double-click
   // accidents. Anonymises the user record (does not DROP — FKs in

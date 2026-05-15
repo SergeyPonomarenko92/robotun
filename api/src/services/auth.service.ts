@@ -270,6 +270,47 @@ export async function listActiveSessions(userId: string) {
   };
 }
 
+/* ----------------------------- PASSWORD CHANGE ----------------------- */
+
+type ChangePasswordError = { code: "wrong_password" | "password_too_short" | "user_not_found"; status: number };
+
+/** Authenticated password change. Verifies old password (constant-time
+ *  via argon2), updates hash, BUMPS ver to invalidate existing access
+ *  tokens (FE must call /auth/refresh to get a new one), revokes all
+ *  OTHER sessions (caller's current session stays valid — they have the
+ *  refresh token and the bump cycles it via the rotation flow).
+ */
+export async function changePassword(args: {
+  user_id: string;
+  old_password: string;
+  new_password: string;
+}): Promise<{ ok: true } | { ok: false; error: ChangePasswordError }> {
+  if (args.new_password.length < 12 || args.new_password.length > 256) {
+    return { ok: false, error: { code: "password_too_short", status: 400 } };
+  }
+  const u = await db
+    .select({ password_hash: users.password_hash })
+    .from(users)
+    .where(eq(users.id, args.user_id))
+    .limit(1);
+  if (u.length === 0) return { ok: false, error: { code: "user_not_found", status: 404 } };
+  const ok = await verifyPassword(u[0]!.password_hash, args.old_password);
+  if (!ok) return { ok: false, error: { code: "wrong_password", status: 403 } };
+
+  const newHash = await hashPassword(args.new_password);
+  await db.transaction(async (tx) => {
+    await tx
+      .update(users)
+      .set({ password_hash: newHash, ver: dsql`${users.ver} + 1` })
+      .where(eq(users.id, args.user_id));
+    await tx
+      .update(sessions)
+      .set({ revoked_at: new Date() })
+      .where(and(eq(sessions.user_id, args.user_id), isNull(sessions.revoked_at)));
+  });
+  return { ok: true };
+}
+
 /* ----------------------------- ACCOUNT DELETE ------------------------ */
 
 type DeleteAccountError = { code: "wrong_password" | "user_not_found" | "already_deleted"; status: number };
