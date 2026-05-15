@@ -674,6 +674,16 @@ export async function getCurrentUserProfile(userId: string) {
     .limit(1);
   if (r.length === 0) return null;
   const u = r[0]!;
+  // Recovery-codes remaining — only meaningful when MFA enrolled. Cheap
+  // count query; index on (user_id) makes it O(1) per user.
+  let recoveryCodesRemaining = 0;
+  if (u.mfa_enrolled) {
+    const c = await db.execute<{ n: number }>(
+      dsql`SELECT COUNT(*)::int AS n FROM totp_recovery_codes
+            WHERE user_id = ${userId} AND used_at IS NULL`
+    );
+    recoveryCodesRemaining = c[0]?.n ?? 0;
+  }
   return {
     id: u.id,
     email: u.email,
@@ -685,6 +695,7 @@ export async function getCurrentUserProfile(userId: string) {
     kyc_status: u.kyc_status,
     payout_enabled: u.payout_enabled,
     mfa_enrolled: u.mfa_enrolled,
+    recovery_codes_remaining: recoveryCodesRemaining,
     status: u.status,
     created_at: u.created_at.toISOString(),
   };
