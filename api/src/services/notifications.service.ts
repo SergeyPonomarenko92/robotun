@@ -135,6 +135,44 @@ const TEMPLATES: Record<string, Template> = {
     body: (c) => `Причина: ${c.payload.rejection_code ?? "—"}. Можна подати повторно.`,
     recipients: async (_tx, p) => [String(p.provider_id ?? "")].filter(Boolean),
   },
+  // Module 4 REQ-009 / §4.5 — covers both the 30d pre-expiry warning,
+  // annual re-KYC, and admin force-rekyc paths. Provider receives one
+  // notification per outbox row.
+  "kyc.rekyc_required": {
+    code: "kyc_rekyc_required_for_provider",
+    title: () => "Потрібна повторна верифікація",
+    body: (c) => {
+      const reason = String(c.payload.reason ?? "document_expiry");
+      if (reason === "document_expiry") return "Документи скоро закінчаться — пройдіть KYC повторно.";
+      if (reason === "periodic_rekyc") return "Минув рік з останньої верифікації — оновіть документи.";
+      if (reason === "admin_manual") return "Адміністратор запросив повторну верифікацію.";
+      if (reason === "account_deleted") return "Виконайте KYC після відновлення акаунту.";
+      return "Потрібна повторна верифікація.";
+    },
+    recipients: async (_tx, p) => [String(p.provider_id ?? "")].filter(Boolean),
+  },
+  "kyc.expired": {
+    code: "kyc_expired_for_provider",
+    title: () => "KYC прострочено",
+    body: () => "Термін дії документів вичерпано. Виплати призупинені до повторної верифікації.",
+    recipients: async (_tx, p) => [String(p.provider_id ?? "")].filter(Boolean),
+  },
+  "kyc.suspended": {
+    code: "kyc_suspended_for_provider",
+    title: () => "KYC призупинено",
+    body: (c) => {
+      const code = String(c.payload.reason_code ?? "");
+      const map: Record<string, string> = {
+        fraud_detected: "Виявлено ознаки шахрайства.",
+        compliance_violation: "Порушення нормативних вимог.",
+        provider_request: "За вашим запитом.",
+        platform_policy_breach: "Порушення політик платформи.",
+        other: "Адміністративне рішення.",
+      };
+      return `Причина: ${map[code] ?? code}. Виплати заблоковано.`;
+    },
+    recipients: async (_tx, p) => [String(p.provider_id ?? "")].filter(Boolean),
+  },
   "deal.dispute_resolved": {
     code: "deal_dispute_resolved",
     title: () => "Спір по угоді вирішено",
