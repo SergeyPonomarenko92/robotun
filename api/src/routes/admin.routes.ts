@@ -54,6 +54,86 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     return svc.platformStats();
   });
 
+  // Forensic read of auth_audit_events. Filters by event_type and/or
+  // user_id; cursor on the bigserial id matches the /me/audit shape.
+  server.get("/admin/auth-audit", { preHandler: server.authenticate }, async (req, reply) => {
+    if (!(await requireAdmin(req, reply, ["admin"]))) return;
+    const AUTH_EVENT_TYPES = [
+      "login_success",
+      "login_failure",
+      "logout",
+      "refresh",
+      "password_changed",
+      "password_reset_requested",
+      "password_reset_completed",
+      "email_verification_requested",
+      "email_verified",
+      "sessions_logged_out_all",
+      "profile_updated",
+      "account_deleted",
+    ] as const;
+    const q = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(200).default(50),
+        cursor: z.string().max(200).optional(),
+        event_type: z.enum(AUTH_EVENT_TYPES).optional(),
+        user_id: z.string().uuid().optional(),
+        since_hours: z.coerce.number().int().min(1).max(720).optional(),
+      })
+      .safeParse(req.query ?? {});
+    if (!q.success) return reply.code(400).send({ error: "invalid_query" });
+    const data = q.data;
+    let beforeId: bigint | null = null;
+    if (data.cursor) {
+      try {
+        beforeId = BigInt(Buffer.from(data.cursor, "base64url").toString("utf8"));
+      } catch {
+        return reply.code(400).send({ error: "cursor_invalid" });
+      }
+    }
+    // All variable bits flow through parameterised template — no
+    // dsql.unsafe interpolation. event_type and user_id are zod-validated
+    // (enum + uuid) so the value space is safe; we still parameterise to
+    // keep PG plan caches warm and the audit forensic clean.
+    const limit = data.limit;
+    const rows = await dsql`
+      SELECT id, user_id, event_type, ip, user_agent, metadata, created_at
+        FROM auth_audit_events
+       WHERE (${beforeId === null}::bool OR id < ${beforeId !== null ? beforeId.toString() : "0"}::bigint)
+         AND (${data.event_type === undefined}::bool OR event_type = ${data.event_type ?? null})
+         AND (${data.user_id === undefined}::bool OR user_id = ${data.user_id ?? null})
+         AND (${data.since_hours === undefined}::bool OR created_at > now() - (${data.since_hours ?? 0} || ' hours')::interval)
+       ORDER BY id DESC
+       LIMIT ${limit + 1}
+    `.execute() as unknown as Array<{
+      id: string;
+      user_id: string | null;
+      event_type: string;
+      ip: string | null;
+      user_agent: string | null;
+      metadata: Record<string, unknown>;
+      created_at: Date | string;
+    }>;
+    const hasMore = rows.length > data.limit;
+    const slice = rows.slice(0, data.limit);
+    const next_cursor =
+      hasMore && slice.length > 0
+        ? Buffer.from(String(slice[slice.length - 1]!.id), "utf8").toString("base64url")
+        : null;
+    return {
+      items: slice.map((r) => ({
+        id: String(r.id),
+        user_id: r.user_id,
+        event_type: r.event_type,
+        ip: r.ip,
+        user_agent: r.user_agent,
+        metadata: r.metadata,
+        created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+      })),
+      next_cursor,
+    };
+  });
+
   // Ops-facing queue/health metrics. Different from /admin/stats which is
   // product-shaped (deals/users/etc.); this surfaces infrastructure health:
   // pending work, recent failures, oldest stuck items. Polling-safe (read-
