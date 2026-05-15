@@ -124,11 +124,9 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       // token regardless.
       return reply.code(204).send();
     }
-    await auth.logout(parsed.data.refresh_token);
-    // user_id resolved inside auth.logout from the refresh-token hash; we
-    // don't have it here without an extra lookup. v2 should return it.
+    const lr = await auth.logout(parsed.data.refresh_token);
     void auth.logAuthEvent({
-      user_id: null,
+      user_id: lr.user_id,
       event_type: "logout",
       ...meta(req),
     });
@@ -142,19 +140,20 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
   server.post("/auth/forgot-password", async (req, reply) => {
     const parsed = forgotSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
-    await auth.requestPasswordReset({
+    const fr = await auth.requestPasswordReset({
       email: parsed.data.email,
       ip: req.ip,
       user_agent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null,
     });
-    // Audit row written regardless of email existence — keeps the anti-
-    // enumeration property at the API surface while still recording the
-    // attempt for ops review. user_id NULL → admin-only visibility.
+    // Audit row written regardless of email existence — anti-enumeration
+    // preserved at the HTTP surface (always 204); audit metadata.email
+    // records the attempt for ops review. user_id is the real user when
+    // matched, NULL when unknown.
     void auth.logAuthEvent({
-      user_id: null,
+      user_id: fr.user_id,
       event_type: "password_reset_requested",
       ...meta(req),
-      metadata: { email: parsed.data.email },
+      metadata: { email: parsed.data.email, matched: fr.user_id !== null },
     });
     return reply.code(204).send();
   });
@@ -168,11 +167,8 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
     const r = await auth.resetPassword(parsed.data);
     if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
-    // user_id from token resolution lives inside auth.resetPassword; we
-    // don't have it here. v2 should return user_id from the service so
-    // the audit row links to the affected account.
     void auth.logAuthEvent({
-      user_id: null,
+      user_id: r.value.user_id,
       event_type: "password_reset_completed",
       ...meta(req),
     });
@@ -206,12 +202,12 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     const r = await auth.verifyEmail(parsed.data.token);
     if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
     void auth.logAuthEvent({
-      user_id: null, // see same TODO as /auth/reset-password
+      user_id: r.value.user_id,
       event_type: "email_verified",
       ...meta(req),
       metadata: { email: r.value.email },
     });
-    return r.value;
+    return { email: r.value.email };
   });
 
   // Profile update — partial. Either or both fields optional; empty

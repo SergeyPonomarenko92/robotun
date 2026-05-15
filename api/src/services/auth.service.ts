@@ -229,12 +229,14 @@ export async function refresh(
   };
 }
 
-export async function logout(refreshToken: string): Promise<void> {
+export async function logout(refreshToken: string): Promise<{ user_id: string | null }> {
   const hash = sha256Hex(refreshToken);
-  await db
+  const r = await db
     .update(sessions)
     .set({ revoked_at: new Date() })
-    .where(and(eq(sessions.refresh_token_hash, hash), isNull(sessions.revoked_at)));
+    .where(and(eq(sessions.refresh_token_hash, hash), isNull(sessions.revoked_at)))
+    .returning({ user_id: sessions.user_id });
+  return { user_id: r[0]?.user_id ?? null };
 }
 
 /** List active (non-revoked, non-expired) sessions for a user.
@@ -568,7 +570,7 @@ export async function requestEmailVerification(args: {
 type VerifyEmailError = { code: "token_invalid" | "token_used" | "token_expired"; status: number };
 
 export async function verifyEmail(token: string): Promise<
-  { ok: true; value: { email: string } } | { ok: false; error: VerifyEmailError }
+  { ok: true; value: { email: string; user_id: string } } | { ok: false; error: VerifyEmailError }
 > {
   const tokenHash = sha256Hex(token);
   return await db.transaction(async (tx) => {
@@ -593,7 +595,7 @@ export async function verifyEmail(token: string): Promise<
       .update(emailVerificationTokens)
       .set({ used_at: now })
       .where(eq(emailVerificationTokens.id, row.id));
-    return { ok: true as const, value: { email: u[0]?.email ?? "" } };
+    return { ok: true as const, value: { email: u[0]?.email ?? "", user_id: row.user_id } };
   });
 }
 
@@ -613,15 +615,17 @@ export async function requestPasswordReset(args: {
   email: string;
   ip?: string | null;
   user_agent?: string | null;
-}): Promise<{ ok: true }> {
+}): Promise<{ ok: true; user_id: string | null }> {
   const userRow = await db
     .select({ id: users.id, status: users.status })
     .from(users)
     .where(eq(users.email, args.email))
     .limit(1);
   if (userRow.length === 0 || userRow[0]!.status !== "active") {
-    // Don't disclose existence; return ok with no side effect.
-    return { ok: true };
+    // Don't disclose existence to the caller; return ok with no side
+    // effect. user_id=null here is for the AUDIT writer in the route;
+    // the HTTP envelope itself stays 204 to preserve anti-enumeration.
+    return { ok: true, user_id: null };
   }
   const uid = userRow[0]!.id;
   const plaintext = randomBytes(32).toString("base64url");
@@ -645,7 +649,7 @@ export async function requestPasswordReset(args: {
     // eslint-disable-next-line no-console
     console.warn(`[pwd-reset] email send failed for ${args.email}: ${(e as Error).message}`);
   });
-  return { ok: true };
+  return { ok: true, user_id: uid };
 }
 
 type ResetPasswordError = { code: "password_too_short" | "token_invalid" | "token_used" | "token_expired"; status: number };
@@ -653,7 +657,7 @@ type ResetPasswordError = { code: "password_too_short" | "token_invalid" | "toke
 export async function resetPassword(args: {
   token: string;
   new_password: string;
-}): Promise<{ ok: true; value: { ok: true } } | { ok: false; error: ResetPasswordError }> {
+}): Promise<{ ok: true; value: { user_id: string } } | { ok: false; error: ResetPasswordError }> {
   if (args.new_password.length < 12 || args.new_password.length > 256) {
     return { ok: false, error: { code: "password_too_short", status: 400 } };
   }
@@ -684,7 +688,7 @@ export async function resetPassword(args: {
       .update(sessions)
       .set({ revoked_at: new Date() })
       .where(and(eq(sessions.user_id, row.user_id), isNull(sessions.revoked_at)));
-    return { ok: true as const, value: { ok: true as const } };
+    return { ok: true as const, value: { user_id: row.user_id } };
   });
 }
 
