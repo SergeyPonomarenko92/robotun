@@ -199,3 +199,35 @@ After each closed item: commit hash in trailing `→ <hash>`.
   8. Module 11 payout defense-in-depth JOIN provider_profiles + kyc_verifications (c5dffc3).
   9. Module 13 GET /search/listings with REQ-001/005/006/007 enforcement (53de7e9).
   10. Module 5 §4.5.3 admin POST /admin/listings/reports/:id/resolve (fa1df7a).
+
+---
+
+## ▶ RESUME HERE (next session entrypoint)
+
+**Last completed**: HEAD `eb568d4` (tracker update). Last code HEAD `fa1df7a`.
+**Date**: 2026-05-15.
+
+**Resume protocol** (per feedback memory `feedback_resume_from_tracker`):
+1. Read this section — find the **NEXT UP** list below.
+2. Open the named spec file, locate the named REQ/SEC/AC/CON id.
+3. Cross-check current code; if MISSING/PARTIAL, implement → critic → commit → push → mark DONE here.
+4. Move to next list item. Don't ask "what's next" — the list IS the queue.
+
+**NEXT UP — concrete spec items to ship, in order:**
+
+1. **Module 5 SEC-005** — `listing_audit_events` GRANT INSERT/SELECT only (no UPDATE/DELETE to app role). Mirrors KYC SEC-006 admin_actions pattern. Needs a dedicated `application_role` migration; if no app role yet, add an immutability TRIGGER instead (RAISE EXCEPTION on UPDATE/DELETE). Spec: `spec-architecture-listings.md` SEC-005.
+2. **Module 5 CON-012** — listing_snapshots PII purge job. `MAX(deal.decided_at, deal.resolved_at, deal.created_at) + 3 years` → nullify `provider_id`, set `purged_pii_at=now()`. Title/desc/pricing retained. New cron `listingSnapshotsPiiPurge`. Spec: `spec-architecture-listings.md` CON-012.
+3. **Module 8 Feed §3.1 REQ-list** — never swept. Open `spec-architecture-feed.md`, run REQ-by-REQ. First likely gap: ranking score recompute trigger on review.submitted (Module 7 emits, Module 8 must consume).
+4. **Module 14 Disputes §3.1 REQ-list** — never swept. Open `spec-architecture-deal-workflow.md` AND `spec-architecture-disputes-ui-flow.md` cross-ref. Look for: dispute_evidence retention 7-year purge, escalation 14d sweep, admin resolve endpoint.
+5. **Module 12 Admin REQ-007/008** — admin_sessions table (4h max duration, 30min idle). NOT yet implemented (grep returned 0 hits for `admin_sessions`). Spec: `spec-architecture-admin-tooling.md` REQ-007/008.
+6. **Module 12 Admin REQ-009** — admin_mfa_challenges + `X-Admin-Mfa-Token` middleware for high-impact actions. Not implemented.
+7. **Module 13 Search REQ-002/004/008** — actual FTS-ranked impl. Today's `/search/listings` is a thin wrapper around listPublic; the spec requires `fts_vector @@ plainto_tsquery` with `frs.score` blend + facet aggregation. Needs `listings.fts_vector` column + GIN index + recompute trigger.
+8. **Module 6 REQ-014** — per-listing media cap enforcement via `pg_advisory_xact_lock(hashtext('listing_media'), hashtext(lower(listing_id::text)))` before COUNT-then-INSERT. Verify in `media.service.ts` initiateUpload.
+9. **Module 6 REQ-015** — per-user upload rate limit 100/hour via partitioned counter table `media_upload_rate`. Likely not implemented.
+10. **Module 11 Payments** — full REQ-by-REQ sweep against `spec-architecture-payments.md`. Tracker says "MVP DONE" but no detailed sweep done.
+
+**DESCOPED / OUT-OF-MVP (do NOT pull from queue unless user re-scopes)**:
+- Module 4 SEC-002/003 — AWS KMS PII encryption.
+- Module 4 CON-003/004 — Sanctions screening (legal/AML).
+- Module 5 SEC-002 — Redis Lua rate limits (pending rate-limit module).
+- Module 9 SMS channel — Email + push are MVP; SMS not in scope.
