@@ -15,7 +15,7 @@ import {
   outboxRetention,
   listingDraftExpiry,
 } from "../services/cron.js";
-import { scanRetrySweep } from "../services/media.service.js";
+import { scanRetrySweep, regenerateMissingVariants } from "../services/media.service.js";
 import { drainEmailQueue } from "../services/notifications.service.js";
 import { drainPushQueue } from "../services/push.service.js";
 
@@ -159,6 +159,7 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     outbox_retention: outboxRetention,
     listing_draft_expiry: listingDraftExpiry,
     media_scan_retry: scanRetrySweep,
+    media_variants_backfill: regenerateMissingVariants,
     email_drain: drainEmailQueue,
     push_drain: drainPushQueue,
   };

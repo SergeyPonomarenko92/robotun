@@ -461,6 +461,83 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
 }
 
 /**
+ * Backfill cron — generate missing variants for ready rows that landed
+ * before retina @2x sizes were added (or for which sharp transiently
+ * failed during the initial post-scan generation). Bounded at 20 rows
+ * per tick because each row costs an S3 GET + N sharp resizes.
+ *
+ * Idempotent — already-present keys in variants jsonb skip; only
+ * missing ones get generated. Existing legacy thumbnail_key /
+ * preview_key columns are not touched (they're back-compat shims).
+ */
+export async function regenerateMissingVariants(): Promise<number> {
+  const expected: Array<"thumbnail" | "thumbnail_2x" | "preview" | "preview_2x"> = [
+    "thumbnail",
+    "thumbnail_2x",
+    "preview",
+    "preview_2x",
+  ];
+  // Use raw SQL — drizzle's jsonb operator coverage is partial. ? operator
+  // tests key existence; we negate it via NOT to find missing.
+  const rows = await db.execute<{
+    id: string;
+    bucket_alias: string;
+    storage_key: string;
+    purpose: string;
+    variants: Record<string, string>;
+  }>(
+    dsql`SELECT id, bucket_alias, storage_key, purpose, variants
+           FROM media_objects
+          WHERE status = 'ready'
+            AND purpose IN ('avatar','listing_cover','listing_gallery')
+            AND (
+              NOT (variants ? 'thumbnail')
+              OR NOT (variants ? 'thumbnail_2x')
+              OR NOT (variants ? 'preview')
+              OR NOT (variants ? 'preview_2x')
+            )
+          LIMIT 20
+          FOR UPDATE SKIP LOCKED`
+  );
+  if (rows.length === 0) return 0;
+
+  let processed = 0;
+  for (const m of rows) {
+    let buf: Buffer;
+    try {
+      buf = await downloadObject({ bucket: m.bucket_alias as BucketAlias, key: m.storage_key });
+    } catch {
+      // Source object gone (manual cleanup, S3 lifecycle expiry). Skip —
+      // operator can flip status to scan_error_permanent if needed.
+      continue;
+    }
+    const current = (m.variants as Record<string, string>) ?? {};
+    const updated: Record<string, string> = { ...current };
+    for (const kind of expected) {
+      if (updated[kind]) continue;
+      const key = await tryGenerateVariant({
+        bucket: m.bucket_alias as BucketAlias,
+        originalKey: m.storage_key,
+        originalBuffer: buf,
+        kind,
+      });
+      if (key) updated[kind] = key;
+    }
+    if (Object.keys(updated).length === Object.keys(current).length) continue;
+    await db
+      .update(mediaObjects)
+      .set({
+        variants: updated,
+        ...(updated.thumbnail ? { thumbnail_key: updated.thumbnail } : {}),
+        ...(updated.preview ? { preview_key: updated.preview } : {}),
+      })
+      .where(eq(mediaObjects.id, m.id));
+    processed += 1;
+  }
+  return processed;
+}
+
+/**
  * Cron-driven retry — picks up awaiting_scan rows older than the stale
  * threshold and re-runs scanMediaObject. Handles: server restart while
  * scan was in flight, daemon outage that previously returned 'error'.

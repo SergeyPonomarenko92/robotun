@@ -17,7 +17,7 @@
  *  - mediaScanRetry         awaiting_scan rows >2min → re-run scanMediaObject
  */
 import { sql } from "../db/client.js";
-import { scanRetrySweep } from "./media.service.js";
+import { scanRetrySweep, regenerateMissingVariants } from "./media.service.js";
 import { drainEmailQueue } from "./notifications.service.js";
 import { drainPushQueue } from "./push.service.js";
 
@@ -311,6 +311,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);
+  results.media_variants_backfill = await regenerateMissingVariants().catch(() => 0);
   results.email_drain = await drainEmailQueue().catch(() => 0);
   results.push_drain = await drainPushQueue().catch(() => 0);
   return results;
