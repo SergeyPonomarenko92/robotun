@@ -180,6 +180,31 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // REQ-012 §4.8.4 — admin bumps submission_limit by 5 (cap 20). Reason
+  // code enum sourced from kyc.service.ts (single source of truth).
+  const unblockSchema = z.object({
+    reason_code: z.enum(svc.UNBLOCK_REASON_CODES as unknown as [string, ...string[]]),
+    reason_note: z.string().max(1000).optional(),
+  });
+  server.post<{ Params: { provider_id: string } }>(
+    "/admin/kyc/:provider_id/unblock",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
+      const parsed = unblockSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await svc.unblockSubmissionLimit({
+        provider_id: req.params.provider_id,
+        admin_id: req.auth!.user_id,
+        reason_code: parsed.data.reason_code,
+        reason_note: parsed.data.reason_note,
+        audit: { ip: req.ip, user_agent: req.headers["user-agent"] ?? null },
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      return r.value;
+    }
+  );
+
   // Legacy id-keyed claim path retained for internal/admin tooling that
   // tracks by kyc_id. /approve and /reject are FE-canonical provider-id-
   // keyed (above) and auto-claim internally.

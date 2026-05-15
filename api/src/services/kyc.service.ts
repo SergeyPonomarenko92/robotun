@@ -707,3 +707,95 @@ export async function flagRekyc(args: {
     return { ok: true as const, value: { kyc_id: row.id } };
   });
 }
+
+/**
+ * REQ-012 / §4.8.4 — admin bumps a provider's submission_limit by 5,
+ * capped at the absolute ceiling 20 (CON-010). Used to recover providers
+ * who hit the lifetime cap after legitimate documentation issues.
+ *
+ *   - 422 unblock_ceiling_reached when the bump would exceed 20.
+ *   - reason_code enum is closed (see SAMPLE_REASON_CODES).
+ *   - Idempotent only at the row level: each call lifts the limit until
+ *     the ceiling. Audit row records actor + reason for the SEC-006 trail.
+ */
+// Single source of truth — also imported by kyc.routes.ts for Zod schema
+// (critic RISK-2: prevents enum drift between route and service).
+export const UNBLOCK_REASON_CODES = [
+  "legitimate_documentation_issue",
+  "system_error_during_submission",
+  "provider_appeal_resolved",
+  "other",
+] as const;
+export type UnblockReasonCode = (typeof UNBLOCK_REASON_CODES)[number];
+const UNBLOCK_REASON_SET = new Set<string>(UNBLOCK_REASON_CODES);
+const SUBMISSION_LIMIT_BUMP = 5;
+const SUBMISSION_LIMIT_CEILING = 20;
+
+export async function unblockSubmissionLimit(args: {
+  provider_id: string;
+  admin_id: string;
+  reason_code: string;
+  reason_note?: string;
+  audit?: AuditCtx;
+}): Promise<Result<{ kyc_id: string; submission_limit: number }>> {
+  if (!UNBLOCK_REASON_SET.has(args.reason_code)) {
+    return err("validation_failed", 400, { fields: { reason_code: "invalid_enum" } });
+  }
+  // critic RISK-3: 'other' must include a free-text note (compliance audit
+  // gap — generic 'other' code with no explanation is unauditable).
+  if (args.reason_code === "other" && !args.reason_note?.trim()) {
+    return err("validation_failed", 400, { fields: { reason_note: "required_when_reason_code_is_other" } });
+  }
+  return await db.transaction(async (tx) => {
+    const r = await tx.execute<{ id: string; submission_limit: number; status: string }>(
+      dsql`SELECT id, submission_limit, status FROM kyc_verifications
+            WHERE provider_id = ${args.provider_id} FOR UPDATE`
+    );
+    if (r.length === 0) return err("not_found", 404);
+    const row = r[0]!;
+    // critic RISK-1: unblock only makes sense if a future resubmit is on
+    // the table. Spec §4.8 state machine: resubmit transitions from
+    // rejected | expired. Other states (not_submitted / approved /
+    // suspended / cancelled / in_review / submitted) have no resubmit
+    // path, so bumping the cap there is dead-write + audit noise + a
+    // permanent ceiling inflation footgun.
+    if (!["rejected", "expired"].includes(row.status)) {
+      return err("invalid_status_for_unblock", 422, { current_status: row.status });
+    }
+    const newLimit = row.submission_limit + SUBMISSION_LIMIT_BUMP;
+    if (newLimit > SUBMISSION_LIMIT_CEILING) {
+      // CON-010: senior-admin escalation is out of MVP scope.
+      return err("unblock_ceiling_reached", 422, {
+        current: row.submission_limit,
+        ceiling: SUBMISSION_LIMIT_CEILING,
+      });
+    }
+    await tx
+      .update(kycVerifications)
+      .set({
+        submission_limit: newLimit,
+        version: dsql`version + 1`,
+      })
+      .where(eq(kycVerifications.id, row.id));
+
+    await logEvent(tx, {
+      kv_id: row.id,
+      provider_id: args.provider_id,
+      actor_id: args.admin_id,
+      actor_role: "admin",
+      event_type: "kyc.unblock",
+      from_status: row.status,
+      to_status: row.status,
+      metadata: {
+        reason_code: args.reason_code,
+        reason_note: args.reason_note ?? null,
+        previous_limit: row.submission_limit,
+        new_limit: newLimit,
+      },
+      ip: args.audit?.ip ?? null,
+      user_agent: args.audit?.user_agent ?? null,
+    });
+
+    return { ok: true as const, value: { kyc_id: row.id, submission_limit: newLimit } };
+  });
+}
