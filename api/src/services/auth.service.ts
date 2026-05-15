@@ -912,6 +912,27 @@ export async function restoreAccount(args: {
       })
       .where(eq(users.id, args.user_id));
     await tx.delete(deletedUserIndex).where(eq(deletedUserIndex.user_id, args.user_id));
+    // Module 4 REQ-015: if a KYC was cancelled by the soft-delete consumer,
+    // flip it back to 'not_submitted' so the restored provider can resubmit.
+    // Other terminal states (approved/rejected/expired) intentionally stay
+    // put — restore does NOT re-grant approval; the provider must redo
+    // KYC. payout_enabled is held off by the existing users sync (status
+    // back to 'pending', has_provider_role unchanged but kyc_status='none'
+    // requires fresh approval).
+    await tx.execute(
+      dsql`UPDATE kyc_verifications
+              SET status = 'not_submitted',
+                  rekyc_required_reason = NULL,
+                  rekyc_required_at = NULL,
+                  decided_at = NULL,
+                  last_decided_at = NULL,
+                  reviewed_by = NULL,
+                  review_started_at = NULL,
+                  version = version + 1
+            WHERE provider_id = ${args.user_id}
+              AND status = 'cancelled'
+              AND rekyc_required_reason = 'account_deleted'`
+    );
   }).catch((e: Error) => {
     if (e.message === "__email_now_taken__") return "EMAIL_TAKEN" as const;
     throw e;

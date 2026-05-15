@@ -373,6 +373,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.kyc_expired_sweep = await kycExpiredSweep();
   results.kyc_stale_claim = await kycStaleClaim();
   results.kyc_pre_expiry_warn = await kycPreExpiryWarn();
+  results.kyc_user_soft_delete_consumer = await kycUserSoftDeleteConsumer();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);
@@ -572,6 +573,91 @@ export async function categoriesUserSoftDeleteConsumer(): Promise<number> {
            SET last_seen_id = COALESCE((SELECT MAX(id) FROM events), last_seen_id),
                updated_at = now()
          WHERE consumer_name = 'categories:user_soft_deleted'
+      )
+      SELECT COUNT(*)::int AS n FROM updated`
+    )) as unknown as Array<{ n: number }>;
+    return { processed: result[0]?.n ?? 0 };
+  });
+  return processed;
+}
+
+/** Module 4 REQ-015 — consume user.soft_deleted outbox events and
+ *  cancel the deleted user's open KYC row. Soft-delete MUST NOT be
+ *  blocked by KYC state; the spec routes the side-effect through an
+ *  async consumer so the deleteAccount tx is independent of KYC.
+ *
+ *  Mirrors categoriesUserSoftDeleteConsumer (Module 2 REQ-011): dedicated
+ *  cursor 'kyc:user_soft_deleted', cursor-scoped FOR UPDATE, atomic CTE
+ *  with UPDATE + outbox emit + cursor advance.
+ *
+ *  Spec §4.5 row "any non-terminal → cancelled, rekyc_required_reason=
+ *  'account_deleted'". We extend "non-terminal" to "anything except
+ *  cancelled" so a currently-approved provider's payout chain is
+ *  guaranteed to flip off as part of soft-delete.
+ *
+ *  No user-side syncUserKycStatus call: the users row is already in the
+ *  soft-deleted shape (status='deleted', email→tombstone) by the time
+ *  this consumer runs, and the deleted_user_index path owns the audit
+ *  for the user record itself. */
+export async function kycUserSoftDeleteConsumer(): Promise<number> {
+  await sql.unsafe(`
+    INSERT INTO notification_consumer_cursors (consumer_name, last_seen_id)
+    VALUES ('kyc:user_soft_deleted', 0)
+    ON CONFLICT (consumer_name) DO NOTHING
+  `);
+  const { processed } = await db.transaction(async (tx) => {
+    const lockRows = (await tx.execute(
+      dsqlImport`SELECT last_seen_id FROM notification_consumer_cursors
+                  WHERE consumer_name = 'kyc:user_soft_deleted'
+                  FOR UPDATE`
+    )) as unknown as Array<{ last_seen_id: string }>;
+    const lastSeen = lockRows[0]?.last_seen_id ?? "0";
+    const result = (await tx.execute(
+      dsqlImport`WITH events AS (
+        SELECT id, (payload->>'user_id')::uuid AS user_id
+          FROM outbox_events
+         WHERE aggregate_type = 'user'
+           AND event_type = 'user.soft_deleted'
+           AND id > ${lastSeen}::bigint
+         ORDER BY id ASC
+         LIMIT 100
+      ),
+      updated AS (
+        UPDATE kyc_verifications kv
+           SET status = 'cancelled',
+               rekyc_required_reason = 'account_deleted',
+               rekyc_required_at = COALESCE(rekyc_required_at, now()),
+               decided_at = COALESCE(decided_at, now()),
+               last_decided_at = now(),
+               reviewed_by = NULL,
+               review_started_at = NULL,
+               version = version + 1
+         WHERE provider_id IN (SELECT user_id FROM events)
+           AND status <> 'cancelled'
+         RETURNING kv.id, kv.provider_id, kv.status
+      ),
+      ev AS (
+        INSERT INTO kyc_review_events
+          (kyc_verification_id, provider_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
+        SELECT id, provider_id, NULL, 'system', 'kyc.cancelled', status, 'cancelled',
+               jsonb_build_object('reason', 'account_deleted')
+          FROM updated
+      ),
+      outbox AS (
+        INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+        SELECT 'kyc', id, 'kyc.cancelled',
+               jsonb_build_object(
+                 'kyc_id', id,
+                 'provider_id', provider_id,
+                 'reason', 'account_deleted'
+               )
+          FROM updated
+      ),
+      cursor_update AS (
+        UPDATE notification_consumer_cursors
+           SET last_seen_id = COALESCE((SELECT MAX(id) FROM events), last_seen_id),
+               updated_at = now()
+         WHERE consumer_name = 'kyc:user_soft_deleted'
       )
       SELECT COUNT(*)::int AS n FROM updated`
     )) as unknown as Array<{ n: number }>;
