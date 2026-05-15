@@ -132,13 +132,37 @@ export async function requestPayout(args: {
     // the same provider. Without this lock, two simultaneous calls can both
     // pass the wallet check at available=X and both insert payouts summing
     // to 2X → silent overdraft.
-    const u = await tx.execute<{ payout_enabled: boolean; kyc_status: string; status: string }>(
-      dsql`SELECT payout_enabled, kyc_status, status
-             FROM users WHERE id = ${args.provider_id} FOR UPDATE`
+    // KYC §4.7 defense-in-depth: JOIN provider_profiles + kyc_verifications.
+    // users.payout_enabled is a denorm copy; reading it alone makes a
+    // SEC-007 trigger bypass invisible to the payout path. The join below
+    // is the canonical check; mismatch (e.g. payout_enabled=true but
+    // kyc_status!='approved') signals reconciliation drift and we refuse.
+    const u = await tx.execute<{
+      payout_enabled: boolean;
+      kyc_status: string;
+      status: string;
+      pp_payout_enabled: boolean | null;
+      pp_kyc_status: string | null;
+      kv_status: string | null;
+    }>(
+      dsql`SELECT u.payout_enabled,
+                  u.kyc_status,
+                  u.status,
+                  pp.payout_enabled AS pp_payout_enabled,
+                  pp.kyc_status      AS pp_kyc_status,
+                  kv.status          AS kv_status
+             FROM users u
+             LEFT JOIN provider_profiles  pp ON pp.user_id     = u.id
+             LEFT JOIN kyc_verifications  kv ON kv.provider_id = u.id
+            WHERE u.id = ${args.provider_id} FOR UPDATE OF u`
     );
     if (u.length === 0) return err("user_not_found", 404);
     if (u[0]!.status !== "active") return err("account_suspended", 403);
     if (!u[0]!.payout_enabled) return err("payout_disabled", 403, { kyc_status: u[0]!.kyc_status });
+    if (u[0]!.pp_payout_enabled === false) return err("payout_disabled", 403, { source: "provider_profiles" });
+    if (u[0]!.kv_status !== "approved") {
+      return err("payout_disabled", 403, { source: "kyc_verifications", kv_status: u[0]!.kv_status });
+    }
 
     const wallet = await computeWallet(tx, args.provider_id);
     if (args.amount_kopecks > wallet.available_kopecks) {
