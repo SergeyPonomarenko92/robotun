@@ -137,6 +137,31 @@ export async function uploadObject(args: {
   );
 }
 
+/**
+ * REQ-013 — return the raw S3 object stream + content metadata so the
+ * caller can pipe it through Fastify reply without buffering in memory.
+ * AsyncIterable<Uint8Array> works with `reply.send(stream as any)` and
+ * lets Node back-pressure the upstream S3 read on slow client sockets.
+ */
+export async function streamObject(args: {
+  bucket: BucketAlias;
+  key: string;
+}): Promise<{
+  body: AsyncIterable<Uint8Array>;
+  contentType: string | null;
+  contentLength: number | null;
+}> {
+  const out = await s3.send(
+    new GetObjectCommand({ Bucket: bucketNameFor(args.bucket), Key: args.key })
+  );
+  if (!out.Body) throw new Error("empty_body");
+  return {
+    body: out.Body as AsyncIterable<Uint8Array>,
+    contentType: out.ContentType ?? null,
+    contentLength: out.ContentLength ?? null,
+  };
+}
+
 /** Streaming download → Buffer. Used by the ClamAV scan worker. */
 export async function downloadObject(args: {
   bucket: BucketAlias;

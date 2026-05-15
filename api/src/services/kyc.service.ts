@@ -184,6 +184,93 @@ export type SubmitDoc = {
 // REQ-014 / SEC-006 audit context, threaded from route layer.
 export type AuditCtx = { ip?: string | null; user_agent?: string | null };
 
+/**
+ * REQ-013 — resolve a kyc_document the caller is allowed to stream.
+ * Authz rules:
+ *   - Provider (actor_role='provider'): must own the kyc_verification
+ *     row that the document belongs to.
+ *   - Admin (actor_role='admin'): may read any document; an audit row
+ *     (event_type='document_accessed') is appended in the same tx as
+ *     the read attempt, capturing ip/ua. AC-018.
+ *
+ * Returns { bucket, key, mime_type, document_id, kyc_id, provider_id }
+ * so the route layer can stream via s3.streamObject() without re-querying.
+ */
+export async function resolveStreamableDocument(args: {
+  document_id: string;
+  actor_id: string;
+  actor_role: "provider" | "admin";
+  audit?: AuditCtx;
+}): Promise<Result<{
+  bucket: "kyc-private";
+  key: string;
+  mime_type: string;
+  document_id: string;
+  kyc_id: string;
+  provider_id: string | null;
+}>> {
+  return await db.transaction(async (tx) => {
+    const rows = await tx.execute<{
+      doc_id: string;
+      kyc_id: string;
+      provider_id: string | null;
+      media_id: string | null;
+      storage_key: string | null;
+      bucket_alias: string | null;
+      mime_type: string | null;
+      media_status: string | null;
+    }>(
+      dsql`SELECT d.id AS doc_id, d.kyc_verification_id AS kyc_id, d.provider_id,
+                  d.media_id, m.storage_key, m.bucket_alias, m.mime_type, m.status AS media_status
+             FROM kyc_documents d
+             LEFT JOIN media_objects m ON m.id = d.media_id
+            WHERE d.id = ${args.document_id}
+            LIMIT 1`
+    );
+    if (rows.length === 0) return err("not_found", 404);
+    const row = rows[0]!;
+    if (args.actor_role === "provider" && row.provider_id !== args.actor_id) {
+      return err("forbidden", 403);
+    }
+    if (!row.media_id || !row.storage_key || !row.bucket_alias || !row.mime_type) {
+      return err("media_missing", 409);
+    }
+    if (row.media_status !== "ready") {
+      // Not yet scan-cleared. Block to avoid leaking quarantined bytes.
+      return err("media_not_ready", 409, { status: row.media_status });
+    }
+    if (row.bucket_alias !== "kyc-private") {
+      // Defense-in-depth: a kyc_documents row pointing at a non-KYC
+      // bucket would mean schema corruption. Refuse rather than stream
+      // from a public bucket.
+      return err("bucket_mismatch", 500);
+    }
+    if (args.actor_role === "admin") {
+      await logEvent(tx, {
+        kv_id: row.kyc_id,
+        provider_id: row.provider_id,
+        actor_id: args.actor_id,
+        actor_role: "admin",
+        event_type: "document_accessed",
+        metadata: { document_id: row.doc_id },
+        ip: args.audit?.ip ?? null,
+        user_agent: args.audit?.user_agent ?? null,
+      });
+    }
+    return {
+      ok: true as const,
+      value: {
+        bucket: "kyc-private" as const,
+        key: row.storage_key,
+        mime_type: row.mime_type,
+        document_id: row.doc_id,
+        kyc_id: row.kyc_id,
+        provider_id: row.provider_id,
+      },
+    };
+  });
+}
+
 export async function submitKyc(args: {
   provider_id: string;
   documents: SubmitDoc[];

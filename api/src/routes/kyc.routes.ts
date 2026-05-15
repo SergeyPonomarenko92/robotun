@@ -9,9 +9,11 @@
 import type { FastifyPluginAsync } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
+import { Readable } from "node:stream";
 import { db } from "../db/client.js";
 import { userRoles, users } from "../db/schema.js";
 import * as svc from "../services/kyc.service.js";
+import { streamObject } from "../services/s3.js";
 
 const docSchema = z.object({
   document_type: z.enum(["passport_ua", "passport_foreign", "id_card", "rnokpp", "fop_certificate", "selfie"]),
@@ -177,6 +179,82 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return r.value;
+    }
+  );
+
+  /* --------- REQ-013 streaming proxy — provider self + admin ---------- */
+  // Bytes flow Fastify → client; no signed URL ever reaches the wire.
+  // 60s idle timeout via socket.setTimeout. Back-pressure handled by
+  // Readable.from(asyncIterable, {objectMode:false}).pipe(reply.raw).
+  //
+  // Audit policy (critic RISK-d):
+  //   - Admin reads → row in kyc_review_events event_type='document_accessed'.
+  //   - Provider self-reads → intentionally UNAUDITED. Provider reading
+  //     their own KYC documents is not a privacy event; only third-party
+  //     (admin) access is subject to forensic reconstruction.
+  //   - Audit row commits BEFORE the S3 GetObject call. If S3 fails after
+  //     commit, the audit row exists for a read that produced 0 bytes —
+  //     accepted false-positive (admin-access intent was real).
+  async function streamHandler(
+    req: import("fastify").FastifyRequest,
+    reply: import("fastify").FastifyReply,
+    resolved: { bucket: "kyc-private"; key: string; mime_type: string; document_id: string }
+  ) {
+    const { body, contentLength } = await streamObject({
+      bucket: resolved.bucket,
+      key: resolved.key,
+    });
+    reply.header("content-type", resolved.mime_type);
+    // critic RISK-c: force-download. Prevents browser inline rendering of
+    // PII (passport scans / RNOKPP / selfies) and removes the "right-click
+    // → copy URL" vector. Filename obfuscated — actor sees the document_id.
+    reply.header("content-disposition", `attachment; filename="kyc-${resolved.document_id}"`);
+    reply.header("cache-control", "private, no-store");
+    reply.header("x-content-type-options", "nosniff");
+    if (contentLength != null) reply.header("content-length", String(contentLength));
+    // 60s socket timeout per spec §4.8 row "stream".
+    req.raw.setTimeout(60_000);
+    // critic RISK-b: objectMode:false so the Readable accounts highWaterMark
+    // in bytes (default 16KB) rather than objects (default 16). On a 10MB
+    // KYC scan this caps the in-flight buffer to a few chunks instead of
+    // ~160 — restores AC-017 "≤64KB buffer" intent.
+    return reply.send(
+      Readable.from(body as AsyncIterable<Uint8Array>, { objectMode: false })
+    );
+  }
+
+  server.get<{ Params: { id: string } }>(
+    "/kyc/me/documents/:id/stream",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const r = await svc.resolveStreamableDocument({
+        document_id: req.params.id,
+        actor_id: req.auth!.user_id,
+        actor_role: "provider",
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      return streamHandler(req, reply, r.value);
+    }
+  );
+
+  server.get<{ Params: { provider_id: string; id: string } }>(
+    "/admin/kyc/:provider_id/documents/:id/stream",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
+      const r = await svc.resolveStreamableDocument({
+        document_id: req.params.id,
+        actor_id: req.auth!.user_id,
+        actor_role: "admin",
+        audit: { ip: req.ip, user_agent: req.headers["user-agent"] ?? null },
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      // Spec §4.8 admin route is keyed by provider_id; cross-check the
+      // document actually belongs to this provider (URL param vs row).
+      if (r.value.provider_id !== req.params.provider_id) {
+        return reply.code(404).send({ error: "not_found" });
+      }
+      return streamHandler(req, reply, r.value);
     }
   );
 
