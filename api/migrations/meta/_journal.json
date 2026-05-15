@@ -141,6 +141,13 @@
       "when": 1779000400000,
       "tag": "0019_notifications_delivery_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1779000500000,
+      "tag": "0020_push_subscriptions",
+      "breakpoints": true
     }
   ]
 }

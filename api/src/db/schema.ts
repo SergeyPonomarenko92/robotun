@@ -721,6 +721,28 @@ export const notificationStatusEnum = pgEnum("notification_status", [
   "skipped",
 ]);
 
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    user_id: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    user_agent: text("user_agent"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    last_seen_at: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    last_failed_at: timestamp("last_failed_at", { withTimezone: true }),
+    failure_count: smallint("failure_count").notNull().default(0),
+  },
+  (t) => ({
+    endpointUniq: uniqueIndex("uq_push_subscriptions_endpoint").on(t.endpoint),
+    userIdx: index("idx_push_subscriptions_user").on(t.user_id),
+  })
+);
+
 export const notifications = pgTable(
   "notifications",
   {

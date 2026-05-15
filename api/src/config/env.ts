@@ -31,6 +31,11 @@ const schema = z.object({
         .map((s) => s.trim())
         .filter(Boolean)
     ),
+  // Web Push (Module 9 push channel). Empty values disable the push
+  // worker — log warning at startup, don't crash.
+  VAPID_PUBLIC_KEY: z.string().default(""),
+  VAPID_PRIVATE_KEY: z.string().default(""),
+  VAPID_SUBJECT: z.string().default("mailto:ops@robotun.dev"),
 });
 
 const parsed = schema.safeParse(process.env);
