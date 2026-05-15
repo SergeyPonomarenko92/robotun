@@ -12,6 +12,7 @@ import {
   notifications,
   notificationPreferences,
   outboxEvents,
+  pushSubscriptions,
   reviews,
   users,
 } from "../db/schema.js";
@@ -302,6 +303,19 @@ export async function consumeOutboxOnce(): Promise<number> {
       }
     }
 
+    // Which users have at least one active push_subscription? Without a
+    // subscription drainPushQueue would terminally skip the row — better
+    // to not create it in the first place (saves notifications table churn
+    // and keeps /admin/metrics push_pending honest).
+    const pushCapable = new Set<string>();
+    if (allUserIds.length > 0) {
+      const subRows = await tx
+        .selectDistinct({ user_id: pushSubscriptions.user_id })
+        .from(pushSubscriptions)
+        .where(inArray(pushSubscriptions.user_id, allUserIds));
+      for (const r of subRows) pushCapable.add(r.user_id);
+    }
+
     let processed = 0;
     for (const plan of plans) {
       const ctx: TemplateCtx = { payload: plan.row.payload };
@@ -338,13 +352,11 @@ export async function consumeOutboxOnce(): Promise<number> {
           );
         }
         // push: opt-IN (default false). Same MANDATORY policy as email.
-        // The push worker only attempts delivery if the user has registered
-        // a push_subscription — otherwise the notification row is created
-        // but stays unconsumed until subscription appears OR scan_attempts
-        // exhausts in drainPushQueue.
-        const pushEnabled = MANDATORY_CODES.has(plan.tpl.code)
+        // Gate on pushCapable — users without any push_subscription would
+        // see drainPushQueue terminally skip their row, so don't create it.
+        const pushEnabled = (MANDATORY_CODES.has(plan.tpl.code)
           ? true
-          : prefMap.get(`${uid}|${plan.tpl.code}|push`) ?? false;
+          : prefMap.get(`${uid}|${plan.tpl.code}|push`) ?? false) && pushCapable.has(uid);
         if (pushEnabled) {
           await tx.execute(
             dsql`INSERT INTO notifications
