@@ -383,12 +383,37 @@ export async function kycIdForProvider(providerId: string): Promise<string | nul
 
 export async function claim(args: { kyc_id: string; admin_id: string }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
+    // SEC-010: serialize concurrent claims by the same admin via xact-scoped
+    // advisory lock keyed on hashtext(admin_id). Held until COMMIT/ROLLBACK,
+    // so two simultaneous /claim by the same admin are linearized — the
+    // second one sees the first one's row in the count.
+    await tx.execute(dsql`SELECT pg_advisory_xact_lock(hashtext(${args.admin_id})::bigint)`);
+
     const r = await tx.execute<{ id: string; status: string; provider_id: string | null }>(
       dsql`SELECT id, status, provider_id FROM kyc_verifications WHERE id = ${args.kyc_id} FOR UPDATE`
     );
     if (r.length === 0) return err("not_found", 404);
     const row = r[0]!;
     if (row.status !== "submitted") return err("not_claimable", 409, { current_status: row.status });
+
+    // SEC-010: per-admin concurrent claim count ≤10; 11th → 429.
+    // KNOWN SOFT-ENFORCEMENT (critic RISK-3): the auto-claim path in
+    // /approve and /reject routes calls claim() then approve()/reject()
+    // as two separate transactions. The advisory lock is released between
+    // them, so a parallel direct /claim can interleave when the admin
+    // sits at 9 claims, briefly pushing them to 11. Bounded by the time
+    // between the two calls (single-digit ms); approve/reject immediately
+    // transition out of in_review, so the over-cap window self-heals.
+    // Tighten to single-tx only if a real bulk-tooling pressure point
+    // emerges.
+    const countR = await tx.execute<{ n: string }>(
+      dsql`SELECT count(*)::text AS n FROM kyc_verifications
+            WHERE reviewed_by = ${args.admin_id} AND status = 'in_review'`
+    );
+    const heldClaims = parseInt(countR[0]?.n ?? "0", 10);
+    if (heldClaims >= 10) {
+      return err("claim_limit_exceeded", 429, { held: heldClaims, cap: 10 });
+    }
 
     await tx
       .update(kycVerifications)
