@@ -394,7 +394,8 @@ export async function createListing(
       actor_role: "provider",
       event_type: "listing.created",
       from_status: null,
-      to_status: row.status,
+      // createListing inserts in 'active' state (auto-publish path).
+      to_status: "active",
     });
 
     return { ok: true as const, value: { id: row.id } };
