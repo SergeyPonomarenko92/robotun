@@ -18,6 +18,8 @@ const createSchema = z.object({
   description: z.string().min(1).max(5000),
   agreed_price: z.number().int().positive(),
   deadline_at: z.string().datetime().nullable().optional(),
+  // Module 5 REQ-011 — optimistic price check vs the listing.
+  expected_listing_price_kopecks: z.number().int().nonnegative().nullable().optional(),
 });
 
 const versionSchema = z.object({ version: z.number().int().positive() });

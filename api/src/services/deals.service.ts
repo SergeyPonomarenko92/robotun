@@ -85,6 +85,10 @@ export type CreateInput = {
   agreed_price: number;
   deadline_at?: string | null;
   idempotency_key: string;
+  // Module 5 REQ-011: if present and the listing's current
+  // price_amount differs at create-time, return 409 listing_price_changed.
+  // Skipped for pricing_type='discuss' listings (price_amount IS NULL).
+  expected_listing_price_kopecks?: number | null;
 };
 
 export async function createDeal(input: CreateInput): Promise<Result<{ id: string; status: string; version: number; replay: boolean }>> {
@@ -163,6 +167,8 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
           provider_id: listings.provider_id,
           status: listings.status,
           category_id: listings.category_id,
+          price_amount: listings.price_amount,
+          pricing_type: listings.pricing_type,
         })
         .from(listings)
         .where(eq(listings.id, input.listing_id))
@@ -176,6 +182,21 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
       if (lrows[0]!.category_id !== input.category_id) {
         return err("listing_category_mismatch", 422, {
           expected_category_id: lrows[0]!.category_id,
+        });
+      }
+      // Module 5 REQ-011: optimistic price check. Client sends the price
+      // they SAW on the listing; if the provider edited the listing between
+      // page-load and submit, fail-fast so the client doesn't transact at
+      // a stale price. Skipped for 'discuss' pricing (price_amount IS NULL).
+      if (
+        input.expected_listing_price_kopecks != null &&
+        lrows[0]!.pricing_type !== "discuss" &&
+        lrows[0]!.price_amount != null &&
+        Number(lrows[0]!.price_amount) !== input.expected_listing_price_kopecks
+      ) {
+        return err("listing_price_changed", 409, {
+          expected_listing_price_kopecks: input.expected_listing_price_kopecks,
+          current_listing_price_kopecks: Number(lrows[0]!.price_amount),
         });
       }
     }
