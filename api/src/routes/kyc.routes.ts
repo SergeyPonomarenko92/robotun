@@ -10,7 +10,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/client.js";
-import { userRoles } from "../db/schema.js";
+import { userRoles, users } from "../db/schema.js";
 import * as svc from "../services/kyc.service.js";
 
 const docSchema = z.object({
@@ -47,19 +47,39 @@ async function requireAdmin(userId: string): Promise<boolean> {
   return rows.some((r) => r.role === "admin" || r.role === "moderator");
 }
 
+// Spec §4.2 — KYC is provider-only. The mock route already enforces this;
+// real BE was creating orphan kyc_verifications rows for client logins via
+// ensureKycRow on GET /kyc/me.
+async function requireProvider(userId: string): Promise<boolean> {
+  const rows = await db
+    .select({ has_provider_role: users.has_provider_role })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return rows[0]?.has_provider_role === true;
+}
+
 export const kycRoutes: FastifyPluginAsync = async (server) => {
   /* ----------------------------- provider -------------------------------- */
 
   server.get(
     "/kyc/me",
     { preHandler: server.authenticate },
-    async (req) => svc.getMine(req.auth!.user_id)
+    async (req, reply) => {
+      if (!(await requireProvider(req.auth!.user_id))) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
+      return svc.getMine(req.auth!.user_id);
+    }
   );
 
   server.post(
     "/kyc/me/submissions",
     { preHandler: server.authenticate },
     async (req, reply) => {
+      if (!(await requireProvider(req.auth!.user_id))) {
+        return reply.code(403).send({ error: "forbidden" });
+      }
       const parsed = submitSchema.safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send({
