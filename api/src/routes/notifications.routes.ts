@@ -18,8 +18,14 @@ const listQuery = z.object({
 
 const prefSchema = z.object({
   notification_code: z.string().min(1).max(80),
-  channel: z.enum(["in_app", "email"]).default("in_app"),
+  channel: z.enum(["in_app", "email", "push"]).default("in_app"),
   enabled: z.boolean(),
+});
+
+const bulkPrefSchema = z.object({
+  channels: z.array(z.enum(["in_app", "email", "push"])).min(1).max(3),
+  enabled: z.boolean(),
+  codes: z.array(z.string().min(1).max(80)).max(50).optional(),
 });
 
 export const notificationsRoutes: FastifyPluginAsync = async (server) => {
@@ -62,6 +68,29 @@ export const notificationsRoutes: FastifyPluginAsync = async (server) => {
       const r = await svc.setPreference(req.auth!.user_id, parsed.data.notification_code, parsed.data.channel, parsed.data.enabled);
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
       return r.value;
+    }
+  );
+
+  // Bulk setter — flip many (code, channel) pairs in one call. Useful for
+  // FE settings UI "Enable all email notifications" / one-tap toggles.
+  // Not atomic across pairs — mandatory codes that can't be opted out
+  // surface in `rejected[]` so the FE can highlight them.
+  server.patch(
+    "/notifications/preferences/bulk",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = bulkPrefSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply
+          .code(400)
+          .send({ error: "validation_failed", fields: parsed.error.flatten().fieldErrors });
+      }
+      return svc.setPreferencesBulk({
+        user_id: req.auth!.user_id,
+        channels: parsed.data.channels,
+        enabled: parsed.data.enabled,
+        codes: parsed.data.codes,
+      });
     }
   );
 

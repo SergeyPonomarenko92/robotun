@@ -611,3 +611,35 @@ export async function setPreference(userId: string, code: string, channel: strin
   }
   return { ok: true, value: { ok: true } };
 }
+
+/**
+ * Bulk preference setter. Avoids the N round-trip cost of single-toggle
+ * setPreference when the user wants to opt all codes in/out at once via
+ * the FE settings UI. NOT atomic across codes — partial application is
+ * reported in `applied`/`rejected` arrays so the FE can show inline
+ * errors per mandatory code.
+ */
+export async function setPreferencesBulk(args: {
+  user_id: string;
+  channels: string[]; // ['email', 'push']
+  enabled: boolean;
+  codes?: string[]; // omitted → all codes in template registry
+}): Promise<{ applied: { code: string; channel: string }[]; rejected: { code: string; channel: string; error: string }[] }> {
+  // TEMPLATES is keyed by outbox event_type; the notification_code lives
+  // on .code. Pull the codes (unique-by-set since multiple events may map
+  // to the same code, e.g. deal.disputed / deal.dispute_resolved).
+  const allCodes =
+    args.codes && args.codes.length > 0
+      ? args.codes
+      : Array.from(new Set(Object.values(TEMPLATES).map((t) => t.code)));
+  const applied: { code: string; channel: string }[] = [];
+  const rejected: { code: string; channel: string; error: string }[] = [];
+  for (const code of allCodes) {
+    for (const channel of args.channels) {
+      const r = await setPreference(args.user_id, code, channel, args.enabled);
+      if (r.ok) applied.push({ code, channel });
+      else rejected.push({ code, channel, error: r.error.code });
+    }
+  }
+  return { applied, rejected };
+}
