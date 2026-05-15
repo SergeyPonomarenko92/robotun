@@ -452,6 +452,75 @@ export async function listingDraftAutoArchive(): Promise<number> {
   );
 }
 
+/**
+ * Module 5 REQ-016 / AC-007 — react to provider KYC revocation by pausing
+ * active listings. The Listings spec calls the trigger "provider.kyc_revoked";
+ * our outbox emits kyc.expired / kyc.rejected / kyc.suspended for the
+ * underlying state changes (KYC §4.5). Any of the three indicates the
+ * provider no longer has approved KYC → pause active listings + append
+ * 'provider_kyc_revoked' to auto_paused_reasons.
+ *
+ * Cursor: 'listings:kyc_revoked'. Idempotent: re-running on the same event
+ * finds no rows in 'active' status.
+ */
+export async function listingsKycRevokedConsumer(): Promise<number> {
+  await sql.unsafe(`
+    INSERT INTO notification_consumer_cursors (consumer_name, last_seen_id)
+    VALUES ('listings:kyc_revoked', 0)
+    ON CONFLICT (consumer_name) DO NOTHING
+  `);
+  const { processed } = await db.transaction(async (tx) => {
+    const lockRows = (await tx.execute(
+      dsqlImport`SELECT last_seen_id FROM notification_consumer_cursors
+                  WHERE consumer_name = 'listings:kyc_revoked' FOR UPDATE`
+    )) as unknown as Array<{ last_seen_id: string }>;
+    const lastSeen = lockRows[0]?.last_seen_id ?? "0";
+    const result = (await tx.execute(
+      dsqlImport`WITH events AS (
+        SELECT id, (payload->>'provider_id')::uuid AS provider_id
+          FROM outbox_events
+         WHERE aggregate_type = 'kyc'
+           AND event_type IN ('kyc.expired','kyc.rejected','kyc.suspended')
+           AND id > ${lastSeen}::bigint
+         ORDER BY id ASC LIMIT 100
+      ),
+      updated AS (
+        UPDATE listings l
+           SET status = 'paused',
+               auto_paused_reasons = CASE
+                 WHEN 'provider_kyc_revoked' = ANY(l.auto_paused_reasons)
+                   THEN l.auto_paused_reasons
+                 ELSE array_append(l.auto_paused_reasons, 'provider_kyc_revoked')
+               END,
+               version = l.version + 1,
+               updated_at = now()
+         WHERE l.status = 'active'
+           AND l.provider_id IN (SELECT provider_id FROM events WHERE provider_id IS NOT NULL)
+         RETURNING l.id
+      ),
+      ev AS (
+        INSERT INTO listing_audit_events (listing_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
+        SELECT id, NULL, 'system', 'listing.auto_paused', 'active', 'paused',
+               jsonb_build_object('reason', 'provider_kyc_revoked') FROM updated
+      ),
+      outbox AS (
+        INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+        SELECT 'listing', id, 'listing.auto_paused',
+               jsonb_build_object('listing_id', id, 'reason', 'provider_kyc_revoked') FROM updated
+      ),
+      cursor_update AS (
+        UPDATE notification_consumer_cursors
+           SET last_seen_id = COALESCE((SELECT MAX(id) FROM events), last_seen_id),
+               updated_at = now()
+         WHERE consumer_name = 'listings:kyc_revoked'
+      )
+      SELECT COUNT(*)::int AS n FROM updated`
+    )) as unknown as Array<{ n: number }>;
+    return { processed: result[0]?.n ?? 0 };
+  });
+  return processed;
+}
+
 /* ----------------------------- retention -------------------------------- */
 
 export async function outboxRetention(): Promise<number> {
@@ -486,6 +555,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.kyc_user_soft_delete_consumer = await kycUserSoftDeleteConsumer();
   results.kyc_annual_rekyc = await kycAnnualRekyc();
   results.listing_draft_auto_archive = await listingDraftAutoArchive();
+  results.listings_kyc_revoked_consumer = await listingsKycRevokedConsumer();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);
