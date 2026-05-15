@@ -305,6 +305,7 @@ export async function confirmUpload(args: {
 /* ----------------------------- SCAN WORKER ------------------------------ */
 
 const SCAN_STALE_THRESHOLD_MS = 120_000;
+const SCAN_MAX_ATTEMPTS = 5;
 
 /**
  * Run ClamAV against one media object. Idempotent — caller can re-invoke
@@ -423,13 +424,31 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
     return "infected";
   }
 
-  // error — leave row in awaiting_scan, mark last_scan_error for visibility.
-  await db
+  // error — increment counter. Flip to scan_error_permanent after
+  // SCAN_MAX_ATTEMPTS so the retry sweep stops chasing zombies (deleted
+  // MinIO object, corrupted upload, scanner-side rejection of the type).
+  // Use a single UPDATE+RETURNING to read the new counter back atomically.
+  const updated = await db
     .update(mediaObjects)
-    .set({ last_scan_error: scan.message, scan_attempts: dsql`scan_attempts + 1` })
-    .where(eq(mediaObjects.id, mediaId));
-  // eslint-disable-next-line no-console
-  console.warn(`[scan] media=${mediaId} clamav error: ${scan.message}`);
+    .set({
+      last_scan_error: scan.message,
+      scan_attempts: dsql`scan_attempts + 1`,
+      scan_error_at: now,
+    })
+    .where(eq(mediaObjects.id, mediaId))
+    .returning({ scan_attempts: mediaObjects.scan_attempts });
+  const attempts = updated[0]?.scan_attempts ?? 0;
+  if (attempts >= SCAN_MAX_ATTEMPTS) {
+    await db
+      .update(mediaObjects)
+      .set({ status: "scan_error_permanent" })
+      .where(and(eq(mediaObjects.id, mediaId), eq(mediaObjects.status, "awaiting_scan")));
+    // eslint-disable-next-line no-console
+    console.warn(`[scan] media=${mediaId} EXHAUSTED after ${attempts} attempts: ${scan.message}`);
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn(`[scan] media=${mediaId} clamav error (attempt ${attempts}): ${scan.message}`);
+  }
   return "error";
 }
 
