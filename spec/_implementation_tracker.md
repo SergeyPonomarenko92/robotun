@@ -149,7 +149,10 @@ After each closed item: commit hash in trailing `→ <hash>`.
   - **REQ-014 ip+ua audit** ✅ ab02b19 — migration 0032 adds kyc_review_events.ip + user_agent. logEvent + service fns + routes all thread req.ip/headers["user-agent"] into AuditCtx. SEC-006: never returned to provider endpoints.
   - **REQ-015 soft-delete cancel** ✅ d0560aa — kycUserSoftDeleteConsumer cron consumes user.soft_deleted, flips kyc → cancelled w/ reason='account_deleted', emits outbox kyc.cancelled. restoreAccount uncancels back to not_submitted within the 90d window.
   - **SEC-010 claim cap** ✅ f122388 — per-admin in_review ≤10; advisory lock pg_advisory_xact_lock(hashtext(admin_id)::bigint) inside claim() tx + count(*) check, 11th → 429 claim_limit_exceeded.
-  - **Remaining Module 4 work**: REQ-013 streaming proxy verification, REQ-009 annual re-KYC sweep (critic RISK-3 follow-up), CON-004 sanctions screening (DESCOPED MVP), SEC-002/003 PII encryption (likely done in fbd3be2 — needs verify), CON-009 file size/MIME enforcement (probably enforced in Media pipeline — needs verify).
+  - **REQ-013 streaming proxy** ✅ bd970db — GET /kyc/me/documents/:id/stream + GET /admin/kyc/:provider_id/documents/:id/stream. s3.streamObject + resolveStreamableDocument (single-tx authz + admin-only audit). No signed URLs to clients. Routes set Content-Disposition: attachment, X-Content-Type-Options: nosniff, Cache-Control: private no-store, 60s socket timeout, Readable.from(body, {objectMode:false}) for byte-level back-pressure. Critic RISK-b/c applied, RISK-d (provider unaudited + commit-before-stream false-positive) documented inline.
+  - **REQ-009 annual re-KYC sweep** ✅ d835249 — kycAnnualRekyc cron defense-in-depth for non-expiring doc types (decided_at ≥365d old + rekyc_required_reason IS NULL). Idempotent on rekyc_required_reason. Closes SEC-010 critic RISK-3 follow-up.
+  - **AC-017 / AC-018 ✅** — chunked stream + admin document_accessed audit row with ip/ua (REQ-013 commit).
+  - **Remaining Module 4 work**: SEC-002/003 PII encryption (AWS KMS dependency — out of MVP), CON-003/004 sanctions screening (DESCOPED MVP), CON-009 file size/MIME ✅ verified (media.service.ts:94 enforces kyc_document MIME set, clamav.ts notes 20MB cap).
 - Module 5 Listings: MVP DONE + KYC gate (1d93fbb + 63f493f).
 - Module 6 Media: MVP DONE + ClamAV + variants (fbd3be2 + 37e649e + 7ee3a1a + 376927e + 9ab35cf).
 - Module 7 Reviews: MVP DONE + deep-review (4884c3d + cc81f69 + cffd1dd).
@@ -170,4 +173,4 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 **Phase next**: pivoting to Module 2 (Category Tree) or Module 3 (Deal Workflow) REQ sweep. Both modules already have MVP code shipped — sweep checks each REQ vs implementation.
 
-**Module 4 in flight**: Closed REQ-006/009/011/012/014/015 + SEC-010 (7 items, 7 commits this turn). Remaining: REQ-013 streaming proxy verify, REQ-009 annual re-KYC sweep, SEC-002/003 PII encryption verify, CON-009 file size/MIME verify.
+**Module 4 spec sweep COMPLETE for MVP** (HEAD d835249): REQ-006/009/009-annual/011/012/013/014/015 + SEC-010 + CON-009 verified. Open out-of-MVP: SEC-002/003 PII encryption (AWS KMS), CON-003/004 sanctions (legal/AML — descoped).
