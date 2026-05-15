@@ -11,7 +11,8 @@ import * as auth from "../services/auth.service.js";
 const credentialsSchema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(1).max(256),
-  totp_code: z.string().regex(/^\d{6}$/).optional(),
+  // 6-digit TOTP OR 10-char A-Z0-9 backup code; service branches on shape.
+  totp_code: z.string().regex(/^(\d{6}|[A-Z0-9]{10})$/).optional(),
 });
 
 const registerSchema = credentialsSchema.extend({
@@ -332,6 +333,19 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     password: z.string().min(1).max(256),
     code: z.string().regex(/^\d{6}$/),
   });
+  // Generate/regenerate 10 single-use recovery codes. Plaintexts shown
+  // ONCE in the response — FE must persuade the user to save them.
+  // Calling again invalidates all prior codes.
+  server.post(
+    "/me/mfa/totp/recovery-codes",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const r = await auth.generateRecoveryCodes({ user_id: req.auth!.user_id });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      return r.value;
+    }
+  );
+
   server.post(
     "/me/mfa/totp/disable",
     { preHandler: server.authenticate },

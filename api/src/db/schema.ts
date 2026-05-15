@@ -98,6 +98,23 @@ export const userRoles = pgTable(
  * an opaque random string; we store only its SHA-256 hash. Each session
  * tracks `revoked` for rotation/replay-prevention.
  */
+export const totpRecoveryCodes = pgTable(
+  "totp_recovery_codes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    user_id: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    code_hash: text("code_hash").notNull(),
+    used_at: timestamp("used_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    hashUniq: uniqueIndex("uq_totp_recovery_codes_hash").on(t.code_hash),
+    userIdx: index("idx_totp_recovery_codes_user").on(t.user_id),
+  })
+);
+
 export const authAuditEvents = pgTable(
   "auth_audit_events",
   {

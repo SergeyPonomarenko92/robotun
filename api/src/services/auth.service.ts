@@ -4,7 +4,7 @@
  */
 import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { authAuditEvents, emailVerificationTokens, mediaObjects, passwordResetTokens, sessions, userRoles, users } from "../db/schema.js";
+import { authAuditEvents, emailVerificationTokens, mediaObjects, passwordResetTokens, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
 import { randomBytes } from "node:crypto";
 import { env } from "../config/env.js";
@@ -160,10 +160,17 @@ export async function login(
       if (!input.totp_code) {
         return { ok: false, error: { code: "mfa_required" } };
       }
-      if (!/^\d{6}$/.test(input.totp_code)) {
-        return { ok: false, error: { code: "invalid_mfa_code" } };
-      }
-      if (!user.totp_secret || !authenticator.check(input.totp_code, user.totp_secret)) {
+      // Branch on shape: 6 digits → TOTP; 10 alpha-num → recovery code.
+      // Anything else is malformed → invalid_mfa_code (no leak of which
+      // shape was expected).
+      if (/^\d{6}$/.test(input.totp_code)) {
+        if (!user.totp_secret || !authenticator.check(input.totp_code, user.totp_secret)) {
+          return { ok: false, error: { code: "invalid_mfa_code" } };
+        }
+      } else if (/^[A-Z0-9]{10}$/.test(input.totp_code)) {
+        const ok = await consumeRecoveryCode(user.id, input.totp_code);
+        if (!ok) return { ok: false, error: { code: "invalid_mfa_code" } };
+      } else {
         return { ok: false, error: { code: "invalid_mfa_code" } };
       }
     }
@@ -523,6 +530,62 @@ export async function verifyTotp(args: {
     .set({ mfa_enrolled: true })
     .where(eq(users.id, args.user_id));
   return { ok: true, value: { mfa_enrolled: true } };
+}
+
+/** Generate 10 single-use recovery codes for the current TOTP enrollment.
+ *  Plaintexts returned ONCE — server stores only sha256 hashes. Calling
+ *  again replaces ALL existing codes (regenerate-on-demand flow). */
+export async function generateRecoveryCodes(args: {
+  user_id: string;
+}): Promise<{ ok: true; value: { codes: string[] } } | { ok: false; error: { code: "not_enrolled"; status: number } }> {
+  const u = await db
+    .select({ mfa_enrolled: users.mfa_enrolled })
+    .from(users)
+    .where(eq(users.id, args.user_id))
+    .limit(1);
+  if (u.length === 0 || !u[0]!.mfa_enrolled) {
+    return { ok: false, error: { code: "not_enrolled", status: 409 } };
+  }
+  // A-Z0-9 except 0/O/1/I to avoid transcription errors. 10 chars × 10
+  // codes = enough entropy that brute force via /auth/login is bounded
+  // by rate-limit floor (240/min/IP) for >> 10^15 years.
+  const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const plain: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const buf = randomBytes(10);
+    let s = "";
+    for (let j = 0; j < 10; j++) s += ALPHABET[buf[j]! % ALPHABET.length];
+    plain.push(s);
+  }
+  await db.transaction(async (tx) => {
+    // Wipe prior codes — regenerate replaces.
+    await tx.delete(totpRecoveryCodes).where(eq(totpRecoveryCodes.user_id, args.user_id));
+    for (const code of plain) {
+      await tx.insert(totpRecoveryCodes).values({
+        user_id: args.user_id,
+        code_hash: sha256Hex(code),
+      });
+    }
+  });
+  return { ok: true, value: { codes: plain } };
+}
+
+/** Check + consume a recovery code at login time. Returns whether the
+ *  code matched (and atomically marks it used). */
+async function consumeRecoveryCode(userId: string, code: string): Promise<boolean> {
+  const hash = sha256Hex(code);
+  const r = await db
+    .update(totpRecoveryCodes)
+    .set({ used_at: new Date() })
+    .where(
+      and(
+        eq(totpRecoveryCodes.user_id, userId),
+        eq(totpRecoveryCodes.code_hash, hash),
+        isNull(totpRecoveryCodes.used_at)
+      )
+    )
+    .returning({ id: totpRecoveryCodes.id });
+  return r.length > 0;
 }
 
 /** Disable: requires password re-auth AND a current TOTP code to defend
