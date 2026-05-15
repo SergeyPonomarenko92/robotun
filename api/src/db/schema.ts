@@ -667,6 +667,26 @@ export const listingAuditEvents = pgTable(
   })
 );
 
+export const listingReports = pgTable(
+  "listing_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listing_id: uuid("listing_id").notNull(),
+    reporter_id: uuid("reporter_id").notNull(),
+    reason: text("reason").notNull(),
+    description: text("description"),
+    status: text("status").notNull().default("pending"),
+    reviewed_by: uuid("reviewed_by"),
+    reviewed_at: timestamp("reviewed_at", { withTimezone: true }),
+    reporter_kyc_approved_at_report_time: boolean("reporter_kyc_approved_at_report_time").notNull().default(false),
+    reporter_completed_deals_at_report_time: integer("reporter_completed_deals_at_report_time").notNull().default(0),
+    reporter_account_age_days_at_report_time: integer("reporter_account_age_days_at_report_time").notNull().default(0),
+    /** GENERATED in DB; read-only on the Drizzle side. */
+    qualifying: boolean("qualifying"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
 export const kycReviewEvents = pgTable(
   "kyc_review_events",
   {
