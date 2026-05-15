@@ -15,6 +15,7 @@ import {
   reviews,
   users,
 } from "../db/schema.js";
+import { sendEmail } from "./email.js";
 
 type ServiceError = { code: string; status: number };
 type Result<T> = { ok: true; value: T } | { ok: false; error: ServiceError };
@@ -277,14 +278,15 @@ export async function consumeOutboxOnce(): Promise<number> {
     // Batched preferences fetch.
     const allUserIds = Array.from(new Set(plans.flatMap((p) => p.recipients)));
     const allCodes = Array.from(new Set(plans.map((p) => p.tpl.code)));
-    let prefMap = new Map<string, boolean>();
+    // Pull preferences for BOTH channels. in_app defaults to enabled (true)
+    // when no row exists; email defaults to disabled (false) — opt-in only.
+    const prefMap = new Map<string, boolean>(); // key = `${user_id}|${code}|${channel}`
     if (allUserIds.length > 0 && allCodes.length > 0) {
-      // drizzle inArray binds each value as a separate $N param — works
-      // around the "record vs array" cast issue without manual building.
       const prefRows = await tx
         .select({
           user_id: notificationPreferences.user_id,
           notification_code: notificationPreferences.notification_code,
+          channel: notificationPreferences.channel,
           enabled: notificationPreferences.enabled,
         })
         .from(notificationPreferences)
@@ -292,30 +294,49 @@ export async function consumeOutboxOnce(): Promise<number> {
           and(
             inArray(notificationPreferences.user_id, allUserIds),
             inArray(notificationPreferences.notification_code, allCodes),
-            eq(notificationPreferences.channel, "in_app")
+            inArray(notificationPreferences.channel, ["in_app", "email"])
           )
         );
-      prefMap = new Map(prefRows.map((r) => [`${r.user_id}|${r.notification_code}`, r.enabled]));
+      for (const r of prefRows) {
+        prefMap.set(`${r.user_id}|${r.notification_code}|${r.channel}`, r.enabled);
+      }
     }
 
     let processed = 0;
     for (const plan of plans) {
       const ctx: TemplateCtx = { payload: plan.row.payload };
       for (const uid of plan.recipients) {
-        // Mandatory codes bypass preferences (legal / security).
-        const enabled = MANDATORY_CODES.has(plan.tpl.code)
+        // in_app: mandatory bypass preferences; otherwise default true.
+        const inAppEnabled = MANDATORY_CODES.has(plan.tpl.code)
           ? true
-          : prefMap.get(`${uid}|${plan.tpl.code}`) ?? true;
-        if (!enabled) continue;
-        await tx.execute(
-          dsql`INSERT INTO notifications
-                  (recipient_user_id, source_event_id, aggregate_type, aggregate_id,
-                   notification_code, channel, title, body, payload, status)
-                VALUES (${uid}, ${plan.row.id}, ${plan.row.aggregate_type}, ${plan.row.aggregate_id},
-                        ${plan.tpl.code}, 'in_app', ${plan.tpl.title(ctx)}, ${plan.tpl.body(ctx)},
-                        ${JSON.stringify(plan.row.payload)}::jsonb, 'sent')
-                ON CONFLICT DO NOTHING`
-        );
+          : prefMap.get(`${uid}|${plan.tpl.code}|in_app`) ?? true;
+        if (inAppEnabled) {
+          await tx.execute(
+            dsql`INSERT INTO notifications
+                    (recipient_user_id, source_event_id, aggregate_type, aggregate_id,
+                     notification_code, channel, title, body, payload, status)
+                  VALUES (${uid}, ${plan.row.id}, ${plan.row.aggregate_type}, ${plan.row.aggregate_id},
+                          ${plan.tpl.code}, 'in_app', ${plan.tpl.title(ctx)}, ${plan.tpl.body(ctx)},
+                          ${JSON.stringify(plan.row.payload)}::jsonb, 'sent')
+                  ON CONFLICT DO NOTHING`
+          );
+        }
+        // email: opt-IN (default false). Mandatory codes also forced through
+        // email (legal-bearing — payout completion / dispute resolution).
+        const emailEnabled = MANDATORY_CODES.has(plan.tpl.code)
+          ? true
+          : prefMap.get(`${uid}|${plan.tpl.code}|email`) ?? false;
+        if (emailEnabled) {
+          await tx.execute(
+            dsql`INSERT INTO notifications
+                    (recipient_user_id, source_event_id, aggregate_type, aggregate_id,
+                     notification_code, channel, title, body, payload, status)
+                  VALUES (${uid}, ${plan.row.id}, ${plan.row.aggregate_type}, ${plan.row.aggregate_id},
+                          ${plan.tpl.code}, 'email', ${plan.tpl.title(ctx)}, ${plan.tpl.body(ctx)},
+                          ${JSON.stringify(plan.row.payload)}::jsonb, 'pending')
+                  ON CONFLICT DO NOTHING`
+          );
+        }
       }
       processed++;
     }
@@ -426,6 +447,62 @@ export async function unreadCount(userId: string): Promise<number> {
           WHERE recipient_user_id = ${userId} AND read_at IS NULL`
   );
   return r[0]?.n ?? 0;
+}
+
+/* ----------------------------- email drain ------------------------------ */
+
+/**
+ * Drains notifications WHERE channel='email' AND status='pending'.
+ * Looks up recipient email, calls SMTP, flips to 'sent' or 'failed'.
+ *
+ * Bounded at 50 rows per tick to avoid hogging the cron tick. Failed rows
+ * stay at status='failed' — no automatic retry in v1 (retry counter +
+ * backoff is v2). Operator can SQL-flip status back to 'pending' to
+ * re-queue.
+ */
+export async function drainEmailQueue(): Promise<number> {
+  const rows = await db.execute<{
+    id: string;
+    recipient_user_id: string;
+    title: string;
+    body: string;
+    email: string | null;
+  }>(
+    dsql`SELECT n.id, n.recipient_user_id, n.title, n.body, u.email
+           FROM notifications n
+           JOIN users u ON u.id = n.recipient_user_id
+          WHERE n.channel = 'email' AND n.status = 'pending'
+            AND u.status = 'active'
+          ORDER BY n.created_at
+          LIMIT 50
+          FOR UPDATE OF n SKIP LOCKED`
+  );
+  let sent = 0;
+  for (const r of rows) {
+    if (!r.email) {
+      await db
+        .update(notifications)
+        .set({ status: "skipped" })
+        .where(eq(notifications.id, r.id));
+      continue;
+    }
+    const res = await sendEmail({ to: r.email, subject: r.title, text: r.body });
+    if (res.ok) {
+      await db
+        .update(notifications)
+        .set({ status: "sent" })
+        .where(eq(notifications.id, r.id));
+      sent += 1;
+    } else {
+      await db
+        .update(notifications)
+        .set({ status: "failed" })
+        .where(eq(notifications.id, r.id));
+      // eslint-disable-next-line no-console
+      console.warn(`[email] send failed for notif=${r.id}: ${res.error}`);
+    }
+  }
+  return sent;
 }
 
 export async function markRead(userId: string, notifId: string): Promise<Result<{ id: string }>> {

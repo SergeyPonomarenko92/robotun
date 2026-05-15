@@ -60,6 +60,25 @@ services:
       retries: 30
       start_period: 180s
 
+  mailpit:
+    # Module 9 — local SMTP catcher for dev email channel. SMTP on 1025,
+    # web UI on 8025 (http://localhost:8025 to view sent messages).
+    # Drop-in replacement for Mailtrap in dev; prod swaps to real SES/SMTP
+    # via SMTP_HOST/SMTP_PORT env.
+    image: axllent/mailpit:latest
+    ports:
+      - "11025:1025"  # SMTP (avoid common :1025 conflict)
+      - "18025:8025"  # Web UI (avoid :8025 already-allocated on host)
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8025/api/v1/info"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   pgdata:
   redisdata:
