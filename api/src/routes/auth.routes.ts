@@ -152,6 +152,27 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     return r.value;
   });
 
+  // Profile update — partial. Either or both fields optional; empty
+  // body is a read-back (no-op + returns current state).
+  const profileSchema = z.object({
+    display_name: z.string().min(2).max(80).optional(),
+    avatar_media_id: z.string().uuid().optional(),
+  });
+  server.patch(
+    "/me/profile",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = profileSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await auth.updateProfile({
+        user_id: req.auth!.user_id,
+        ...parsed.data,
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      return r.value;
+    }
+  );
+
   // Password change — authenticated. Old password required for re-auth;
   // new password obeys the same 12-char floor as register. All sessions
   // revoked + ver bumped on success (FE must refresh).

@@ -4,7 +4,7 @@
  */
 import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { emailVerificationTokens, passwordResetTokens, sessions, userRoles, users } from "../db/schema.js";
+import { emailVerificationTokens, mediaObjects, passwordResetTokens, sessions, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
 import { randomBytes } from "node:crypto";
 import { env } from "../config/env.js";
@@ -267,6 +267,81 @@ export async function listActiveSessions(userId: string) {
       created_at: r.created_at.toISOString(),
       expires_at: r.expires_at.toISOString(),
     })),
+  };
+}
+
+/* ----------------------------- PROFILE UPDATE ------------------------ */
+
+type UpdateProfileError = {
+  code: "display_name_invalid" | "avatar_not_found" | "avatar_not_owned" | "avatar_wrong_purpose" | "avatar_not_ready";
+  status: number;
+};
+
+/** Partial profile update — only display_name and avatar_media_id today.
+ *  Avatar resolution: media_id must be owned by caller, purpose='avatar',
+ *  status='ready'. The presigned stream URL goes into users.avatar_url
+ *  (canonical: /api/v1/media/<id>/stream — FE-stable across S3 churn). */
+export async function updateProfile(args: {
+  user_id: string;
+  display_name?: string;
+  avatar_media_id?: string;
+}): Promise<{ ok: true; value: { display_name: string; avatar_url: string | null } } | { ok: false; error: UpdateProfileError }> {
+  const updates: { display_name?: string; avatar_url?: string } = {};
+  if (args.display_name !== undefined) {
+    const trimmed = args.display_name.trim();
+    if (trimmed.length < 2 || trimmed.length > 80) {
+      return { ok: false, error: { code: "display_name_invalid", status: 400 } };
+    }
+    updates.display_name = trimmed;
+  }
+  if (args.avatar_media_id !== undefined) {
+    const r = await db
+      .select({
+        owner_user_id: mediaObjects.owner_user_id,
+        purpose: mediaObjects.purpose,
+        status: mediaObjects.status,
+      })
+      .from(mediaObjects)
+      .where(eq(mediaObjects.id, args.avatar_media_id))
+      .limit(1);
+    if (r.length === 0) return { ok: false, error: { code: "avatar_not_found", status: 404 } };
+    if (r[0]!.owner_user_id !== args.user_id) {
+      return { ok: false, error: { code: "avatar_not_owned", status: 403 } };
+    }
+    if (r[0]!.purpose !== "avatar") {
+      return { ok: false, error: { code: "avatar_wrong_purpose", status: 422 } };
+    }
+    if (r[0]!.status !== "ready") {
+      return { ok: false, error: { code: "avatar_not_ready", status: 409 } };
+    }
+    updates.avatar_url = `/api/v1/media/${args.avatar_media_id}/stream`;
+  }
+  if (Object.keys(updates).length === 0) {
+    // Nothing to update — read back current state.
+    const cur = await db
+      .select({ display_name: users.display_name, avatar_url: users.avatar_url })
+      .from(users)
+      .where(eq(users.id, args.user_id))
+      .limit(1);
+    return {
+      ok: true,
+      value: {
+        display_name: cur[0]?.display_name ?? "",
+        avatar_url: cur[0]?.avatar_url ?? null,
+      },
+    };
+  }
+  const r = await db
+    .update(users)
+    .set(updates)
+    .where(eq(users.id, args.user_id))
+    .returning({ display_name: users.display_name, avatar_url: users.avatar_url });
+  return {
+    ok: true,
+    value: {
+      display_name: r[0]?.display_name ?? "",
+      avatar_url: r[0]?.avatar_url ?? null,
+    },
   };
 }
 
