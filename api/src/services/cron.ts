@@ -589,6 +589,115 @@ export async function listingsCategoryArchivedConsumer(): Promise<number> {
   return processed;
 }
 
+/**
+ * Module 5 REQ-016 — listings consumer for user.suspended / user.activated
+ * (the spec names these provider.suspended / provider.unsuspended; same
+ * semantics — admin admin action toggling users.status).
+ *
+ * suspended  → active listings pause + auto_paused_reasons += 'provider_suspended'.
+ * activated  → if listings paused only by 'provider_suspended', clear that
+ *              reason. They re-publish via the normal publish flow once the
+ *              array is empty (per spec §4.3 transition row "paused→active").
+ *
+ * Cursor: 'listings:provider_status'.
+ */
+export async function listingsProviderStatusConsumer(): Promise<number> {
+  await sql.unsafe(`
+    INSERT INTO notification_consumer_cursors (consumer_name, last_seen_id)
+    VALUES ('listings:provider_status', 0)
+    ON CONFLICT (consumer_name) DO NOTHING
+  `);
+  const { processed } = await db.transaction(async (tx) => {
+    const lockRows = (await tx.execute(
+      dsqlImport`SELECT last_seen_id FROM notification_consumer_cursors
+                  WHERE consumer_name = 'listings:provider_status' FOR UPDATE`
+    )) as unknown as Array<{ last_seen_id: string }>;
+    const lastSeen = lockRows[0]?.last_seen_id ?? "0";
+
+    // SUSPEND branch — pause + add reason.
+    const suspendResult = (await tx.execute(
+      dsqlImport`WITH events AS (
+        SELECT id, (payload->>'user_id')::uuid AS provider_id
+          FROM outbox_events
+         WHERE aggregate_type = 'user'
+           AND event_type = 'user.suspended'
+           AND id > ${lastSeen}::bigint
+         ORDER BY id ASC LIMIT 100
+      ),
+      updated AS (
+        UPDATE listings l
+           SET status = 'paused',
+               auto_paused_reasons = CASE
+                 WHEN 'provider_suspended' = ANY(l.auto_paused_reasons)
+                   THEN l.auto_paused_reasons
+                 ELSE array_append(l.auto_paused_reasons, 'provider_suspended')
+               END,
+               version = l.version + 1, updated_at = now()
+         WHERE l.status = 'active'
+           AND l.provider_id IN (SELECT provider_id FROM events WHERE provider_id IS NOT NULL)
+         RETURNING l.id
+      ),
+      ev AS (
+        INSERT INTO listing_audit_events (listing_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
+        SELECT id, NULL, 'system', 'listing.auto_paused', 'active', 'paused',
+               jsonb_build_object('reason', 'provider_suspended') FROM updated
+      ),
+      outbox AS (
+        INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+        SELECT 'listing', id, 'listing.auto_paused',
+               jsonb_build_object('listing_id', id, 'reason', 'provider_suspended') FROM updated
+      )
+      SELECT COUNT(*)::int AS n FROM updated`
+    )) as unknown as Array<{ n: number }>;
+
+    // UNSUSPEND branch — clear reason, do NOT auto-republish (provider must publish manually).
+    const activateResult = (await tx.execute(
+      dsqlImport`WITH events AS (
+        SELECT id, (payload->>'user_id')::uuid AS provider_id
+          FROM outbox_events
+         WHERE aggregate_type = 'user'
+           AND event_type = 'user.activated'
+           AND id > ${lastSeen}::bigint
+         ORDER BY id ASC LIMIT 100
+      ),
+      updated AS (
+        UPDATE listings l
+           SET auto_paused_reasons = array_remove(l.auto_paused_reasons, 'provider_suspended'),
+               version = l.version + 1, updated_at = now()
+         WHERE l.status = 'paused'
+           AND 'provider_suspended' = ANY(l.auto_paused_reasons)
+           AND l.provider_id IN (SELECT provider_id FROM events WHERE provider_id IS NOT NULL)
+         RETURNING l.id
+      ),
+      ev AS (
+        INSERT INTO listing_audit_events (listing_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
+        SELECT id, NULL, 'system', 'listing.pause_reason_cleared', 'paused', 'paused',
+               jsonb_build_object('cleared', 'provider_suspended') FROM updated
+      )
+      SELECT COUNT(*)::int AS n FROM updated`
+    )) as unknown as Array<{ n: number }>;
+
+    // Advance cursor past whatever max(id) we saw across both event types.
+    await tx.execute(
+      dsqlImport`UPDATE notification_consumer_cursors
+                    SET last_seen_id = GREATEST(
+                      last_seen_id,
+                      COALESCE((
+                        SELECT MAX(id) FROM outbox_events
+                         WHERE aggregate_type = 'user'
+                           AND event_type IN ('user.suspended','user.activated')
+                           AND id > ${lastSeen}::bigint
+                      ), last_seen_id)
+                    ),
+                    updated_at = now()
+                  WHERE consumer_name = 'listings:provider_status'`
+    );
+
+    return { processed: (suspendResult[0]?.n ?? 0) + (activateResult[0]?.n ?? 0) };
+  });
+  return processed;
+}
+
 /* ----------------------------- retention -------------------------------- */
 
 export async function outboxRetention(): Promise<number> {
@@ -625,6 +734,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.listing_draft_auto_archive = await listingDraftAutoArchive();
   results.listings_kyc_revoked_consumer = await listingsKycRevokedConsumer();
   results.listings_category_archived_consumer = await listingsCategoryArchivedConsumer();
+  results.listings_provider_status_consumer = await listingsProviderStatusConsumer();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);
