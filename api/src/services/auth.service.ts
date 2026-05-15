@@ -844,6 +844,17 @@ export async function deleteAccount(args: {
     await tx.delete(emailVerificationTokens).where(eq(emailVerificationTokens.user_id, args.user_id));
     await tx.delete(totpRecoveryCodes).where(eq(totpRecoveryCodes.user_id, args.user_id));
     await tx.execute(dsql`DELETE FROM push_subscriptions WHERE user_id = ${args.user_id}`);
+    // Module 2 REQ-011 / AC-012 — emit user.soft_deleted so the Categories
+    // consumer (and any other module wiring up similar GDPR sweeps later)
+    // can react. aggregate_type='user' is in Module 9 allowlist; the
+    // notifications worker silently skips since there's no template for
+    // this event_type — only the dedicated Module 2 consumer drains it.
+    await tx.execute(
+      dsql`INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+           VALUES ('user', ${args.user_id}, 'user.soft_deleted', ${JSON.stringify({
+             user_id: args.user_id,
+           })}::jsonb)`
+    );
   });
   return { ok: true };
 }

@@ -21,6 +21,7 @@ import {
   emailChangeTokensPurge,
   authAuditPurge,
   deletedUsersPurge,
+  categoriesUserSoftDeleteConsumer,
 } from "../services/cron.js";
 import { scanRetrySweep, regenerateMissingVariants } from "../services/media.service.js";
 import { drainEmailQueue } from "../services/notifications.service.js";
@@ -308,6 +309,7 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     email_change_tokens_purge: emailChangeTokensPurge,
     auth_audit_purge: authAuditPurge,
     deleted_users_purge: deletedUsersPurge,
+    categories_user_soft_delete_consumer: categoriesUserSoftDeleteConsumer,
   };
   server.post<{ Params: { job: string } }>(
     "/admin/cron/run/:job",

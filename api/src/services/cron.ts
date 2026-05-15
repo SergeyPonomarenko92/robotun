@@ -20,7 +20,8 @@
  *  - pushDrain              notifications channel='push' pending → VAPID
  *  - sessionsPurge          expired/revoked sessions older than retention
  */
-import { sql } from "../db/client.js";
+import { db, sql } from "../db/client.js";
+import { sql as dsqlImport } from "drizzle-orm";
 import { scanRetrySweep, regenerateMissingVariants } from "./media.service.js";
 import { drainEmailQueue } from "./notifications.service.js";
 import { drainPushQueue } from "./push.service.js";
@@ -324,6 +325,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.email_change_tokens_purge = await emailChangeTokensPurge();
   results.auth_audit_purge = await authAuditPurge();
   results.deleted_users_purge = await deletedUsersPurge();
+  results.categories_user_soft_delete_consumer = await categoriesUserSoftDeleteConsumer().catch(() => 0);
   return results;
 }
 
@@ -379,6 +381,79 @@ export async function authAuditPurge(): Promise<number> {
     "auth_audit_purge",
     `DELETE FROM auth_audit_events WHERE created_at < now() - interval '365 days'`
   );
+}
+
+/** Module 2 REQ-011 / AC-012 — consume user.soft_deleted outbox events
+ *  and auto-reject the deleted user's pending category_proposals.
+ *
+ *  Uses a dedicated cursor row in notification_consumer_cursors keyed
+ *  by 'categories:user_soft_deleted' so it scans the outbox independently
+ *  of the notifications consumer (which would silently skip these rows
+ *  since they have no notification template).
+ *
+ *  Spec AC-012 SLA: within 60 seconds. Cron tick is 60s so worst-case
+ *  match. Idempotent: re-consuming an already-processed event finds 0
+ *  matching pending rows. */
+export async function categoriesUserSoftDeleteConsumer(): Promise<number> {
+  // Bootstrap cursor (idempotent autocommit). Safe outside the tx.
+  await sql.unsafe(`
+    INSERT INTO notification_consumer_cursors (consumer_name, last_seen_id)
+    VALUES ('categories:user_soft_deleted', 0)
+    ON CONFLICT (consumer_name) DO NOTHING
+  `);
+  // RISK-4: wrap in drizzle tx + FOR UPDATE on the cursor row so concurrent
+  // cron ticks serialize at the cursor — no double-processing.
+  // RISK-1: emit category.auto_rejected outbox event per affected proposal
+  // so downstream consumers (Feed/Search invalidation, future notification
+  // templates) see the change. Single CTE keeps it atomic with UPDATE +
+  // cursor advance.
+  const { processed } = await db.transaction(async (tx) => {
+    const lockRows = (await tx.execute(
+      dsqlImport`SELECT last_seen_id FROM notification_consumer_cursors
+                  WHERE consumer_name = 'categories:user_soft_deleted'
+                  FOR UPDATE`
+    )) as unknown as Array<{ last_seen_id: string }>;
+    const lastSeen = lockRows[0]?.last_seen_id ?? "0";
+    const result = (await tx.execute(
+      dsqlImport`WITH events AS (
+        SELECT id, (payload->>'user_id')::uuid AS user_id
+          FROM outbox_events
+         WHERE aggregate_type = 'user'
+           AND event_type = 'user.soft_deleted'
+           AND id > ${lastSeen}::bigint
+         ORDER BY id ASC
+         LIMIT 100
+      ),
+      updated AS (
+        UPDATE category_proposals
+           SET status = 'auto_rejected',
+               rejection_code = 'proposer_deleted',
+               rejection_note = 'user account soft-deleted',
+               auto_rejected = true,
+               reviewed_at = now()
+         WHERE status = 'pending'
+           AND proposer_id IN (SELECT user_id FROM events)
+         RETURNING id
+      ),
+      emitted AS (
+        INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+        SELECT 'category_proposal', id, 'category.auto_rejected',
+               jsonb_build_object('proposal_id', id,
+                                  'rejection_code', 'proposer_deleted',
+                                  'trigger', 'proposer_deleted')
+          FROM updated
+      ),
+      cursor_update AS (
+        UPDATE notification_consumer_cursors
+           SET last_seen_id = COALESCE((SELECT MAX(id) FROM events), last_seen_id),
+               updated_at = now()
+         WHERE consumer_name = 'categories:user_soft_deleted'
+      )
+      SELECT COUNT(*)::int AS n FROM updated`
+    )) as unknown as Array<{ n: number }>;
+    return { processed: result[0]?.n ?? 0 };
+  });
+  return processed;
 }
 
 /** REQ-010 — permanent purge of soft-deleted users whose restore window

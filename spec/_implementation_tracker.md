@@ -89,8 +89,57 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ---
 
-## Modules 2-14 (стиснуто; деталі по REQ-list — у трекер коли черга)
-- Module 2 Categories (spec-data-category-tree.md): MVP DONE (2c10370).
+## Module 2 — Category Tree (spec-data-category-tree.md)
+
+### Functional (REQ-001..REQ-011)
+- REQ-001 adjacency list + level∈{1,2,3} CHECK — ✅ schema.ts categories.level + CHECK.
+- REQ-002 authenticated user proposes non-root under active parent — ✅ submitProposal.
+- REQ-003 root creation admin-only — ✅ adminCreate gated by requireAdmin.
+- REQ-004 server-side slug from name — ✅ slug.ts pipeline.
+- REQ-005 admin slug_override on approve — ✅ approveProposal accepts override.
+- REQ-006 global slug uniqueness across active + pending — ✅ pg_advisory_xact_lock(1) on slug critical section + unique partial indexes (PAT-003).
+- REQ-007 approved appears in GET within 60s — 🟡 GET /categories serves from DB (no Redis cache yet); the 60s SLO is trivially met but the SPEC §4.6 cache layer is descoped.
+- REQ-008 audit_events for category writes — ⏭️ DESCOPED MVP (Module 12 admin_actions covers admin-side). Spec calls for category_audit_events table; not built.
+- REQ-009 outbox event for category writes — ✅ all mutations insert outboxEvents.
+- REQ-010 archived stays referenceable, blocks new — ✅ P0004 trigger blocks listings INSERT to archived category.
+- REQ-011 soft-deleted user → auto-reject proposals — ✅ this turn. deleteAccount emits user.soft_deleted to outbox; categoriesUserSoftDeleteConsumer cron job (60s tick) consumes via dedicated cursor 'categories:user_soft_deleted', flips pending proposals to auto_rejected with rejection_code='proposer_deleted', emits category.auto_rejected outbox per proposal. Critic RISK-1 (event emission) + RISK-4 (tx FOR UPDATE) applied. RISK-2 (audit_events row) deferred — REQ-008 descope.
+
+### Security
+- SEC-001 high-impact actions re-read role from DB — ✅ admin routes call requireAdmin which queries DB.
+- SEC-002 Redis Lua rate limits — ⏭️ DESCOPED MVP; @fastify/rate-limit at gateway is the fallback per memory.
+- SEC-003 reserved-slug list — ✅ slug.ts has RESERVED_SLUGS.
+
+### Constraints (CON-001..CON-007)
+- CON-001 tree depth cap 3 — ✅ level CHECK + parent-level check in submitProposal/adminCreate.
+- CON-002 slug regex normalized — ✅ slug.ts.
+- CON-003 no hard-delete, archive-only — ✅ trg_categories_no_delete (P0005).
+- CON-004 no reparenting — ✅ trg_categories_no_reparent (BEFORE UPDATE).
+- CON-005 rate limits (5 proposals/24h/user, 30 admin-rejects/h, 20 archives/h, 60 admin-creates/h) — 🟡 only @fastify/rate-limit global; per-route Lua deferred.
+- CON-006 LOCAL statement_timeout=5s in archive-cascade — ✅ archiveCategory wraps SET LOCAL.
+- CON-007 failed proposals count rate-limit (anti-enumeration) — 🟡 same as CON-005 — deferred Lua dependency.
+
+### Acceptance (AC-001..AC-014)
+- AC-001 valid proposal → pending row + computed slug returned — ✅.
+- AC-002 duplicate slug → 409 duplicate_category — ✅.
+- AC-003 parent level 3 → 422 max_depth_exceeded — ✅.
+- AC-004 approve without override → categories row + auto-reject race losers — ✅.
+- AC-005 approve with override → uses override + auto-reject — ✅.
+- AC-006 moderator approve → 403 — ✅ admin role required, moderator excluded.
+- AC-007 moderator 30 rejects/h → 429 — 🟡 not enforced (Lua dep).
+- AC-008 user 5 proposals/24h cap → 429 — 🟡 not enforced (Lua dep).
+- AC-009 archive cascade=false with children → 409 has_active_children — ✅.
+- AC-010 archive cascade=true ≤20 descendants → all flip → ✅; >20 → spec says async worker. Today: returns 422.
+- AC-011 listing INSERT to archived category → 422 (CROSS-001 trigger) — ✅ trg_listing_active_category P0004.
+- AC-012 user soft-deleted → consume → auto-reject proposals — ✅ this turn. 60s cron tick consumes user.soft_deleted, flips proposals + emits category.auto_rejected. Live smoke confirmed.
+- AC-013 raw DELETE on categories → P0005 SQLSTATE — ✅.
+- AC-014 approval observable in /categories within 60s — ✅ trivial without cache.
+
+**Module 2 closed**: 17 items. **Open**: REQ-011 / AC-012 (user soft-delete → proposal auto-reject — needs outbox consumer), AC-007/008/CON-005-007 (Lua rate limits — DESCOPED block), REQ-008 (audit table — DESCOPED), REQ-007 cache layer (DESCOPED).
+
+---
+
+## Module 3-14 (стиснуто; деталі по REQ-list — у трекер коли черга)
+- Module 2 Categories (spec-data-category-tree.md): MVP DONE (2c10370) — see expanded sweep above.
 - Module 3 Deals (spec-architecture-deal-workflow.md): MVP DONE + deep-review fixes (efafd78 + cc81f69 + а74160b).
 - Module 4 KYC (spec-architecture-kyc-provider-verification.md): MVP DONE (fbd3be2).
 - Module 5 Listings: MVP DONE + KYC gate (1d93fbb + 63f493f).
