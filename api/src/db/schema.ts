@@ -50,6 +50,7 @@ export const users = pgTable(
     avatar_url: text("avatar_url"),
     email_verified: boolean("email_verified").notNull().default(false),
     email_verified_at: timestamp("email_verified_at", { withTimezone: true }),
+    deleted_at: timestamp("deleted_at", { withTimezone: true }),
     status: userStatusEnum("status").notNull().default("pending"),
     kyc_status: kycStatusEnum("kyc_status").notNull().default("none"),
     payout_enabled: boolean("payout_enabled").notNull().default(false),
@@ -167,6 +168,22 @@ export const emailVerificationTokens = pgTable(
   (t) => ({
     hashUniq: uniqueIndex("uq_email_verification_tokens_hash").on(t.token_hash),
     userIdx: index("idx_email_verification_tokens_user").on(t.user_id),
+  })
+);
+
+export const deletedUserIndex = pgTable(
+  "deleted_user_index",
+  {
+    user_id: uuid("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    email_hash: text("email_hash").notNull(),
+    purge_after: timestamp("purge_after", { withTimezone: true }).notNull(),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    emailHashIdx: index("idx_deleted_user_index_email_hash").on(t.email_hash),
+    purgeIdx: index("idx_deleted_user_index_purge_after").on(t.purge_after),
   })
 );
 

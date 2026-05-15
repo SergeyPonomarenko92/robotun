@@ -20,6 +20,7 @@ import {
   emailVerificationTokensPurge,
   emailChangeTokensPurge,
   authAuditPurge,
+  deletedUsersPurge,
 } from "../services/cron.js";
 import { scanRetrySweep, regenerateMissingVariants } from "../services/media.service.js";
 import { drainEmailQueue } from "../services/notifications.service.js";
@@ -218,6 +219,33 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
   // Mirrors /me/sessions/logout-all but admin-triggered against another
   // user. admin_actions is written by suspendUser/activateUser path;
   // this one writes its own admin_actions row.
+  // REQ-010: restore a soft-deleted user within the 90-day window.
+  // Admin must supply the ORIGINAL email — hashed against
+  // deleted_user_index, so leaked index rows alone don't enable restore.
+  const restoreSchema = z.object({ original_email: z.string().email().max(254) });
+  server.post<{ Params: { id: string } }>(
+    "/admin/users/:id/restore",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req, reply, ["admin"]))) return;
+      const parsed = restoreSchema.safeParse(req.body);
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await auth.restoreAccount({
+        user_id: req.params.id,
+        original_email: parsed.data.original_email,
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      await svc.recordAdminAction({
+        admin_id: req.auth!.user_id,
+        target_user_id: req.params.id,
+        action: "user.restored",
+        ip: req.ip,
+        ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null,
+      }).catch(() => undefined);
+      return r;
+    }
+  );
+
   server.post<{ Params: { id: string } }>(
     "/admin/users/:id/force-logout",
     { preHandler: server.authenticate },
@@ -279,6 +307,7 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     email_verification_tokens_purge: emailVerificationTokensPurge,
     email_change_tokens_purge: emailChangeTokensPurge,
     auth_audit_purge: authAuditPurge,
+    deleted_users_purge: deletedUsersPurge,
   };
   server.post<{ Params: { job: string } }>(
     "/admin/cron/run/:job",

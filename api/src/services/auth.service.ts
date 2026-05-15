@@ -4,7 +4,7 @@
  */
 import { eq, and, isNull, gt, desc, inArray, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { authAuditEvents, emailChangeTokens, emailVerificationTokens, mediaObjects, passwordResetTokens, providerProfiles, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
+import { authAuditEvents, deletedUserIndex, emailChangeTokens, emailVerificationTokens, mediaObjects, passwordResetTokens, providerProfiles, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
 import { checkPasswordBreached } from "./hibp.js";
 import { randomBytes } from "node:crypto";
@@ -807,14 +807,25 @@ export async function deleteAccount(args: {
   const ok = await verifyPassword(user.password_hash, args.password);
   if (!ok) return { ok: false, error: { code: "wrong_password", status: 403 } };
 
+  const RESTORE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000; // 90d
+  // CON-002: original email kept as salted SHA-256 hash, never plaintext.
+  // Salt is the user_id (unique per row) so an attacker with the table
+  // can't precompute rainbow tables across the whole tombstone set.
+  const originalEmail = user.email;
+  const emailHash = sha256Hex(`${args.user_id}|${originalEmail}`);
+  const now = new Date();
+  const purgeAfter = new Date(now.getTime() + RESTORE_WINDOW_MS);
   await db.transaction(async (tx) => {
     await tx
       .update(users)
       .set({
-        email: `deleted+${args.user_id}@robotun-deleted.invalid`,
+        // CON-002: rename to deleted-{uuid}@tombstone.local (spec wording);
+        // frees the original for re-registration AND keeps UNIQUE intact.
+        email: `deleted-${args.user_id}@tombstone.local`,
         display_name: "Видалений користувач",
         password_hash: DUMMY_HASH,
         status: "deleted",
+        deleted_at: now,
         ver: dsql`${users.ver} + 1`,
         kyc_status: "none",
         payout_enabled: false,
@@ -822,13 +833,93 @@ export async function deleteAccount(args: {
         email_verified_at: null,
       })
       .where(eq(users.id, args.user_id));
+    await tx
+      .insert(deletedUserIndex)
+      .values({ user_id: args.user_id, email_hash: emailHash, purge_after: purgeAfter });
     await tx.delete(sessions).where(eq(sessions.user_id, args.user_id));
     await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.user_id, args.user_id));
     await tx.delete(emailVerificationTokens).where(eq(emailVerificationTokens.user_id, args.user_id));
     await tx.delete(totpRecoveryCodes).where(eq(totpRecoveryCodes.user_id, args.user_id));
-    // push_subscriptions cascade via ON DELETE on user; but user row stays,
-    // so explicit delete.
     await tx.execute(dsql`DELETE FROM push_subscriptions WHERE user_id = ${args.user_id}`);
+  });
+  return { ok: true };
+}
+
+/** REQ-010 — admin-triggered restore within the 90d window. Reverses
+ *  the email rename and flips status back to 'pending' (user must
+ *  re-verify email + re-establish KYC/MFA from scratch). The original
+ *  email is recovered by the caller supplying it; we hash-verify
+ *  against deleted_user_index, so leaked deleted_user_index alone
+ *  doesn't enable restore. */
+type RestoreError = { code: "not_found" | "purge_window_expired" | "email_hash_mismatch" | "email_now_taken"; status: number };
+
+export async function restoreAccount(args: {
+  user_id: string;
+  original_email: string;
+}): Promise<{ ok: true } | { ok: false; error: RestoreError }> {
+  const lookup = await db
+    .select()
+    .from(deletedUserIndex)
+    .where(eq(deletedUserIndex.user_id, args.user_id))
+    .limit(1);
+  if (lookup.length === 0) return { ok: false, error: { code: "not_found", status: 404 } };
+  const row = lookup[0]!;
+  if (row.purge_after.getTime() < Date.now()) {
+    return { ok: false, error: { code: "purge_window_expired", status: 410 } };
+  }
+  const candidate = sha256Hex(`${args.user_id}|${args.original_email.trim().toLowerCase()}`);
+  if (candidate !== row.email_hash) {
+    return { ok: false, error: { code: "email_hash_mismatch", status: 400 } };
+  }
+  const targetEmail = args.original_email.trim().toLowerCase();
+  // RISK-4: uniqueness check + update + index delete all inside one tx
+  // with FOR UPDATE on the collision row, so a concurrent register cannot
+  // race the restore. UNIQUE(email) is the second layer of defense.
+  await db.transaction(async (tx) => {
+    const collisions = await tx.execute<{ id: string }>(
+      dsql`SELECT id FROM users WHERE email = ${targetEmail} FOR UPDATE`
+    );
+    if (collisions.length > 0 && collisions[0]!.id !== args.user_id) {
+      // Throw to abort tx; caller maps via outer try below.
+      throw new Error("__email_now_taken__");
+    }
+    await tx
+      .update(users)
+      .set({
+        email: targetEmail,
+        // status='pending' forces re-verification; user must complete
+        // email verify before promoted to 'active'.
+        status: "pending",
+        deleted_at: null,
+        email_verified: false,
+        // KYC + MFA state intentionally NOT restored — spec doesn't
+        // require it, and operationally it's safer to re-verify.
+        ver: dsql`${users.ver} + 1`,
+      })
+      .where(eq(users.id, args.user_id));
+    await tx.delete(deletedUserIndex).where(eq(deletedUserIndex.user_id, args.user_id));
+  }).catch((e: Error) => {
+    if (e.message === "__email_now_taken__") return "EMAIL_TAKEN" as const;
+    throw e;
+  }).then((result) => {
+    if (result === "EMAIL_TAKEN") return;
+    return;
+  });
+  // Re-read to detect the EMAIL_TAKEN abort.
+  const after = await db
+    .select({ email: users.email, status: users.status })
+    .from(users)
+    .where(eq(users.id, args.user_id))
+    .limit(1);
+  if (!after[0] || after[0].email !== targetEmail || after[0].status !== "pending") {
+    return { ok: false, error: { code: "email_now_taken", status: 409 } };
+  }
+  // RISK-8: auto-trigger re-verification so the restored user receives
+  // a fresh email-verify link without an extra manual /auth/request-
+  // email-verification call.
+  requestEmailVerification({ user_id: args.user_id, email: targetEmail }).catch((e) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[restore] verify-email send failed for ${args.user_id}: ${(e as Error).message}`);
   });
   return { ok: true };
 }

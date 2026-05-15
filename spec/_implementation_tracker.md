@@ -52,7 +52,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 - REQ-007 refresh stored as SHA-256 hash — ✅ c9bbe60.
 - REQ-008 TOTP + 10 recovery codes — ✅ d7d0723 + 9676fd6.
 - REQ-009 audit events for auth — ✅ ac95d12 + c1ea73a + bcaf173.
-- REQ-010 soft-delete 90-day restore window — 🟡 PARTIAL: 16c6f56 anonymises immediately, no restore window, no deleted_user_index.
+- REQ-010 soft-delete 90-day restore window — ✅ this turn. Migration 0030: users.deleted_at + deleted_user_index. deleteAccount stores salted-sha256(user_id|original_email) + purge_after=now()+90d. /admin/users/:id/restore reverses (status='pending', auto-trigger verify-email). deletedUsersPurge cron permanently deletes users row (cascade clears index). Critic RISK-1 (cron direction) + RISK-4 (TOCTOU on email) + RISK-8 (auto re-verify) all applied. **Deferred**: RISK-2 admin_actions.actor_admin_id RESTRICT blocks purge of admins who've made admin_actions — needs migration to ON DELETE SET NULL. RISK-3 per-row random salt vs predictable user_id salt — security hardening. RISK-7 email_now_taken vs email_in_use code naming.
 
 ### Security (SEC-001..SEC-010)
 - SEC-001 Argon2id m=64MiB, t=3, p=1 — 🟡 NEED VERIFY (default argon2 lib params).
@@ -68,7 +68,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ### Constraints (CON-001..CON-005)
 - CON-001 email CITEXT primary, phone secondary — 🟡 email lowercased manually (not CITEXT); phone NOT modeled.
-- CON-002 soft-deleted email→tombstone + deleted_user_index — 🟡 PARTIAL: 16c6f56 renames email but no deleted_user_index table.
+- CON-002 soft-deleted email→tombstone + deleted_user_index — ✅ this turn. Email→`deleted-{uuid}@tombstone.local` per spec wording; deleted_user_index keeps salted hash.
 - CON-003 rate limits (exact thresholds) — 🟡 240/min/IP global; per-route fine-grained per spec TBD.
 - CON-004 audit_events append-only + monthly partitioned — 🟡 auth_audit_events append-only, NOT partitioned.
 - CON-005 hourly session cleanup — ✅ 7c3d884 sessions_purge cron 60s tick.
@@ -82,7 +82,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 - AC-006 kyc_approved + mfa=false → payout_enabled=false — ✅.
 - AC-007 POST /users/me/roles/provider creates provider_profiles + user_roles entry — ✅ this turn.
 - AC-008 refresh rotates atomically — ✅.
-- AC-009 soft-delete → deleted_at + status + email rename + deleted_user_index — 🟡 PARTIAL (no deleted_at, no deleted_user_index).
+- AC-009 soft-delete → deleted_at + status + email rename + deleted_user_index — ✅ this turn. Smoke confirms all 4 outputs of the AC.
 - AC-010 11th session → oldest revoked, count≤10 — ✅ this turn. Smoke 12 sequential logins: counts grow to 10 then stay at exactly 10 from 10th login onward. 3 session_cap_revoked audit rows confirm eviction.
 - AC-011 6 failed logins / 1 min / IP → 429 — 🟡 global 240/min/IP + 5/15min/email; not the spec metric.
 - AC-012 audit event within 5s — ✅ (synchronous insert in same request).
@@ -109,4 +109,4 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ## Active task
 
-**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅, SEC-002 ✅, SEC-003 ✅, AC-005 ✅, SEC-003 critic RISK-6 ✅, SEC-010 ✅, AC-010 ✅, AC-011 ✅. Module 1 Functional spec items: 11 closed. Next: CON-002 (deleted_user_index for restore window), then AC-009 (90d restore + deleted_at column), then REQ-010 full soft-delete restore semantics.
+**Working** (Module 1 closed items): REQ-001 ✅, REQ-004 / AC-007 ✅, REQ-010 / CON-002 / AC-009 ✅, SEC-002 ✅, SEC-003 / AC-005 / RISK-6 ✅, SEC-010 / AC-010 ✅, AC-011 ✅. **Module 1 next**: SEC-001 verify Argon2id m=64MiB/t=3/p=1; SEC-006 audit high-impact actions re-read state from DB (not JWT); CON-001 email CITEXT; CON-004 audit_events partitioning monthly.

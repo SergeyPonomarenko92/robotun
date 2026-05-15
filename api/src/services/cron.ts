@@ -323,6 +323,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.email_verification_tokens_purge = await emailVerificationTokensPurge();
   results.email_change_tokens_purge = await emailChangeTokensPurge();
   results.auth_audit_purge = await authAuditPurge();
+  results.deleted_users_purge = await deletedUsersPurge();
   return results;
 }
 
@@ -377,6 +378,25 @@ export async function authAuditPurge(): Promise<number> {
   return exec(
     "auth_audit_purge",
     `DELETE FROM auth_audit_events WHERE created_at < now() - interval '365 days'`
+  );
+}
+
+/** REQ-010 — permanent purge of soft-deleted users whose restore window
+ *  has expired. Critic RISK-1: FK direction is CASCADE-on-user-delete,
+ *  NOT the inverse. Must DELETE the users row directly; the existing
+ *  FK then cascades the deleted_user_index row.
+ *
+ *  NOTE: admin_actions.actor_admin_id is ON DELETE RESTRICT (critic
+ *  RISK-2 — unfixed in this commit, awaiting migration). Admin users
+ *  who wrote any admin_actions row cannot be purged until that FK is
+ *  changed to SET NULL. The exec wrapper catches the RESTRICT error
+ *  and returns 0 — operationally surfaces as a stuck purge counter
+ *  in /admin/metrics; tracker captures the deferred fix. */
+export async function deletedUsersPurge(): Promise<number> {
+  return exec(
+    "deleted_users_purge",
+    `DELETE FROM users
+      WHERE id IN (SELECT user_id FROM deleted_user_index WHERE purge_after <= now())`
   );
 }
 
