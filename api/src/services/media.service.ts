@@ -23,6 +23,7 @@
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { listings, mediaObjects, outboxEvents } from "../db/schema.js";
+import sharp from "sharp";
 import {
   bucketNameFor,
   deleteObject,
@@ -30,9 +31,40 @@ import {
   objectExists,
   presignDownload,
   presignUpload,
+  uploadObject,
   type BucketAlias,
 } from "./s3.js";
 import { scanBuffer } from "./clamav.js";
+
+// Purposes that get a thumbnail variant generated after clean scan.
+const VARIANT_PURPOSES = new Set(["avatar", "listing_cover", "listing_gallery"]);
+const THUMBNAIL_SIZE = 256;
+
+/** Best-effort thumbnail generation. Failures don't block the ready flip. */
+async function tryGenerateThumbnail(args: {
+  bucket: BucketAlias;
+  originalKey: string;
+  originalBuffer: Buffer;
+}): Promise<string | null> {
+  try {
+    const thumb = await sharp(args.originalBuffer)
+      .resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, { fit: "cover", position: "attention" })
+      .webp({ quality: 80 })
+      .toBuffer();
+    const thumbKey = `${args.originalKey}__thumb.webp`;
+    await uploadObject({
+      bucket: args.bucket,
+      key: thumbKey,
+      body: thumb,
+      contentType: "image/webp",
+    });
+    return thumbKey;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[variants] thumbnail generation failed for ${args.originalKey}: ${(e as Error).message}`);
+    return null;
+  }
+}
 
 const ALLOWED_PURPOSES = new Set([
   "listing_cover",
@@ -309,10 +341,25 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
   const now = new Date();
 
   if (scan.result === "clean") {
+    // Generate thumbnail variant for image purposes. We already have the
+    // original buffer in memory from the scan; reuse it (saves an S3 GET).
+    let thumbnailKey: string | null = null;
+    if (VARIANT_PURPOSES.has(m.purpose)) {
+      thumbnailKey = await tryGenerateThumbnail({
+        bucket: m.bucket_alias as BucketAlias,
+        originalKey: m.storage_key,
+        originalBuffer: buf,
+      });
+    }
     await db.transaction(async (tx) => {
       const upd = await tx
         .update(mediaObjects)
-        .set({ status: "ready", ready_at: now, scan_completed_at: now })
+        .set({
+          status: "ready",
+          ready_at: now,
+          scan_completed_at: now,
+          ...(thumbnailKey ? { thumbnail_key: thumbnailKey } : {}),
+        })
         .where(and(eq(mediaObjects.id, mediaId), eq(mediaObjects.status, "awaiting_scan")))
         .returning({ id: mediaObjects.id });
       if (upd.length === 0) return; // someone else won the race
@@ -320,7 +367,12 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
         aggregate_type: "media",
         aggregate_id: mediaId,
         event_type: "media.ready",
-        payload: { media_id: mediaId, purpose: m.purpose, listing_id: m.listing_id },
+        payload: {
+          media_id: mediaId,
+          purpose: m.purpose,
+          listing_id: m.listing_id,
+          has_thumbnail: thumbnailKey != null,
+        },
       });
     });
     return "clean";
@@ -429,7 +481,7 @@ export async function getMetadata(args: { user_id: string | null; media_id: stri
       height_px: m.height_px,
       status: m.status,
       created_at: m.created_at.toISOString(),
-      variants: ["original"],
+      variants: m.thumbnail_key ? ["original", "thumbnail"] : ["original"],
     },
   };
 }
@@ -438,9 +490,11 @@ export async function getMetadata(args: { user_id: string | null; media_id: stri
  * Returns a presigned GET URL for the stream redirect. Public for active
  * listing media; owner-only for others. KYC stays out of this endpoint.
  */
-export async function getStreamUrl(args: { user_id: string | null; media_id: string }): Promise<
-  Result<{ url: string }>
-> {
+export async function getStreamUrl(args: {
+  user_id: string | null;
+  media_id: string;
+  variant?: string | null;
+}): Promise<Result<{ url: string }>> {
   const rows = await db
     .select()
     .from(mediaObjects)
@@ -466,9 +520,17 @@ export async function getStreamUrl(args: { user_id: string | null; media_id: str
   }
   // Avatar — public.
 
+  // Variant routing. Unknown variant → 404 (don't silently fall back to
+  // original — caller asked for a specific shape).
+  let key = m.storage_key;
+  if (args.variant && args.variant !== "original") {
+    if (args.variant !== "thumbnail" || !m.thumbnail_key) return err("not_found", 404);
+    key = m.thumbnail_key;
+  }
+
   const url = await presignDownload({
     bucket: m.bucket_alias as BucketAlias,
-    key: m.storage_key,
+    key,
     expiresSeconds: 300,
   });
   return { ok: true as const, value: { url } };

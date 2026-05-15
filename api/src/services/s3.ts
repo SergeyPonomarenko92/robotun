@@ -9,6 +9,7 @@ import {
   CreateBucketCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  PutObjectCommand,
   S3Client,
   PutBucketPolicyCommand,
   DeleteObjectCommand,
@@ -117,6 +118,23 @@ export async function deleteObject(args: { bucket: BucketAlias; key: string }) {
   } catch {
     // best effort
   }
+}
+
+/** Direct Buffer→S3 upload. Used by the variants pipeline for thumbnails. */
+export async function uploadObject(args: {
+  bucket: BucketAlias;
+  key: string;
+  body: Buffer;
+  contentType: string;
+}): Promise<void> {
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucketNameFor(args.bucket),
+      Key: args.key,
+      Body: args.body,
+      ContentType: args.contentType,
+    })
+  );
 }
 
 /** Streaming download → Buffer. Used by the ClamAV scan worker. */

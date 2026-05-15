@@ -66,7 +66,7 @@ export const mediaRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
-  server.get<{ Params: { id: string } }>(
+  server.get<{ Params: { id: string }; Querystring: { variant?: string } }>(
     "/media/:id/stream",
     async (req, reply) => {
       let viewerId: string | null = null;
@@ -77,7 +77,11 @@ export const mediaRoutes: FastifyPluginAsync = async (server) => {
           viewerId = req.auth?.user_id ?? null;
         } catch {}
       }
-      const r = await svc.getStreamUrl({ user_id: viewerId, media_id: req.params.id });
+      const r = await svc.getStreamUrl({
+        user_id: viewerId,
+        media_id: req.params.id,
+        variant: req.query.variant ?? null,
+      });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
       return reply.redirect(r.value.url, 302);
     }
