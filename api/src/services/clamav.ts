@@ -14,10 +14,11 @@
  * rather than collapsing transient failures into permanent quarantine.
  */
 import net from "node:net";
+import { env } from "../config/env.js";
 
-const CLAMAV_HOST = process.env.CLAMAV_HOST ?? "127.0.0.1";
-const CLAMAV_PORT = Number(process.env.CLAMAV_PORT ?? 3310);
-const CLAMAV_TIMEOUT_MS = Number(process.env.CLAMAV_TIMEOUT_MS ?? 30_000);
+const CLAMAV_HOST = env.CLAMAV_HOST;
+const CLAMAV_PORT = env.CLAMAV_PORT;
+const CLAMAV_TIMEOUT_MS = env.CLAMAV_TIMEOUT_MS;
 // clamd default StreamMaxLength is 25M; we cap our chunk so we never
 // exceed it in one frame. Real upload size is capped at 20MB per spec.
 const CHUNK_SIZE = 64 * 1024;

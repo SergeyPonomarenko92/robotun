@@ -18,9 +18,10 @@
  * v2 should add a retry counter + exponential backoff cron.
  */
 import nodemailer from "nodemailer";
+import { env } from "../config/env.js";
 
 const BRAND_NAME = "Robotun";
-const BRAND_URL = process.env.BRAND_URL ?? "https://robotun.dev";
+const BRAND_URL = env.BRAND_URL;
 
 function escapeHtml(s: string): string {
   return s
@@ -123,11 +124,11 @@ export function renderHtml(args: {
 </html>`;
 }
 
-const SMTP_HOST = process.env.SMTP_HOST ?? "127.0.0.1";
-const SMTP_PORT = Number(process.env.SMTP_PORT ?? 11025);
-const SMTP_USER = process.env.SMTP_USER ?? "";
-const SMTP_PASS = process.env.SMTP_PASS ?? "";
-const SMTP_FROM = process.env.SMTP_FROM ?? "Robotun <noreply@robotun.dev>";
+const SMTP_HOST = env.SMTP_HOST;
+const SMTP_PORT = env.SMTP_PORT;
+const SMTP_USER = env.SMTP_USER;
+const SMTP_PASS = env.SMTP_PASS;
+const SMTP_FROM = env.SMTP_FROM;
 
 let transport: nodemailer.Transporter | null = null;
 

@@ -36,6 +36,19 @@ const schema = z.object({
   VAPID_PUBLIC_KEY: z.string().default(""),
   VAPID_PRIVATE_KEY: z.string().default(""),
   VAPID_SUBJECT: z.string().default("mailto:ops@robotun.dev"),
+  // SMTP (Module 9 email channel). All defaults match the local mailpit
+  // service in docker-compose.
+  SMTP_HOST: z.string().default("127.0.0.1"),
+  SMTP_PORT: z.coerce.number().int().positive().default(11025),
+  SMTP_USER: z.string().default(""),
+  SMTP_PASS: z.string().default(""),
+  SMTP_FROM: z.string().default("Robotun <noreply@robotun.dev>"),
+  // ClamAV (Module 6 scan worker).
+  CLAMAV_HOST: z.string().default("127.0.0.1"),
+  CLAMAV_PORT: z.coerce.number().int().positive().default(3310),
+  CLAMAV_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  // Brand context — base URL used in email links + CTAs.
+  BRAND_URL: z.string().default("http://localhost:3000"),
 });
 
 const parsed = schema.safeParse(process.env);

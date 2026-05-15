@@ -853,7 +853,7 @@ export async function verifyEmail(token: string): Promise<
 /* ----------------------------- PASSWORD RESET ------------------------- */
 
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // 30 minutes
-const BRAND_URL = process.env.BRAND_URL ?? "http://localhost:3000";
+const BRAND_URL = env.BRAND_URL;
 
 /**
  * Forgot-password handler. Always returns success-shaped without leaking
