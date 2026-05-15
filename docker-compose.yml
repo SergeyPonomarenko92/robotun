@@ -44,7 +44,24 @@ services:
       timeout: 3s
       retries: 10
 
+  clamav:
+    # Module 6 §SEC-007 — async AV scan of all uploaded media before
+    # public availability. Daemon listens on 3310 (INSTREAM protocol).
+    # First-boot signature DB download takes ~2-3 min; healthcheck waits.
+    image: clamav/clamav:1.4
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamavdb:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 180s
+
 volumes:
   pgdata:
   redisdata:
   miniodata:
+  clamavdb:

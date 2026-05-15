@@ -1,15 +1,24 @@
 /**
- * Module 6 Media pipeline (MVP cut).
+ * Module 6 Media pipeline.
  *
- * IN SCOPE: presigned-POST initiate → confirm-HEAD flow for purposes
- * `listing_cover`, `listing_gallery`, `avatar`; metadata read; stream
- * (presigned GET redirect); soft-delete; listing-media attach/detach.
+ * IN SCOPE: presigned-POST initiate → confirm-HEAD → async ClamAV scan
+ * flow for purposes `listing_cover`, `listing_gallery`, `avatar`,
+ * `kyc_document`; metadata read; stream (presigned GET redirect);
+ * soft-delete; listing-media attach/detach.
  *
- * OUT OF SCOPE (TODO): clamav scan worker (we skip awaiting_scan and jump
- * straight to `ready` on confirm), variants/thumbnails, KYC private stream
- * (Module 4 will use this same table but via a separate API surface),
- * rate limiter partition table (no media_upload_rate), message_attachment
- * and dispute_evidence purposes (their owning modules will add).
+ * OUT OF SCOPE (TODO): variants/thumbnails, quarantine→public bucket
+ * copy on clean (today both clean and infected stay in original bucket;
+ * stream reads from bucket_alias so this is functionally fine — public
+ * CDN optimization deferred), message_attachment and dispute_evidence
+ * upload via their owning modules, KMS encryption-at-rest of kyc-private,
+ * rate limiter partition table.
+ *
+ * Scan flow:
+ *   confirmUpload → status='awaiting_scan' + setImmediate(scanMediaObject)
+ *   scanMediaObject → downloadObject + clamav.scanBuffer →
+ *     clean    → status='ready' + outbox media.ready
+ *     infected → status='quarantine_rejected' + last_scan_error=signature
+ *     error    → status='awaiting_scan' (stays for retry by cron)
  */
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
@@ -17,11 +26,13 @@ import { listings, mediaObjects, outboxEvents } from "../db/schema.js";
 import {
   bucketNameFor,
   deleteObject,
+  downloadObject,
   objectExists,
   presignDownload,
   presignUpload,
   type BucketAlias,
 } from "./s3.js";
+import { scanBuffer } from "./clamav.js";
 
 const ALLOWED_PURPOSES = new Set([
   "listing_cover",
@@ -182,7 +193,7 @@ export async function confirmUpload(args: {
   media_id: string;
   checksum_sha256?: string | null;
 }): Promise<Result<{ media_id: string; status: string }>> {
-  return await db.transaction(async (tx) => {
+  const r = await db.transaction(async (tx) => {
     const rows = await tx
       .select()
       .from(mediaObjects)
@@ -217,33 +228,167 @@ export async function confirmUpload(args: {
     const exists = await objectExists({ bucket: m.bucket_alias as BucketAlias, key: m.storage_key });
     if (!exists.exists) return err("upload_not_found", 409);
 
-    // MVP: skip scan, promote directly to ready. Bucket alias stays
-    // 'quarantine' for now — a real implementation would copy the object to
-    // 'public-media' (or wherever) on scan success. Stream endpoint reads
-    // from whatever bucket_alias points to.
+    // Confirm → awaiting_scan. The async worker (scanMediaObject) flips
+    // to 'ready' or 'quarantine_rejected'. is_public stays based on
+    // purpose; the stream endpoint already requires status='ready' for
+    // public access, so awaiting_scan rows are not served.
     const now = new Date();
     await tx
       .update(mediaObjects)
       .set({
-        status: "ready",
+        status: "awaiting_scan",
         checksum_sha256: args.checksum_sha256 ?? null,
         confirmed_at: now,
-        ready_at: now,
-        scan_completed_at: now,
         byte_size: exists.contentLength ?? m.byte_size,
         is_public: m.purpose !== "kyc_document",
       })
       .where(eq(mediaObjects.id, m.id));
 
-    await tx.insert(outboxEvents).values({
-      aggregate_type: "media",
-      aggregate_id: m.id,
-      event_type: "media.ready",
-      payload: { media_id: m.id, purpose: m.purpose, listing_id: m.listing_id },
-    });
-
-    return { ok: true as const, value: { media_id: m.id, status: "ready" } };
+    return { ok: true as const, value: { media_id: m.id, status: "awaiting_scan" } };
   });
+  // Fire-and-forget scan trigger — MUST run AFTER tx.transaction resolves so
+  // that scanMediaObject's `WHERE status='awaiting_scan'` predicate sees the
+  // committed row. setImmediate inside the tx callback fires before commit
+  // and the worker sees stale status, exiting early with scan_attempts=0
+  // and the row stuck forever (until the SCAN_STALE_THRESHOLD_MS retry).
+  if (r.ok) {
+    setImmediate(() => {
+      scanMediaObject(r.value.media_id).catch((e) => {
+        // eslint-disable-next-line no-console
+        console.error(`[scan] media=${r.value.media_id} crashed:`, (e as Error).message);
+      });
+    });
+  }
+  return r;
+}
+
+/* ----------------------------- SCAN WORKER ------------------------------ */
+
+const SCAN_STALE_THRESHOLD_MS = 120_000;
+
+/**
+ * Run ClamAV against one media object. Idempotent — caller can re-invoke
+ * if the row stays in awaiting_scan (the cron retry path does this).
+ *
+ * Result mapping:
+ *   - clean    → status='ready' + scan_completed_at + outbox media.ready
+ *   - infected → status='quarantine_rejected' + last_scan_error=signature
+ *                + outbox media.quarantined (consumed by uploader-facing UX)
+ *   - error    → no DB change; cron retries later. Transient daemon
+ *                outages should not collapse to permanent quarantine.
+ */
+export async function scanMediaObject(mediaId: string): Promise<"clean" | "infected" | "error"> {
+  const rows = await db
+    .select({
+      id: mediaObjects.id,
+      bucket_alias: mediaObjects.bucket_alias,
+      storage_key: mediaObjects.storage_key,
+      purpose: mediaObjects.purpose,
+      listing_id: mediaObjects.listing_id,
+      status: mediaObjects.status,
+    })
+    .from(mediaObjects)
+    .where(eq(mediaObjects.id, mediaId))
+    .limit(1);
+  if (rows.length === 0) return "error";
+  const m = rows[0]!;
+  // Only scan rows currently in awaiting_scan. Concurrent confirm races
+  // are harmless (no-op).
+  if (m.status !== "awaiting_scan") return "error";
+
+  let buf: Buffer;
+  try {
+    buf = await downloadObject({ bucket: m.bucket_alias as BucketAlias, key: m.storage_key });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(`[scan] media=${mediaId} download failed:`, (e as Error).message);
+    return "error";
+  }
+
+  const scan = await scanBuffer(buf);
+  const now = new Date();
+
+  if (scan.result === "clean") {
+    await db.transaction(async (tx) => {
+      const upd = await tx
+        .update(mediaObjects)
+        .set({ status: "ready", ready_at: now, scan_completed_at: now })
+        .where(and(eq(mediaObjects.id, mediaId), eq(mediaObjects.status, "awaiting_scan")))
+        .returning({ id: mediaObjects.id });
+      if (upd.length === 0) return; // someone else won the race
+      await tx.insert(outboxEvents).values({
+        aggregate_type: "media",
+        aggregate_id: mediaId,
+        event_type: "media.ready",
+        payload: { media_id: mediaId, purpose: m.purpose, listing_id: m.listing_id },
+      });
+    });
+    return "clean";
+  }
+
+  if (scan.result === "infected") {
+    await db.transaction(async (tx) => {
+      const upd = await tx
+        .update(mediaObjects)
+        .set({
+          status: "quarantine_rejected",
+          last_scan_error: scan.signature,
+          scan_completed_at: now,
+        })
+        .where(and(eq(mediaObjects.id, mediaId), eq(mediaObjects.status, "awaiting_scan")))
+        .returning({ id: mediaObjects.id });
+      if (upd.length === 0) return;
+      // Best-effort delete from bucket — infected file should not linger.
+      await deleteObject({ bucket: m.bucket_alias as BucketAlias, key: m.storage_key });
+      await tx.insert(outboxEvents).values({
+        aggregate_type: "media",
+        aggregate_id: mediaId,
+        event_type: "media.quarantined",
+        payload: {
+          media_id: mediaId,
+          purpose: m.purpose,
+          signature: scan.signature,
+          listing_id: m.listing_id,
+        },
+      });
+    });
+    return "infected";
+  }
+
+  // error — leave row in awaiting_scan, mark last_scan_error for visibility.
+  await db
+    .update(mediaObjects)
+    .set({ last_scan_error: scan.message, scan_attempts: dsql`scan_attempts + 1` })
+    .where(eq(mediaObjects.id, mediaId));
+  // eslint-disable-next-line no-console
+  console.warn(`[scan] media=${mediaId} clamav error: ${scan.message}`);
+  return "error";
+}
+
+/**
+ * Cron-driven retry — picks up awaiting_scan rows older than the stale
+ * threshold and re-runs scanMediaObject. Handles: server restart while
+ * scan was in flight, daemon outage that previously returned 'error'.
+ */
+export async function scanRetrySweep(): Promise<number> {
+  const cutoff = new Date(Date.now() - SCAN_STALE_THRESHOLD_MS);
+  const rows = await db
+    .select({ id: mediaObjects.id })
+    .from(mediaObjects)
+    .where(
+      and(
+        eq(mediaObjects.status, "awaiting_scan"),
+        dsql`${mediaObjects.confirmed_at} <= ${cutoff}`
+      )
+    )
+    .limit(50);
+  if (rows.length === 0) return 0;
+  let count = 0;
+  for (const r of rows) {
+    const out = await scanMediaObject(r.id);
+    if (out !== "error") count += 1;
+  }
+  return count;
 }
 
 /* ------------------------------- READ ------------------------------------ */

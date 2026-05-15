@@ -14,8 +14,10 @@
  *  - kycStaleClaim          in_review + review_started_at + 4h → unclaim (submitted)
  *  - outboxRetention        processed + 7d → DELETE
  *  - listingDraftExpiry     listing_drafts updated_at + 30d → DELETE
+ *  - mediaScanRetry         awaiting_scan rows >2min → re-run scanMediaObject
  */
 import { sql } from "../db/client.js";
+import { scanRetrySweep } from "./media.service.js";
 
 /* ----------------------------- helpers ---------------------------------- */
 
@@ -306,6 +308,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.kyc_stale_claim = await kycStaleClaim();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
+  results.media_scan_retry = await scanRetrySweep().catch(() => 0);
   return results;
 }
 

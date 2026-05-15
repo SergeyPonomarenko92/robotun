@@ -118,3 +118,21 @@ export async function deleteObject(args: { bucket: BucketAlias; key: string }) {
     // best effort
   }
 }
+
+/** Streaming download → Buffer. Used by the ClamAV scan worker. */
+export async function downloadObject(args: {
+  bucket: BucketAlias;
+  key: string;
+}): Promise<Buffer> {
+  const out = await s3.send(
+    new GetObjectCommand({ Bucket: bucketNameFor(args.bucket), Key: args.key })
+  );
+  const body = out.Body;
+  if (!body) throw new Error("empty_body");
+  const chunks: Buffer[] = [];
+  // Node 22's stream from S3 SDK is an AsyncIterable<Uint8Array>.
+  for await (const chunk of body as AsyncIterable<Uint8Array>) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
