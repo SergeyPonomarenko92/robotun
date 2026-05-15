@@ -53,6 +53,12 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
         });
       }
     } else {
+      void auth.logAuthEvent({
+        user_id: r.result.user.id,
+        event_type: "login_success",
+        ...meta(req),
+        metadata: { via: "register" },
+      });
       return reply.code(201).send(r.result);
     }
   });
@@ -94,13 +100,20 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body" });
     }
-    const r = await auth.refresh(parsed.data.refresh_token, meta(req));
+    const m = meta(req);
+    const r = await auth.refresh(parsed.data.refresh_token, m);
     if (!r.ok) {
       if (r.error.code === "user_disabled") {
         return reply.code(403).send({ error: "account_disabled" });
       }
       return reply.code(401).send({ error: "invalid_refresh" });
     }
+    void auth.logAuthEvent({
+      user_id: r.result.user.id,
+      event_type: "refresh",
+      ip: m.ip,
+      user_agent: m.user_agent,
+    });
     return reply.code(200).send(r.result);
   });
 
@@ -112,6 +125,13 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       return reply.code(204).send();
     }
     await auth.logout(parsed.data.refresh_token);
+    // user_id resolved inside auth.logout from the refresh-token hash; we
+    // don't have it here without an extra lookup. v2 should return it.
+    void auth.logAuthEvent({
+      user_id: null,
+      event_type: "logout",
+      ...meta(req),
+    });
     return reply.code(204).send();
   });
 
@@ -127,6 +147,15 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       ip: req.ip,
       user_agent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null,
     });
+    // Audit row written regardless of email existence — keeps the anti-
+    // enumeration property at the API surface while still recording the
+    // attempt for ops review. user_id NULL → admin-only visibility.
+    void auth.logAuthEvent({
+      user_id: null,
+      event_type: "password_reset_requested",
+      ...meta(req),
+      metadata: { email: parsed.data.email },
+    });
     return reply.code(204).send();
   });
 
@@ -139,6 +168,14 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
     const r = await auth.resetPassword(parsed.data);
     if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+    // user_id from token resolution lives inside auth.resetPassword; we
+    // don't have it here. v2 should return user_id from the service so
+    // the audit row links to the affected account.
+    void auth.logAuthEvent({
+      user_id: null,
+      event_type: "password_reset_completed",
+      ...meta(req),
+    });
     return { ok: true };
   });
 
@@ -153,6 +190,11 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
         user_id: req.auth!.user_id,
         email: req.auth!.email,
       });
+      void auth.logAuthEvent({
+        user_id: req.auth!.user_id,
+        event_type: "email_verification_requested",
+        ...meta(req),
+      });
       return reply.code(204).send();
     }
   );
@@ -163,6 +205,12 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
     const r = await auth.verifyEmail(parsed.data.token);
     if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+    void auth.logAuthEvent({
+      user_id: null, // see same TODO as /auth/reset-password
+      event_type: "email_verified",
+      ...meta(req),
+      metadata: { email: r.value.email },
+    });
     return r.value;
   });
 
@@ -183,6 +231,19 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
         ...parsed.data,
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      // Only audit when something actually changed (Object.keys non-empty
+      // in parsed.data). Empty-body read-back doesn't deserve a row.
+      if (parsed.data.display_name !== undefined || parsed.data.avatar_media_id !== undefined) {
+        void auth.logAuthEvent({
+          user_id: req.auth!.user_id,
+          event_type: "profile_updated",
+          ...meta(req),
+          metadata: {
+            changed_display_name: parsed.data.display_name !== undefined,
+            changed_avatar: parsed.data.avatar_media_id !== undefined,
+          },
+        });
+      }
       return r.value;
     }
   );
@@ -294,6 +355,15 @@ export const usersRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/me/sessions/logout-all",
     { preHandler: server.authenticate },
-    async (req) => auth.revokeAllSessions(req.auth!.user_id)
+    async (req) => {
+      const r = await auth.revokeAllSessions(req.auth!.user_id);
+      void auth.logAuthEvent({
+        user_id: req.auth!.user_id,
+        event_type: "sessions_logged_out_all",
+        ...meta(req),
+        metadata: { revoked: r.revoked },
+      });
+      return r;
+    }
   );
 };
