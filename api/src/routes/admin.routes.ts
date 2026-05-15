@@ -15,6 +15,7 @@ import {
   outboxRetention,
   listingDraftExpiry,
   sessionsPurge,
+  passwordResetTokensPurge,
 } from "../services/cron.js";
 import { scanRetrySweep, regenerateMissingVariants } from "../services/media.service.js";
 import { drainEmailQueue } from "../services/notifications.service.js";
@@ -164,6 +165,7 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     email_drain: drainEmailQueue,
     push_drain: drainPushQueue,
     sessions_purge: sessionsPurge,
+    password_reset_tokens_purge: passwordResetTokensPurge,
   };
   server.post<{ Params: { job: string } }>(
     "/admin/cron/run/:job",
