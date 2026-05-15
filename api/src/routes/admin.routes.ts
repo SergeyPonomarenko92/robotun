@@ -4,7 +4,20 @@ import { z } from "zod";
 import { db, sql as dsql } from "../db/client.js";
 import { userRoles } from "../db/schema.js";
 import * as svc from "../services/admin.service.js";
-import { runAllJobs } from "../services/cron.js";
+import {
+  runAllJobs,
+  dealAutoComplete,
+  dealPendingExpiry,
+  disputeEscalation,
+  disputeAutoRefund,
+  kycExpiredSweep,
+  kycStaleClaim,
+  outboxRetention,
+  listingDraftExpiry,
+} from "../services/cron.js";
+import { scanRetrySweep } from "../services/media.service.js";
+import { drainEmailQueue } from "../services/notifications.service.js";
+import { drainPushQueue } from "../services/push.service.js";
 
 async function requireAdmin(
   req: FastifyRequest,
@@ -132,6 +145,34 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     if (!(await requireAdmin(req, reply, ["admin"]))) return;
     return runAllJobs();
   });
+
+  // Individual job trigger — ops convenience for retrying a specific
+  // worker without firing the full set (which costs a clamd connection
+  // + SMTP verify on every press).
+  const JOBS: Record<string, () => Promise<number>> = {
+    deal_auto_complete: dealAutoComplete,
+    deal_pending_expiry: dealPendingExpiry,
+    dispute_escalation: disputeEscalation,
+    dispute_auto_refund: disputeAutoRefund,
+    kyc_expired_sweep: kycExpiredSweep,
+    kyc_stale_claim: kycStaleClaim,
+    outbox_retention: outboxRetention,
+    listing_draft_expiry: listingDraftExpiry,
+    media_scan_retry: scanRetrySweep,
+    email_drain: drainEmailQueue,
+    push_drain: drainPushQueue,
+  };
+  server.post<{ Params: { job: string } }>(
+    "/admin/cron/run/:job",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req, reply, ["admin"]))) return;
+      const fn = JOBS[req.params.job];
+      if (!fn) return reply.code(404).send({ error: "unknown_job", known: Object.keys(JOBS) });
+      const count = await fn();
+      return { job: req.params.job, processed: count };
+    }
+  );
 
   server.get("/admin/actions", { preHandler: server.authenticate }, async (req, reply) => {
     if (!(await requireAdmin(req, reply, ["admin"]))) return;
