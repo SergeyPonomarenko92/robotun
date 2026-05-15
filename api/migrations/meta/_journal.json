@@ -239,6 +239,13 @@
       "when": 1779001800000,
       "tag": "0033_listing_audit_events",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1779001900000,
+      "tag": "0034_listings_auto_paused_reasons",
+      "breakpoints": true
     }
   ]
 }

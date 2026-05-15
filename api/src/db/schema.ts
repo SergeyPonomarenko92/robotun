@@ -399,6 +399,8 @@ export const listings = pgTable(
     updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     published_at: timestamp("published_at", { withTimezone: true }),
     archived_at: timestamp("archived_at", { withTimezone: true }),
+    // Module 5 CON-009 / PAT-004 — multi-cause auto-pause vocabulary.
+    auto_paused_reasons: text("auto_paused_reasons").array().notNull().default([]),
   },
   (t) => ({
     activeCursorIdx: index("idx_listings_active_cursor").on(t.published_at, t.id),
