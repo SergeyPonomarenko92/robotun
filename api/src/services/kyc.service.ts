@@ -731,6 +731,102 @@ const UNBLOCK_REASON_SET = new Set<string>(UNBLOCK_REASON_CODES);
 const SUBMISSION_LIMIT_BUMP = 5;
 const SUBMISSION_LIMIT_CEILING = 20;
 
+/**
+ * REQ-006 / §4.5 suspend transition — admin revokes a current approval.
+ *   approved → rejected
+ *   payout_enabled = false (via syncUserKycStatus + dual trigger SEC-007)
+ *   outbox: kyc.suspended (distinct from kyc.rejected; Payments + Notifications)
+ *   audit:  kyc.suspended event_type in kyc_review_events
+ *
+ * Reason note is required (compliance trail). Suspended state lives in the
+ * rejected terminal but the kyc.suspended outbox event signals "was
+ * approved, now revoked" to downstream consumers that need to distinguish
+ * an initial rejection from a post-approval suspension (e.g., Payments
+ * cancels any scheduled payouts only on suspension, not on a never-active
+ * provider's first rejection).
+ */
+const SUSPEND_REASON_CODES = [
+  "fraud_detected",
+  "compliance_violation",
+  "provider_request",
+  "platform_policy_breach",
+  "other",
+] as const;
+export type SuspendReasonCode = (typeof SUSPEND_REASON_CODES)[number];
+const SUSPEND_REASON_SET = new Set<string>(SUSPEND_REASON_CODES);
+export const SUSPEND_REASON_CODES_PUBLIC = SUSPEND_REASON_CODES;
+
+export async function suspendApproval(args: {
+  provider_id: string;
+  admin_id: string;
+  reason_code: string;
+  reason_note: string;
+  audit?: AuditCtx;
+}): Promise<Result<{ kyc_id: string }>> {
+  if (!SUSPEND_REASON_SET.has(args.reason_code)) {
+    return err("validation_failed", 400, { fields: { reason_code: "invalid_enum" } });
+  }
+  if (!args.reason_note || args.reason_note.trim().length < 5) {
+    return err("validation_failed", 400, { fields: { reason_note: "min_length_5" } });
+  }
+  return await db.transaction(async (tx) => {
+    const r = await tx.execute<{ id: string; status: string }>(
+      dsql`SELECT id, status FROM kyc_verifications
+            WHERE provider_id = ${args.provider_id} FOR UPDATE`
+    );
+    if (r.length === 0) return err("not_found", 404);
+    const row = r[0]!;
+    // §4.5 row 5: suspend transitions from 'approved' only.
+    if (row.status !== "approved") {
+      return err("invalid_status_for_suspend", 422, { current_status: row.status });
+    }
+    const now = new Date();
+    await tx
+      .update(kycVerifications)
+      .set({
+        status: "rejected",
+        decided_at: now,
+        last_decided_at: now,
+        rejection_code: "fraud_suspicion", // placeholder mapping into the rejection-code enum
+        rejection_note: `[suspend:${args.reason_code}] ${args.reason_note}`,
+        // suspension does not reset rekyc warning marker — provider's
+        // future cycle (if reinstated) will be a fresh approval that
+        // will null these.
+        version: dsql`version + 1`,
+      })
+      .where(eq(kycVerifications.id, row.id));
+
+    await syncUserKycStatus(tx, args.provider_id, "rejected", { payout: false });
+
+    await logEvent(tx, {
+      kv_id: row.id,
+      provider_id: args.provider_id,
+      actor_id: args.admin_id,
+      actor_role: "admin",
+      event_type: "kyc.suspended",
+      from_status: "approved",
+      to_status: "rejected",
+      metadata: { reason_code: args.reason_code, reason_note: args.reason_note },
+      ip: args.audit?.ip ?? null,
+      user_agent: args.audit?.user_agent ?? null,
+    });
+
+    await tx.insert(outboxEvents).values({
+      aggregate_type: "kyc",
+      aggregate_id: row.id,
+      event_type: "kyc.suspended",
+      payload: {
+        kyc_id: row.id,
+        provider_id: args.provider_id,
+        reason_code: args.reason_code,
+        reason_note: args.reason_note,
+      },
+    });
+
+    return { ok: true as const, value: { kyc_id: row.id } };
+  });
+}
+
 export async function unblockSubmissionLimit(args: {
   provider_id: string;
   admin_id: string;

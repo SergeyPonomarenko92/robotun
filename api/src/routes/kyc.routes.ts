@@ -180,6 +180,30 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // REQ-006 / §4.5 admin suspend (approved → rejected + kyc.suspended).
+  const suspendSchema = z.object({
+    reason_code: z.enum(svc.SUSPEND_REASON_CODES_PUBLIC as unknown as [string, ...string[]]),
+    reason_note: z.string().min(5).max(1000),
+  });
+  server.post<{ Params: { provider_id: string } }>(
+    "/admin/kyc/:provider_id/suspend",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
+      const parsed = suspendSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await svc.suspendApproval({
+        provider_id: req.params.provider_id,
+        admin_id: req.auth!.user_id,
+        reason_code: parsed.data.reason_code,
+        reason_note: parsed.data.reason_note,
+        audit: { ip: req.ip, user_agent: req.headers["user-agent"] ?? null },
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      return r.value;
+    }
+  );
+
   // REQ-012 §4.8.4 — admin bumps submission_limit by 5 (cap 20). Reason
   // code enum sourced from kyc.service.ts (single source of truth).
   const unblockSchema = z.object({
