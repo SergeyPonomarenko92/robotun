@@ -66,6 +66,30 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     return svc.unifiedQueue(q);
   });
 
+  // Module 5 §4.5.3 — admin resolves a pending listing report.
+  server.post<{ Params: { id: string } }>(
+    "/admin/listings/reports/:id/resolve",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req, reply))) return;
+      const body = z
+        .object({ outcome: z.enum(["reviewed", "dismissed"]) })
+        .safeParse(req.body ?? {});
+      if (!body.success) return reply.code(400).send({ error: "invalid_body" });
+      // dynamic-import here keeps the admin route file from circular-importing
+      // listings.service.ts at module load (some adapters get confused by it).
+      const listings = await import("../services/listings.service.js");
+      const r = await listings.adminResolveReport({
+        report_id: req.params.id,
+        admin_id: req.auth!.user_id,
+        outcome: body.data.outcome,
+        audit: { ip: req.ip, user_agent: req.headers["user-agent"] ?? null },
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      return r.value;
+    }
+  );
+
   server.get("/admin/stats", { preHandler: server.authenticate }, async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     return svc.platformStats();

@@ -701,6 +701,51 @@ export async function appealPause(args: {
   });
 }
 
+/**
+ * Module 5 §4.5.3 — admin resolves a pending report. Outcome:
+ *   - 'reviewed'  → action taken; listing already auto-paused via
+ *                    report_threshold trigger (if 5th qualifying).
+ *   - 'dismissed' → no listing change; report status update only.
+ *
+ * Audit row written to listing_audit_events with admin actor.
+ */
+export async function adminResolveReport(args: {
+  report_id: string;
+  admin_id: string;
+  outcome: "reviewed" | "dismissed";
+  audit?: { ip?: string | null; user_agent?: string | null };
+}): Promise<Result<{ report_id: string; status: string }>> {
+  return await db.transaction(async (tx) => {
+    const r = await tx.execute<{ id: string; listing_id: string; status: string }>(
+      dsql`SELECT id, listing_id, status FROM listing_reports
+            WHERE id = ${args.report_id} FOR UPDATE`
+    );
+    if (r.length === 0) return err("not_found", 404);
+    if (r[0]!.status !== "pending") {
+      return err("invalid_state", 409, { current_status: r[0]!.status });
+    }
+    await tx.execute(
+      dsql`UPDATE listing_reports
+              SET status = ${args.outcome},
+                  reviewed_by = ${args.admin_id},
+                  reviewed_at = now()
+            WHERE id = ${args.report_id}`
+    );
+    await tx.insert(listingAuditEvents).values({
+      listing_id: r[0]!.listing_id,
+      actor_id: args.admin_id,
+      actor_role: "admin",
+      event_type: "listing.report_resolved",
+      from_status: null,
+      to_status: null,
+      metadata: { report_id: args.report_id, outcome: args.outcome },
+      ip: args.audit?.ip ?? null,
+      user_agent: args.audit?.user_agent ?? null,
+    });
+    return { ok: true as const, value: { report_id: args.report_id, status: args.outcome } };
+  });
+}
+
 export const pauseListing = (provider: string, id: string) =>
   transition(provider, id, ["active"], "paused", "listing.paused");
 export const archiveListing = (provider: string, id: string) =>
