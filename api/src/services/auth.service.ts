@@ -33,6 +33,11 @@ export type LoginInput = {
   password: string;
   user_agent?: string | null;
   ip?: string | null;
+  /** If the account has mfa_enrolled=true, this 6-digit TOTP code is
+   *  required. Server returns mfa_required (no token issued) when
+   *  password is correct but code is missing — FE prompts for the
+   *  second factor and re-submits. */
+  totp_code?: string;
 };
 
 export type RegisterInput = LoginInput & {
@@ -122,7 +127,11 @@ export async function register(
   };
 }
 
-export type LoginError = { code: "invalid_credentials" } | { code: "account_disabled" };
+export type LoginError =
+  | { code: "invalid_credentials" }
+  | { code: "account_disabled" }
+  | { code: "mfa_required" }
+  | { code: "invalid_mfa_code" };
 
 export async function login(
   input: LoginInput
@@ -144,6 +153,19 @@ export async function login(
     if (!ok) return { ok: false, error: { code: "invalid_credentials" } };
     if (user.status === "suspended" || user.status === "deleted") {
       return { ok: false, error: { code: "account_disabled" } };
+    }
+    // MFA gate. mfa_enrolled implies totp_secret IS NOT NULL; verifyTotp's
+    // null-guard is the second layer.
+    if (user.mfa_enrolled) {
+      if (!input.totp_code) {
+        return { ok: false, error: { code: "mfa_required" } };
+      }
+      if (!/^\d{6}$/.test(input.totp_code)) {
+        return { ok: false, error: { code: "invalid_mfa_code" } };
+      }
+      if (!user.totp_secret || !authenticator.check(input.totp_code, user.totp_secret)) {
+        return { ok: false, error: { code: "invalid_mfa_code" } };
+      }
     }
     const tokens = await issueTokensFor(user.id, user.ver, {
       user_agent: input.user_agent,

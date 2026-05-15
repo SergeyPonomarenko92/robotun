@@ -11,6 +11,7 @@ import * as auth from "../services/auth.service.js";
 const credentialsSchema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(1).max(256),
+  totp_code: z.string().regex(/^\d{6}$/).optional(),
 });
 
 const registerSchema = credentialsSchema.extend({
@@ -83,6 +84,13 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       });
       if (r.error.code === "account_disabled") {
         return reply.code(403).send({ error: "account_disabled" });
+      }
+      // mfa_required is a non-error continuation — 401 with the specific
+      // code so the FE shows the second-factor prompt instead of "wrong
+      // password". invalid_mfa_code also 401 to avoid leaking whether
+      // password was right but code wrong vs password wrong.
+      if (r.error.code === "mfa_required" || r.error.code === "invalid_mfa_code") {
+        return reply.code(401).send({ error: r.error.code });
       }
       return reply.code(401).send({ error: "invalid_credentials" });
     }
