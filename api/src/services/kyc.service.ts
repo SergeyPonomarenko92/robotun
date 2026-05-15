@@ -479,6 +479,10 @@ export async function approve(args: { kyc_id: string; admin_id: string; audit?: 
         expires_at: expiresAt,
         rejection_code: null,
         rejection_note: null,
+        // REQ-009: clear the pre-expiry warning marker on fresh approval
+        // so the 30d cron can fire again for the new approval cycle.
+        rekyc_required_at: null,
+        rekyc_required_reason: null,
         version: dsql`version + 1`,
       })
       .where(eq(kycVerifications.id, args.kyc_id));
@@ -495,7 +499,7 @@ export async function approve(args: { kyc_id: string; admin_id: string; audit?: 
     // Stamp the first-ever approval timestamp. Module 8 Feed reads this for
     // snapshot-stable score ranking; never cleared on subsequent rejects.
     await tx.execute(
-      dsql`UPDATE users SET kyc_approved_at = COALESCE(kyc_approved_at, ${now})
+      dsql`UPDATE users SET kyc_approved_at = COALESCE(kyc_approved_at, ${now.toISOString()}::timestamptz)
             WHERE id = ${row.provider_id}`
     );
 
@@ -665,6 +669,11 @@ export async function flagRekyc(args: {
         expires_at: null,
         rejection_code: null,
         rejection_note: null,
+        // REQ-009 / critic RISK-2: clear pre-expiry warning marker so the
+        // 30d cron re-fires on the next approval cycle if the provider
+        // resubmits and is approved again.
+        rekyc_required_at: null,
+        rekyc_required_reason: null,
         version: dsql`version + 1`,
       })
       .where(eq(kycVerifications.id, row.id));

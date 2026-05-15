@@ -284,6 +284,64 @@ export async function kycStaleClaim(): Promise<number> {
   );
 }
 
+/**
+ * REQ-009 leg: 30-day pre-expiry warning.
+ *
+ * For each approved kyc that will expire ≤30d from now and has not yet
+ * been warned (rekyc_required_at IS NULL), set rekyc_required_at +
+ * rekyc_required_reason='document_expiry', append audit event, emit
+ * outbox kyc.rekyc_required. Does NOT change status — provider stays
+ * approved with payout_enabled=true until expires_at; this is a heads-up.
+ *
+ * Idempotent: rekyc_required_at marker prevents re-emission. Batched at
+ * 200 rows/tick via FOR UPDATE SKIP LOCKED so multiple worker processes
+ * can run safely.
+ */
+export async function kycPreExpiryWarn(): Promise<number> {
+  return exec(
+    "kyc_pre_expiry_warn",
+    `
+    WITH due AS (
+      SELECT id, provider_id FROM kyc_verifications
+       WHERE status = 'approved'
+         AND expires_at IS NOT NULL
+         AND expires_at <= now() + interval '30 days'
+         AND expires_at >  now()
+         AND rekyc_required_at IS NULL
+       ORDER BY expires_at
+       LIMIT 200
+       FOR UPDATE SKIP LOCKED
+    ),
+    updated AS (
+      UPDATE kyc_verifications kv
+         SET rekyc_required_at    = now(),
+             rekyc_required_reason = 'document_expiry',
+             version              = kv.version + 1
+        FROM due
+       WHERE kv.id = due.id
+       RETURNING kv.id, due.provider_id, kv.expires_at
+    ),
+    ev AS (
+      INSERT INTO kyc_review_events
+        (kyc_verification_id, provider_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
+      SELECT id, provider_id, NULL, 'system', 'kyc.rekyc_required', 'approved', 'approved',
+             jsonb_build_object('reason', 'document_expiry', 'expires_at', expires_at)
+        FROM updated
+    )
+    INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+    SELECT 'kyc', id, 'kyc.rekyc_required',
+           jsonb_build_object(
+             'kyc_id',      id,
+             'provider_id', provider_id,
+             'reason',      'document_expiry',
+             'expires_at',  expires_at,
+             'from_status', 'approved'
+           )
+      FROM updated
+    `
+  );
+}
+
 /* ----------------------------- retention -------------------------------- */
 
 export async function outboxRetention(): Promise<number> {
@@ -314,6 +372,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.dispute_auto_refund = await disputeAutoRefund();
   results.kyc_expired_sweep = await kycExpiredSweep();
   results.kyc_stale_claim = await kycStaleClaim();
+  results.kyc_pre_expiry_warn = await kycPreExpiryWarn();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);
