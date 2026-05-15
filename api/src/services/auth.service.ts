@@ -472,6 +472,7 @@ export async function deleteAccount(args: {
     await tx.delete(sessions).where(eq(sessions.user_id, args.user_id));
     await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.user_id, args.user_id));
     await tx.delete(emailVerificationTokens).where(eq(emailVerificationTokens.user_id, args.user_id));
+    await tx.delete(totpRecoveryCodes).where(eq(totpRecoveryCodes.user_id, args.user_id));
     // push_subscriptions cascade via ON DELETE on user; but user row stays,
     // so explicit delete.
     await tx.execute(dsql`DELETE FROM push_subscriptions WHERE user_id = ${args.user_id}`);
@@ -609,10 +610,14 @@ export async function disableTotp(args: {
   if (!pwOk) return { ok: false, error: { code: "wrong_password", status: 403 } };
   const codeOk = authenticator.check(args.code, u[0]!.totp_secret);
   if (!codeOk) return { ok: false, error: { code: "invalid_code", status: 422 } };
-  await db
-    .update(users)
-    .set({ totp_secret: null, mfa_enrolled: false })
-    .where(eq(users.id, args.user_id));
+  await db.transaction(async (tx) => {
+    await tx
+      .update(users)
+      .set({ totp_secret: null, mfa_enrolled: false })
+      .where(eq(users.id, args.user_id));
+    // Disabling MFA implicitly invalidates the prior recovery codes.
+    await tx.delete(totpRecoveryCodes).where(eq(totpRecoveryCodes.user_id, args.user_id));
+  });
   return { ok: true };
 }
 
