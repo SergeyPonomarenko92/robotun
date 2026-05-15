@@ -153,7 +153,18 @@ After each closed item: commit hash in trailing `→ <hash>`.
   - **REQ-009 annual re-KYC sweep** ✅ d835249 — kycAnnualRekyc cron defense-in-depth for non-expiring doc types (decided_at ≥365d old + rekyc_required_reason IS NULL). Idempotent on rekyc_required_reason. Closes SEC-010 critic RISK-3 follow-up.
   - **AC-017 / AC-018 ✅** — chunked stream + admin document_accessed audit row with ip/ua (REQ-013 commit).
   - **Remaining Module 4 work**: SEC-002/003 PII encryption (AWS KMS dependency — out of MVP), CON-003/004 sanctions screening (DESCOPED MVP), CON-009 file size/MIME ✅ verified (media.service.ts:94 enforces kyc_document MIME set, clamav.ts notes 20MB cap).
-- Module 5 Listings: MVP DONE + KYC gate (1d93fbb + 63f493f).
+- Module 5 Listings: MVP DONE + KYC gate (1d93fbb + 63f493f) + 10-item sweep this turn:
+  - §4 **listing_audit_events** table (3abe4f9) — monthly-partitioned, REQ-014 anchor + REQ-015 audit trail + CON-011 retention skeleton.
+  - **CON-009** auto_paused_reasons TEXT[] + CHECK + GIN (62b69e5).
+  - **REQ-013 / AC-009 / AC-010** listing_reports + qualifying-trigger auto-pause (6d58bb2) — BEFORE INSERT trigger flips active→paused at the 5th qualifying report, emits outbox listing.auto_paused + audit row.
+  - **REQ-014 audit emissions** wired through createListing / editListing / transition (d3de1a8 + 30a1e9d hotfix).
+  - **REQ-014 draft auto-archive cron** (0953ddc) — listings.status='draft' with no provider-actor listing_audit_events row in 90d → status='archived' + outbox.
+  - **REQ-006 + REQ-007** POST /listings/:id/reports + /appeal-pause + listing_appeals table (2466c04). Per-reporter (5/24h) + per-pair (2/24h) rate limits in service tier. UNIQUE(listing_id, reporter_id) prevents duplicate. One open appeal per listing via UNIQUE partial index. SEC-002 Redis Lua remains DESCOPED pending rate-limit module.
+  - **REQ-016 / AC-007** listingsKycRevokedConsumer (9e7c12d) — kyc.expired|rejected|suspended → pause provider's active listings + auto_paused_reasons += 'provider_kyc_revoked'.
+  - **REQ-016** listingsCategoryArchivedConsumer (65da043) — category.archived → pause active listings in that category.
+  - **REQ-016** listingsProviderStatusConsumer (d79f4d3) — user.suspended pauses + adds reason; user.activated clears reason (provider re-publishes manually per §4.3).
+  - **REQ-017 / CON-010** listingsRoleRevokedConsumer (8424297) — two-stage: enqueue listing_bulk_jobs on user.role_revoked, drain in batches of 10 with SET LOCAL statement_timeout=30s. Hotfix 1d6a799 for UUID/int casts; e2e smoke api/scripts/module5_sweep_smoke.ts covers all 6 leg-PASSes.
+  - **Remaining Module 5 work**: SEC-002 Redis Lua rate limits (DESCOPED block), SEC-004 trusted-provider SELECT FOR SHARE on provider_profiles (publish recompute verify), SEC-005 listing_audit_events GRANT INSERT/SELECT (needs app role), AC-006 trusted path B excludes kyc_status='rejected' (verify in publishListing), AC-008 republish blocked when auto_paused_reasons non-empty (verify), CON-012 snapshot retention purge (deferred).
 - Module 6 Media: MVP DONE + ClamAV + variants (fbd3be2 + 37e649e + 7ee3a1a + 376927e + 9ab35cf).
 - Module 7 Reviews: MVP DONE + deep-review (4884c3d + cc81f69 + cffd1dd).
 - Module 8 Feed: MVP DONE (72a7563).
@@ -174,3 +185,5 @@ After each closed item: commit hash in trailing `→ <hash>`.
 **Phase next**: pivoting to Module 2 (Category Tree) or Module 3 (Deal Workflow) REQ sweep. Both modules already have MVP code shipped — sweep checks each REQ vs implementation.
 
 **Module 4 spec sweep COMPLETE for MVP** (HEAD d835249): REQ-006/009/009-annual/011/012/013/014/015 + SEC-010 + CON-009 verified. Open out-of-MVP: SEC-002/003 PII encryption (AWS KMS), CON-003/004 sanctions (legal/AML — descoped).
+
+**Module 5 sweep — 10 items shipped this turn** (HEAD 1d6a799): listing_audit_events table, auto_paused_reasons column, listing_reports + auto-pause trigger, audit emissions wiring, draft-auto-archive cron, /reports + /appeal-pause endpoints + listing_appeals table, kyc_revoked / category_archived / provider_status / role_revoked consumers + listing_bulk_jobs table.
