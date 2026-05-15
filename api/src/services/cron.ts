@@ -827,6 +827,92 @@ export async function listingsRoleRevokedConsumer(): Promise<number> {
   return enqueued + archivedRows;
 }
 
+/**
+ * Module 6 §4.7 — media lifecycle sweeps.
+ *
+ *   - mediaKycRetentionSweep: KYC docs whose expires_at passed get marked
+ *     deleted_at + hard_deleted_at in one statement (bypasses 7-day grace
+ *     per CON-008). S3 delete is the responsibility of a separate worker
+ *     (out of scope here — DB-side state advance keeps consistency).
+ *   - mediaSoftDeleteGraceSweep: non-KYC rows in status='deleted' with
+ *     deleted_at < now()-7d get hard_deleted_at set (standard grace).
+ *   - mediaHardDeletedRowPurge: rows where hard_deleted_at < now()-30d
+ *     AND purpose != 'kyc_document' are physically DELETEd. KYC rows
+ *     retained per KYC §4.11 (shell remains for audit).
+ *
+ * All three emit outbox `media.deleted` for CDN invalidation downstream.
+ */
+export async function mediaKycRetentionSweep(): Promise<number> {
+  return exec(
+    "media_kyc_retention_sweep",
+    `
+    WITH due AS (
+      SELECT id FROM media_objects
+       WHERE purpose = 'kyc_document'
+         AND expires_at IS NOT NULL
+         AND expires_at <= now()
+         AND hard_deleted_at IS NULL
+       ORDER BY expires_at
+       LIMIT 200
+       FOR UPDATE SKIP LOCKED
+    ),
+    upd AS (
+      UPDATE media_objects m
+         SET deleted_at = COALESCE(m.deleted_at, now()),
+             hard_deleted_at = now(),
+             status = 'deleted'
+        FROM due
+       WHERE m.id = due.id
+       RETURNING m.id
+    )
+    INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+    SELECT 'media', id, 'media.deleted',
+           jsonb_build_object('media_id', id::text, 'reason', 'kyc_retention_expiry')
+      FROM upd
+    `
+  );
+}
+
+export async function mediaSoftDeleteGraceSweep(): Promise<number> {
+  return exec(
+    "media_soft_delete_grace_sweep",
+    `
+    WITH due AS (
+      SELECT id FROM media_objects
+       WHERE purpose <> 'kyc_document'
+         AND status = 'deleted'
+         AND deleted_at IS NOT NULL
+         AND deleted_at < now() - interval '7 days'
+         AND hard_deleted_at IS NULL
+       ORDER BY deleted_at
+       LIMIT 200
+       FOR UPDATE SKIP LOCKED
+    ),
+    upd AS (
+      UPDATE media_objects m
+         SET hard_deleted_at = now()
+        FROM due
+       WHERE m.id = due.id
+       RETURNING m.id
+    )
+    INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+    SELECT 'media', id, 'media.deleted',
+           jsonb_build_object('media_id', id::text, 'reason', 'soft_delete_grace_expired')
+      FROM upd
+    `
+  );
+}
+
+export async function mediaHardDeletedRowPurge(): Promise<number> {
+  return exec(
+    "media_hard_deleted_row_purge",
+    `DELETE FROM media_objects
+      WHERE purpose <> 'kyc_document'
+        AND hard_deleted_at IS NOT NULL
+        AND hard_deleted_at < now() - interval '30 days'`
+  );
+}
+
 /* ----------------------------- retention -------------------------------- */
 
 export async function outboxRetention(): Promise<number> {
@@ -865,6 +951,9 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.listings_category_archived_consumer = await listingsCategoryArchivedConsumer();
   results.listings_provider_status_consumer = await listingsProviderStatusConsumer();
   results.listings_role_revoked_consumer = await listingsRoleRevokedConsumer();
+  results.media_kyc_retention_sweep = await mediaKycRetentionSweep();
+  results.media_soft_delete_grace_sweep = await mediaSoftDeleteGraceSweep();
+  results.media_hard_deleted_row_purge = await mediaHardDeletedRowPurge();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);
