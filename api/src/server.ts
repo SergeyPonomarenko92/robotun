@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
+import rateLimit from "@fastify/rate-limit";
 import sensible from "@fastify/sensible";
 import { env } from "./config/env.js";
 import { sql } from "./db/client.js";
@@ -42,6 +43,19 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(cors, {
     origin: env.CORS_ALLOWED_ORIGINS,
     credentials: true,
+  });
+  // Global IP rate limit — abuse floor, not a per-user shaper. Most routes
+  // are authenticated and tracked separately (login throttling, MFA challenge
+  // issuance, etc. are already in their respective services). 240/min ≈ one
+  // request every 250ms sustained, which covers normal SPA usage with room
+  // for retries.
+  await server.register(rateLimit, {
+    global: true,
+    max: 240,
+    timeWindow: "1 minute",
+    skipOnError: true, // do NOT 503 the API if Redis-backed store fails — degrade open.
+    // In-memory store by default; multi-replica deploy should swap to Redis.
+    allowList: (req) => req.url === "/health", // hot-poll endpoint must stay free.
   });
   await server.register(sensible);
   await server.register(authenticate);
