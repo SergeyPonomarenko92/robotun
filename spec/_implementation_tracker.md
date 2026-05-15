@@ -46,7 +46,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 - REQ-001 register via email+password, email verification required before revenue-affecting action — ✅ → 8168fb2 + this turn. register sets status='pending'; verifyEmail CASE-promotes pending→active; pending allowed in pwd reset / listings / deals / notification drain. Email_verified itself doesn't gate payout (REQ-005 contract is kyc+mfa only); spec REQ-001 satisfied transitively because KYC submission requires login-capable user.
 - REQ-002 single user, both client+provider roles — ✅ user_roles + has_provider_role flag.
 - REQ-003 REST/JSON over HTTPS — ✅ Fastify + TLS terminate at infra.
-- REQ-004 provider role elevation = workflow not flag, creates provider_profiles row kyc_status='none' — ❌ MISSING: register accepts initial_role='provider', flips has_provider_role=true, but no provider_profiles row created, no /users/me/roles/provider endpoint.
+- REQ-004 provider role elevation = workflow not flag, creates provider_profiles row kyc_status='none' — ✅ this turn. POST /users/me/roles/provider + elevateToProvider() helper (SEC-006 status re-read, audit event role_granted_provider, 201 vs 200 idempotent). Migrations 0028+0029: provider_profiles table + payout_enabled CHECK constraint. kyc.service.syncUserKycStatus now updates both copies (users + provider_profiles) in the same tx.
 - REQ-005 payout_enabled = (kyc_status='approved' AND mfa_enrolled) — ✅ d68d5a8 approve KYC sets payout=mfa_enrolled.
 - REQ-006 15min access JWT + 30day refresh — ✅ c9bbe60.
 - REQ-007 refresh stored as SHA-256 hash — ✅ c9bbe60.
@@ -80,7 +80,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 - AC-004 invalid creds → 401 + ≥300ms — ✅.
 - AC-005 admin without MFA → mfa_required, no token — 🟡 (works when admin.mfa_enrolled=true; ungated when admin.mfa_enrolled=false — SEC-003 gap).
 - AC-006 kyc_approved + mfa=false → payout_enabled=false — ✅.
-- AC-007 POST /users/me/roles/provider creates provider_profiles + user_roles entry — ❌ MISSING.
+- AC-007 POST /users/me/roles/provider creates provider_profiles + user_roles entry — ✅ this turn.
 - AC-008 refresh rotates atomically — ✅.
 - AC-009 soft-delete → deleted_at + status + email rename + deleted_user_index — 🟡 PARTIAL (no deleted_at, no deleted_user_index).
 - AC-010 11th session → oldest revoked, count≤10 — ❌ MISSING.
@@ -109,4 +109,4 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ## Active task
 
-**Working**: Module 1 REQ-001 ✅ DONE. Next: REQ-004 (provider role elevation as workflow, not flag — create provider_profiles row).
+**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅. Next: SEC-002 (10-char min + HIBP check on register/change-password). Then SEC-003 (MFA mandatory for admin/moderator), SEC-010 (10-session cap with oldest-revoke), AC-010 same, AC-011 (6/min/IP login throttle).

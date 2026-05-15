@@ -4,7 +4,7 @@
  */
 import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { authAuditEvents, emailChangeTokens, emailVerificationTokens, mediaObjects, passwordResetTokens, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
+import { authAuditEvents, emailChangeTokens, emailVerificationTokens, mediaObjects, passwordResetTokens, providerProfiles, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
 import { randomBytes } from "node:crypto";
 import { env } from "../config/env.js";
@@ -90,7 +90,11 @@ export async function register(
       email,
       password_hash,
       display_name,
-      has_provider_role: isProvider,
+      // has_provider_role starts false even when initial_role='provider' —
+      // elevateToProvider() (REQ-004) is the canonical single path to
+      // flipping it, and it ALSO creates the provider_profiles row that
+      // downstream modules (3/7/13) denorm into.
+      has_provider_role: false,
       // Spec REQ-001 / AC-001 — fresh registrations land in 'pending' and
       // get promoted to 'active' by verifyEmail. Pending accounts CAN log
       // in (no /users/me block), but revenue-affecting actions (payouts)
@@ -100,10 +104,20 @@ export async function register(
     .returning();
   if (!user) throw new Error("register: insert returned no row");
 
+  // Client role row always inserted; provider elevation goes through the
+  // workflow path so provider_profiles is in sync.
   await db.insert(userRoles).values({
     user_id: user.id,
-    role: input.initial_role,
+    role: "client",
   });
+  let hasProviderRole = false;
+  if (isProvider) {
+    const ev = await elevateToProvider(user.id);
+    if (ev.ok) hasProviderRole = true;
+    // If elevation failed (unlikely for a fresh user) the registration
+    // still succeeds with client role; client can call the elevation
+    // endpoint later.
+  }
 
   const tokens = await issueTokensFor(user.id, user.ver, {
     user_agent: input.user_agent,
@@ -125,7 +139,10 @@ export async function register(
         id: user.id,
         email: user.email,
         display_name: user.display_name,
-        has_provider_role: user.has_provider_role,
+        // RISK-4: `user` snapshot is pre-elevation; reflect the post-
+        // elevation flag explicitly so the FE doesn't have to call
+        // /users/me right after register.
+        has_provider_role: hasProviderRole,
       },
     },
   };
@@ -329,6 +346,55 @@ export async function listActiveSessions(userId: string) {
       expires_at: r.expires_at.toISOString(),
     })),
   };
+}
+
+/* ----------------------------- ROLE ELEVATION ------------------------ */
+
+type ElevateError = { code: "user_not_found" | "account_disabled"; status: number };
+
+/** REQ-004 / AC-007 — provider role elevation as a workflow, not a flag
+ *  toggle. Idempotent: re-call is harmless (created=false).
+ *  Creates provider_profiles row with kyc_status='none' and DOES NOT
+ *  enable payouts (payout_enabled stays false; gated by REQ-005 → KYC
+ *  approval AND MFA enrollment, evaluated at flip-to-approved time in
+ *  Module 4 service).
+ *
+ *  SEC-006 (critic RISK-2): re-read users.status from DB inside the tx
+ *  rather than trusting the auth-context snapshot. Suspended/deleted
+ *  cannot elevate; pending may (login + KYC submit are gated by their
+ *  own checks). */
+export async function elevateToProvider(
+  userId: string
+): Promise<{ ok: true; value: { created: boolean } } | { ok: false; error: ElevateError }> {
+  return await db.transaction(async (tx) => {
+    const u = await tx
+      .select({ status: users.status, has_provider_role: users.has_provider_role })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (u.length === 0) return { ok: false as const, error: { code: "user_not_found" as const, status: 404 } };
+    if (u[0]!.status === "suspended" || u[0]!.status === "deleted") {
+      return { ok: false as const, error: { code: "account_disabled" as const, status: 403 } };
+    }
+    // RETURNING distinguishes first-time elevation from idempotent re-call.
+    const ppIns = await tx.execute<{ user_id: string }>(
+      dsql`INSERT INTO provider_profiles (user_id, kyc_status)
+           VALUES (${userId}, 'none')
+           ON CONFLICT (user_id) DO NOTHING
+           RETURNING user_id`
+    );
+    const created = ppIns.length > 0;
+    await tx.execute(
+      dsql`INSERT INTO user_roles (user_id, role)
+           VALUES (${userId}, 'provider')
+           ON CONFLICT (user_id, role) DO NOTHING`
+    );
+    await tx
+      .update(users)
+      .set({ has_provider_role: true })
+      .where(eq(users.id, userId));
+    return { ok: true as const, value: { created } };
+  });
 }
 
 /* ----------------------------- PROFILE UPDATE ------------------------ */
@@ -895,7 +961,8 @@ export type AuthEventType =
   | "email_changed"
   | "sessions_logged_out_all"
   | "profile_updated"
-  | "account_deleted";
+  | "account_deleted"
+  | "role_granted_provider";
 
 /** Fire-and-forget audit row insert. Never throws — failure here must
  *  not block the action being audited. user_id may be null for failed

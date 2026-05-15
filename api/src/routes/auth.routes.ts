@@ -453,6 +453,24 @@ export const usersRoutes: FastifyPluginAsync = async (server) => {
     async (req) => auth.getCurrentUserProfile(req.auth!.user_id)
   );
 
+  // REQ-004 / AC-007 — elevate to provider role. Idempotent. 201 on
+  // first-time creation, 200 on no-op re-call so clients can distinguish.
+  server.post(
+    "/users/me/roles/provider",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const r = await auth.elevateToProvider(req.auth!.user_id);
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      void auth.logAuthEvent({
+        user_id: req.auth!.user_id,
+        event_type: "role_granted_provider",
+        ...meta(req),
+        metadata: { created: r.value.created },
+      });
+      return reply.code(r.value.created ? 201 : 200).send({ ok: true, created: r.value.created });
+    }
+  );
+
   // Active sessions for the current user. Refresh-token hashes are never
   // surfaced; FE renders { id, user_agent, ip, created_at, expires_at }.
   server.get(

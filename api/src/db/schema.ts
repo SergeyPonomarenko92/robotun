@@ -15,6 +15,7 @@ import {
   bigserial,
   date,
   jsonb,
+  real,
   timestamp,
   pgEnum,
   index,
@@ -166,6 +167,27 @@ export const emailVerificationTokens = pgTable(
   (t) => ({
     hashUniq: uniqueIndex("uq_email_verification_tokens_hash").on(t.token_hash),
     userIdx: index("idx_email_verification_tokens_user").on(t.user_id),
+  })
+);
+
+export const providerProfiles = pgTable(
+  "provider_profiles",
+  {
+    user_id: uuid("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kyc_status: kycStatusEnum("kyc_status").notNull().default("none"),
+    payout_enabled: boolean("payout_enabled").notNull().default(false),
+    headline: text("headline"),
+    service_area: text("service_area"),
+    completed_deals_count: integer("completed_deals_count").notNull().default(0),
+    avg_rating: real("avg_rating"),
+    review_count: integer("review_count").notNull().default(0),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    kycIdx: index("idx_provider_profiles_kyc").on(t.kyc_status),
   })
 );
 

@@ -72,6 +72,17 @@ async function syncUserKycStatus(tx: Tx, userId: string, kycStatus: "none" | "su
   const update: Record<string, unknown> = { kyc_status: kycStatus };
   if (opts.payout !== undefined) update.payout_enabled = opts.payout;
   await tx.update(users).set(update).where(eq(users.id, userId));
+  // REQ-004 critic RISK-3: provider_profiles.kyc_status + payout_enabled
+  // must mirror users.* for the defense-in-depth read path (Module 13
+  // ranking, Module 11 payments). UPDATE inside the same tx so the two
+  // copies never observably diverge. No-op if user has no
+  // provider_profiles row (client-only account).
+  await tx.execute(
+    dsql`UPDATE provider_profiles
+            SET kyc_status = ${kycStatus}::kyc_status_t,
+                updated_at = now()${opts.payout !== undefined ? dsql`, payout_enabled = ${opts.payout}` : dsql``}
+          WHERE user_id = ${userId}`
+  );
 }
 
 async function logEvent(tx: Tx, args: {
