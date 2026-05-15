@@ -521,6 +521,74 @@ export async function listingsKycRevokedConsumer(): Promise<number> {
   return processed;
 }
 
+/**
+ * Module 5 REQ-016 — listings consumer for category.archived. Auto-pause
+ * any active listings whose category was archived. The spec covers both
+ * the immediate category AND any descendants archived in cascade (Module 2
+ * archive cascade emits one event per affected category, so a single-level
+ * filter is sufficient here).
+ *
+ * Cursor: 'listings:category_archived'. Idempotent at the active-status
+ * filter — re-runs find no rows in 'active' status for the same category.
+ */
+export async function listingsCategoryArchivedConsumer(): Promise<number> {
+  await sql.unsafe(`
+    INSERT INTO notification_consumer_cursors (consumer_name, last_seen_id)
+    VALUES ('listings:category_archived', 0)
+    ON CONFLICT (consumer_name) DO NOTHING
+  `);
+  const { processed } = await db.transaction(async (tx) => {
+    const lockRows = (await tx.execute(
+      dsqlImport`SELECT last_seen_id FROM notification_consumer_cursors
+                  WHERE consumer_name = 'listings:category_archived' FOR UPDATE`
+    )) as unknown as Array<{ last_seen_id: string }>;
+    const lastSeen = lockRows[0]?.last_seen_id ?? "0";
+    const result = (await tx.execute(
+      dsqlImport`WITH events AS (
+        SELECT id, (payload->>'category_id')::uuid AS category_id
+          FROM outbox_events
+         WHERE aggregate_type IN ('category','category_proposal')
+           AND event_type = 'category.archived'
+           AND id > ${lastSeen}::bigint
+         ORDER BY id ASC LIMIT 100
+      ),
+      updated AS (
+        UPDATE listings l
+           SET status = 'paused',
+               auto_paused_reasons = CASE
+                 WHEN 'category_archived' = ANY(l.auto_paused_reasons)
+                   THEN l.auto_paused_reasons
+                 ELSE array_append(l.auto_paused_reasons, 'category_archived')
+               END,
+               version = l.version + 1,
+               updated_at = now()
+         WHERE l.status = 'active'
+           AND l.category_id IN (SELECT category_id FROM events WHERE category_id IS NOT NULL)
+         RETURNING l.id
+      ),
+      ev AS (
+        INSERT INTO listing_audit_events (listing_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
+        SELECT id, NULL, 'system', 'listing.auto_paused', 'active', 'paused',
+               jsonb_build_object('reason', 'category_archived') FROM updated
+      ),
+      outbox AS (
+        INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+        SELECT 'listing', id, 'listing.auto_paused',
+               jsonb_build_object('listing_id', id, 'reason', 'category_archived') FROM updated
+      ),
+      cursor_update AS (
+        UPDATE notification_consumer_cursors
+           SET last_seen_id = COALESCE((SELECT MAX(id) FROM events), last_seen_id),
+               updated_at = now()
+         WHERE consumer_name = 'listings:category_archived'
+      )
+      SELECT COUNT(*)::int AS n FROM updated`
+    )) as unknown as Array<{ n: number }>;
+    return { processed: result[0]?.n ?? 0 };
+  });
+  return processed;
+}
+
 /* ----------------------------- retention -------------------------------- */
 
 export async function outboxRetention(): Promise<number> {
@@ -556,6 +624,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.kyc_annual_rekyc = await kycAnnualRekyc();
   results.listing_draft_auto_archive = await listingDraftAutoArchive();
   results.listings_kyc_revoked_consumer = await listingsKycRevokedConsumer();
+  results.listings_category_archived_consumer = await listingsCategoryArchivedConsumer();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);
