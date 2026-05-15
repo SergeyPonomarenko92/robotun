@@ -18,6 +18,7 @@ import {
   categories,
   listings,
   outboxEvents,
+  listingAuditEvents,
   providerListingCaps,
   users,
 } from "../db/schema.js";
@@ -384,6 +385,18 @@ export async function createListing(
       },
     ]);
 
+    // REQ-014 anchor — provider-initiated create resets the inactivity
+    // clock for the auto-archive sweep (draft path) and gives a forensic
+    // breadcrumb for the active path.
+    await tx.insert(listingAuditEvents).values({
+      listing_id: row.id,
+      actor_id: input.provider_id,
+      actor_role: "provider",
+      event_type: "listing.created",
+      from_status: null,
+      to_status: row.status,
+    });
+
     return { ok: true as const, value: { id: row.id } };
   });
   } catch (e) {
@@ -450,6 +463,17 @@ export async function editListing(
       aggregate_id: listingId,
       event_type: "listing.edited",
       payload: { listing_id: listingId, changed: Object.keys(next) },
+    });
+
+    // REQ-014 — provider edit counts as activity for inactivity sweep.
+    await tx.insert(listingAuditEvents).values({
+      listing_id: listingId,
+      actor_id: providerId,
+      actor_role: "provider",
+      event_type: "listing.edited",
+      from_status: lst.status,
+      to_status: lst.status,
+      metadata: { changed: Object.keys(next) },
     });
 
     return { ok: true as const, value: { id: listingId } };
@@ -523,6 +547,16 @@ async function transition(
       aggregate_id: listingId,
       event_type: eventType,
       payload: { listing_id: listingId, from: lst.status, to },
+    });
+
+    // REQ-014 — provider-initiated state transitions reset inactivity clock.
+    await tx.insert(listingAuditEvents).values({
+      listing_id: listingId,
+      actor_id: providerId,
+      actor_role: "provider",
+      event_type: eventType,
+      from_status: lst.status,
+      to_status: to,
     });
 
     return { ok: true as const, value: { id: listingId, status: to } };
