@@ -528,7 +528,7 @@ export async function updateProfile(args: {
 
 /* ----------------------------- PASSWORD CHANGE ----------------------- */
 
-type ChangePasswordError = { code: "wrong_password" | "password_too_short" | "user_not_found" | "password_breached"; status: number };
+type ChangePasswordError = { code: "wrong_password" | "password_too_short" | "user_not_found" | "password_breached" | "mfa_required" | "invalid_mfa_code"; status: number };
 
 /** Authenticated password change. Verifies old password (constant-time
  *  via argon2), updates hash, BUMPS ver to invalidate existing access
@@ -540,6 +540,7 @@ export async function changePassword(args: {
   user_id: string;
   old_password: string;
   new_password: string;
+  totp_code?: string;
 }): Promise<{ ok: true } | { ok: false; error: ChangePasswordError }> {
   if (args.new_password.length < 12 || args.new_password.length > 256) {
     return { ok: false, error: { code: "password_too_short", status: 400 } };
@@ -550,13 +551,36 @@ export async function changePassword(args: {
     return { ok: false, error: { code: "password_breached", status: 400 } };
   }
   const u = await db
-    .select({ password_hash: users.password_hash })
+    .select({
+      password_hash: users.password_hash,
+      mfa_enrolled: users.mfa_enrolled,
+      totp_secret: users.totp_secret,
+    })
     .from(users)
     .where(eq(users.id, args.user_id))
     .limit(1);
   if (u.length === 0) return { ok: false, error: { code: "user_not_found", status: 404 } };
   const ok = await verifyPassword(u[0]!.password_hash, args.old_password);
   if (!ok) return { ok: false, error: { code: "wrong_password", status: 403 } };
+  // SEC-003 critic RISK-6: privileged users must supply a fresh TOTP
+  // code to rotate their password. Stops a phisher who has the password
+  // from rotating it (locking out the real owner) without ever passing
+  // an MFA gate.
+  const cpRoles = await db
+    .select({ role: userRoles.role })
+    .from(userRoles)
+    .where(eq(userRoles.user_id, args.user_id));
+  const cpPrivileged = cpRoles.some((r) => r.role === "admin" || r.role === "moderator");
+  if (cpPrivileged && u[0]!.mfa_enrolled) {
+    if (!args.totp_code) return { ok: false, error: { code: "mfa_required", status: 401 } };
+    if (
+      !/^\d{6}$/.test(args.totp_code) ||
+      !u[0]!.totp_secret ||
+      !authenticator.check(args.totp_code, u[0]!.totp_secret)
+    ) {
+      return { ok: false, error: { code: "invalid_mfa_code", status: 401 } };
+    }
+  }
 
   const newHash = await hashPassword(args.new_password);
   await db.transaction(async (tx) => {
@@ -1240,11 +1264,12 @@ export async function requestPasswordReset(args: {
   return { ok: true, user_id: uid };
 }
 
-type ResetPasswordError = { code: "password_too_short" | "password_breached" | "token_invalid" | "token_used" | "token_expired"; status: number };
+type ResetPasswordError = { code: "password_too_short" | "password_breached" | "token_invalid" | "token_used" | "token_expired" | "mfa_required" | "invalid_mfa_code"; status: number };
 
 export async function resetPassword(args: {
   token: string;
   new_password: string;
+  totp_code?: string;
 }): Promise<{ ok: true; value: { user_id: string } } | { ok: false; error: ResetPasswordError }> {
   if (args.new_password.length < 12 || args.new_password.length > 256) {
     return { ok: false, error: { code: "password_too_short", status: 400 } };
@@ -1266,6 +1291,33 @@ export async function resetPassword(args: {
     if (row.used_at) return { ok: false as const, error: { code: "token_used", status: 400 } };
     if (row.expires_at.getTime() < Date.now()) {
       return { ok: false as const, error: { code: "token_expired", status: 400 } };
+    }
+    // SEC-003 critic RISK-6 — admin/moderator + MFA enrolled must supply
+    // TOTP code in addition to the reset token. Closes the
+    // "compromised inbox → password reset → takeover" path.
+    const rpRoles = await tx
+      .select({ role: userRoles.role })
+      .from(userRoles)
+      .where(eq(userRoles.user_id, row.user_id));
+    const rpPrivileged = rpRoles.some((x) => x.role === "admin" || x.role === "moderator");
+    if (rpPrivileged) {
+      const userMfa = await tx
+        .select({ mfa_enrolled: users.mfa_enrolled, totp_secret: users.totp_secret })
+        .from(users)
+        .where(eq(users.id, row.user_id))
+        .limit(1);
+      if (userMfa[0]?.mfa_enrolled) {
+        if (!args.totp_code) {
+          return { ok: false as const, error: { code: "mfa_required", status: 401 } };
+        }
+        if (
+          !/^\d{6}$/.test(args.totp_code) ||
+          !userMfa[0]!.totp_secret ||
+          !authenticator.check(args.totp_code, userMfa[0]!.totp_secret)
+        ) {
+          return { ok: false as const, error: { code: "invalid_mfa_code", status: 401 } };
+        }
+      }
     }
     const newHash = await hashPassword(args.new_password);
     await tx

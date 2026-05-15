@@ -109,4 +109,4 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ## Active task
 
-**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅, SEC-002 ✅, SEC-003 ✅, AC-005 ✅. Next: RISK-6 (TOTP required on resetPassword/changePassword for admin), then SEC-010+AC-010 (10-session cap), AC-011 (6/min/IP login throttle).
+**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅, SEC-002 ✅, SEC-003 ✅, AC-005 ✅, SEC-003 critic RISK-6 ✅ (TOTP gate on reset/change-password for admin/mod). Next: SEC-010+AC-010 (10-session cap), AC-011 (6/min/IP login throttle).

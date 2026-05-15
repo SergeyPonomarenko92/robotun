@@ -196,6 +196,7 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
   const resetSchema = z.object({
     token: z.string().min(8).max(128),
     new_password: z.string().min(12).max(256),
+    totp_code: z.string().regex(/^\d{6}$/).optional(),
   });
   server.post("/auth/reset-password", async (req, reply) => {
     const parsed = resetSchema.safeParse(req.body);
@@ -285,6 +286,7 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
   const changePwdSchema = z.object({
     old_password: z.string().min(1).max(256),
     new_password: z.string().min(12).max(256),
+    totp_code: z.string().regex(/^\d{6}$/).optional(),
   });
   server.post(
     "/me/password",
@@ -294,7 +296,9 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
       const r = await auth.changePassword({
         user_id: req.auth!.user_id,
-        ...parsed.data,
+        old_password: parsed.data.old_password,
+        new_password: parsed.data.new_password,
+        totp_code: parsed.data.totp_code,
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
       void auth.logAuthEvent({
