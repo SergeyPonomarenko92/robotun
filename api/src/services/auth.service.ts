@@ -4,7 +4,7 @@
  */
 import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { emailVerificationTokens, mediaObjects, passwordResetTokens, sessions, userRoles, users } from "../db/schema.js";
+import { authAuditEvents, emailVerificationTokens, mediaObjects, passwordResetTokens, sessions, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
 import { randomBytes } from "node:crypto";
 import { env } from "../config/env.js";
@@ -446,6 +446,95 @@ export async function deleteAccount(args: {
     await tx.execute(dsql`DELETE FROM push_subscriptions WHERE user_id = ${args.user_id}`);
   });
   return { ok: true };
+}
+
+/* ----------------------------- AUTH AUDIT ---------------------------- */
+
+export type AuthEventType =
+  | "login_success"
+  | "login_failure"
+  | "logout"
+  | "refresh"
+  | "password_changed"
+  | "password_reset_requested"
+  | "password_reset_completed"
+  | "email_verification_requested"
+  | "email_verified"
+  | "sessions_logged_out_all"
+  | "profile_updated"
+  | "account_deleted";
+
+/** Fire-and-forget audit row insert. Never throws — failure here must
+ *  not block the action being audited. user_id may be null for failed
+ *  logins where the email didn't resolve. */
+export async function logAuthEvent(args: {
+  user_id: string | null;
+  event_type: AuthEventType;
+  ip?: string | null;
+  user_agent?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    await db.insert(authAuditEvents).values({
+      user_id: args.user_id,
+      event_type: args.event_type,
+      ip: args.ip ?? null,
+      user_agent: args.user_agent ?? null,
+      metadata: args.metadata ?? {},
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[auth-audit] insert failed for ${args.event_type}: ${(e as Error).message}`);
+  }
+}
+
+/** Paginated read-back of the current user's audit trail. Used by the
+ *  /me/audit FE surface. */
+export async function listAuthAudit(args: { user_id: string; limit: number; cursor?: string }) {
+  const limit = Math.min(Math.max(args.limit, 1), 100);
+  // Bigserial id is monotonic + dense — cursor by id alone suffices.
+  let beforeId: bigint | null = null;
+  if (args.cursor) {
+    try {
+      beforeId = BigInt(Buffer.from(args.cursor, "base64url").toString("utf8"));
+    } catch {
+      return { error: "cursor_invalid" as const };
+    }
+  }
+  const rows = await db.execute<{
+    id: string;
+    event_type: string;
+    ip: string | null;
+    user_agent: string | null;
+    metadata: Record<string, unknown>;
+    created_at: Date;
+  }>(
+    beforeId !== null
+      ? dsql`SELECT id, event_type, ip, user_agent, metadata, created_at
+               FROM auth_audit_events
+              WHERE user_id = ${args.user_id} AND id < ${beforeId.toString()}
+              ORDER BY id DESC LIMIT ${limit + 1}`
+      : dsql`SELECT id, event_type, ip, user_agent, metadata, created_at
+               FROM auth_audit_events
+              WHERE user_id = ${args.user_id}
+              ORDER BY id DESC LIMIT ${limit + 1}`
+  );
+  const hasMore = rows.length > limit;
+  const slice = rows.slice(0, limit);
+  const next_cursor = hasMore && slice.length > 0
+    ? Buffer.from(String(slice[slice.length - 1]!.id), "utf8").toString("base64url")
+    : null;
+  return {
+    items: slice.map((r) => ({
+      id: String(r.id),
+      event_type: r.event_type,
+      ip: r.ip,
+      user_agent: r.user_agent,
+      metadata: r.metadata,
+      created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+    })),
+    next_cursor,
+  };
 }
 
 /* ----------------------------- EMAIL VERIFY -------------------------- */

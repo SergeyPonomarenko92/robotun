@@ -97,6 +97,23 @@ export const userRoles = pgTable(
  * an opaque random string; we store only its SHA-256 hash. Each session
  * tracks `revoked` for rotation/replay-prevention.
  */
+export const authAuditEvents = pgTable(
+  "auth_audit_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    user_id: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    event_type: text("event_type").notNull(),
+    ip: text("ip"),
+    user_agent: text("user_agent"),
+    metadata: jsonb("metadata").notNull().default({}),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userIdx: index("idx_auth_audit_user").on(t.user_id, t.created_at),
+    eventTypeIdx: index("idx_auth_audit_event_type").on(t.event_type, t.created_at),
+  })
+);
+
 export const emailVerificationTokens = pgTable(
   "email_verification_tokens",
   {

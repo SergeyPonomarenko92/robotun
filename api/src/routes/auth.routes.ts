@@ -62,16 +62,30 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body" });
     }
+    const m = meta(req);
     const r = await auth.login({
       ...parsed.data,
-      ...meta(req),
+      ...m,
     });
     if (!r.ok) {
+      void auth.logAuthEvent({
+        user_id: null,
+        event_type: "login_failure",
+        ip: m.ip,
+        user_agent: m.user_agent,
+        metadata: { email: parsed.data.email, reason: r.error.code },
+      });
       if (r.error.code === "account_disabled") {
         return reply.code(403).send({ error: "account_disabled" });
       }
       return reply.code(401).send({ error: "invalid_credentials" });
     }
+    void auth.logAuthEvent({
+      user_id: r.result.user.id,
+      event_type: "login_success",
+      ip: m.ip,
+      user_agent: m.user_agent,
+    });
     return reply.code(200).send(r.result);
   });
 
@@ -191,6 +205,11 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
         ...parsed.data,
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      void auth.logAuthEvent({
+        user_id: req.auth!.user_id,
+        event_type: "password_changed",
+        ...meta(req),
+      });
       return reply.code(204).send();
     }
   );
@@ -214,7 +233,29 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
         password: parsed.data.password,
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      void auth.logAuthEvent({
+        user_id: req.auth!.user_id,
+        event_type: "account_deleted",
+        ...meta(req),
+      });
       return reply.code(204).send();
+    }
+  );
+
+  // Own audit trail. Cursor pagination on the bigserial id, 100/page max.
+  const audSchema = z.object({
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    cursor: z.string().max(200).optional(),
+  });
+  server.get(
+    "/me/audit",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = audSchema.safeParse(req.query ?? {});
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_query" });
+      const r = await auth.listAuthAudit({ user_id: req.auth!.user_id, ...parsed.data });
+      if ("error" in r) return reply.code(400).send({ error: r.error });
+      return r;
     }
   );
 };

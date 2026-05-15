@@ -169,6 +169,13 @@
       "when": 1779000800000,
       "tag": "0023_email_verification_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1779000900000,
+      "tag": "0024_auth_audit_events",
+      "breakpoints": true
     }
   ]
 }
