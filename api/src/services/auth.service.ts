@@ -2,7 +2,7 @@
  * Module 1 §4 — auth business logic. Pure functions over the db layer
  * so route handlers stay thin.
  */
-import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
+import { eq, and, isNull, gt, desc, inArray, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { authAuditEvents, emailChangeTokens, emailVerificationTokens, mediaObjects, passwordResetTokens, providerProfiles, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
@@ -1059,6 +1059,7 @@ export type AuthEventType =
   | "email_change_requested"
   | "email_changed"
   | "sessions_logged_out_all"
+  | "session_cap_revoked"
   | "profile_updated"
   | "account_deleted"
   | "role_granted_provider";
@@ -1358,6 +1359,8 @@ export async function revokeAllSessions(userId: string): Promise<{ revoked: numb
 
 // -------- Internal -------------------------------------------------------
 
+const MAX_ACTIVE_SESSIONS_PER_USER = 10;
+
 async function issueTokensFor(
   user_id: string,
   ver: number,
@@ -1366,13 +1369,53 @@ async function issueTokensFor(
   const access_token = await mintAccessToken({ sub: user_id, ver });
   const { plaintext, hash } = mintRefreshToken();
   const expires_at = new Date(Date.now() + env.REFRESH_TOKEN_TTL_SECONDS * 1000);
-  await db.insert(sessions).values({
-    user_id,
-    refresh_token_hash: hash,
-    expires_at,
-    user_agent: meta.user_agent ?? null,
-    ip: meta.ip ?? null,
+  // SEC-010 / AC-010: cap active sessions at MAX. Revoke + insert in
+  // ONE transaction with FOR UPDATE on the user's session rows so two
+  // concurrent issuances cannot both observe count=MAX and both insert
+  // (critic RISK-1/2/6/7). Explicit ORDER BY on the revoke selector
+  // makes planner re-ordering irrelevant (RISK-5). Returns list of
+  // revoked session ids so caller can emit audit event (RISK-4).
+  // RISK-3 known limitation: ordering by created_at evicts the YOUNGEST
+  // rotated-session row when refresh rotates sessions; v2 should track
+  // session-origin lineage. Documented; not blocking.
+  const evicted = await db.transaction(async (tx) => {
+    // Lock the user's active session rows so concurrent issueTokensFor
+    // serializes. SKIP LOCKED would be wrong here — we MUST see all
+    // active sessions to compute the eviction count correctly.
+    const active = await tx.execute<{ id: string }>(
+      dsql`SELECT id FROM sessions
+            WHERE user_id = ${user_id}
+              AND revoked_at IS NULL
+              AND expires_at > now()
+            ORDER BY created_at ASC
+            FOR UPDATE`
+    );
+    const toRevokeCount = Math.max(0, active.length - (MAX_ACTIVE_SESSIONS_PER_USER - 1));
+    const toRevoke = active.slice(0, toRevokeCount).map((r) => r.id);
+    if (toRevoke.length > 0) {
+      await tx
+        .update(sessions)
+        .set({ revoked_at: new Date() })
+        .where(inArray(sessions.id, toRevoke));
+    }
+    await tx.insert(sessions).values({
+      user_id,
+      refresh_token_hash: hash,
+      expires_at,
+      user_agent: meta.user_agent ?? null,
+      ip: meta.ip ?? null,
+    });
+    return toRevoke;
   });
+  // Audit row for evicted sessions — fire-and-forget outside the tx so
+  // a logAuthEvent failure can't roll back the issuance.
+  if (evicted.length > 0) {
+    void logAuthEvent({
+      user_id,
+      event_type: "session_cap_revoked",
+      metadata: { evicted_count: evicted.length, session_ids: evicted },
+    });
+  }
   return {
     access_token,
     refresh_token: plaintext,

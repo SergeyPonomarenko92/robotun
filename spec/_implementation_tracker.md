@@ -64,7 +64,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 - SEC-007 login constant-time ≥300ms — ✅ withFloor.
 - SEC-008 generic invalid_credentials — ✅.
 - SEC-009 rate limits at gateway — ✅ a5b1a1d 240/min/IP global.
-- SEC-010 10 concurrent sessions cap, oldest revoked — ❌ MISSING.
+- SEC-010 10 concurrent sessions cap, oldest revoked — ✅ this turn. issueTokensFor (called from register/login/refresh) wraps in db.transaction with SELECT FOR UPDATE on active sessions, computes overflow, revokes oldest BY created_at ASC, INSERT new — single tx. session_cap_revoked audit event with session_ids in metadata. Critic RISK-3 known: rotation makes created_at imperfect proxy for session age; documented for v2 session-origin lineage.
 
 ### Constraints (CON-001..CON-005)
 - CON-001 email CITEXT primary, phone secondary — 🟡 email lowercased manually (not CITEXT); phone NOT modeled.
@@ -83,7 +83,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 - AC-007 POST /users/me/roles/provider creates provider_profiles + user_roles entry — ✅ this turn.
 - AC-008 refresh rotates atomically — ✅.
 - AC-009 soft-delete → deleted_at + status + email rename + deleted_user_index — 🟡 PARTIAL (no deleted_at, no deleted_user_index).
-- AC-010 11th session → oldest revoked, count≤10 — ❌ MISSING.
+- AC-010 11th session → oldest revoked, count≤10 — ✅ this turn. Smoke 12 sequential logins: counts grow to 10 then stay at exactly 10 from 10th login onward. 3 session_cap_revoked audit rows confirm eviction.
 - AC-011 6 failed logins / 1 min / IP → 429 — 🟡 global 240/min/IP + 5/15min/email; not the spec metric.
 - AC-012 audit event within 5s — ✅ (synchronous insert in same request).
 
@@ -109,4 +109,4 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ## Active task
 
-**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅, SEC-002 ✅, SEC-003 ✅, AC-005 ✅, SEC-003 critic RISK-6 ✅ (TOTP gate on reset/change-password for admin/mod). Next: SEC-010+AC-010 (10-session cap), AC-011 (6/min/IP login throttle).
+**Working**: REQ-001 ✅, REQ-004 ✅, AC-007 ✅, SEC-002 ✅, SEC-003 ✅, AC-005 ✅, SEC-003 critic RISK-6 ✅, SEC-010 ✅, AC-010 ✅. Next: AC-011 (6/min/IP login throttle).
