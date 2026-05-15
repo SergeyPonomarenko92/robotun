@@ -11,9 +11,9 @@
  * media binding via Module 6 (attachment_ids stored as opaque JSON array),
  * 3-day counterparty-response window enforcement.
  */
-import { and, eq, sql as dsql } from "drizzle-orm";
+import { and, eq, inArray, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { deals, dealEvents, disputeEvidence, outboxEvents, userRoles } from "../db/schema.js";
+import { deals, dealEvents, disputeEvidence, mediaObjects, outboxEvents, userRoles } from "../db/schema.js";
 
 type ServiceError = { code: string; status: number; details?: unknown };
 type Result<T> = { ok: true; value: T } | { ok: false; error: ServiceError };
@@ -35,6 +35,40 @@ export async function recordEvidence(args: {
   statement?: string | null;
   attachment_ids?: string[];
 }): Promise<Result<{ id: string }>> {
+  // SEC-005 mirror of deals.service.disputeDeal — provider response side
+  // must validate attachment_ids against the same ownership/purpose/status
+  // contract. Media rows are immutable once 'ready' so this can run before
+  // the tx without TOCTOU risk.
+  if (args.attachment_ids && args.attachment_ids.length > 0) {
+    const mediaRows = await db
+      .select({
+        id: mediaObjects.id,
+        owner_user_id: mediaObjects.owner_user_id,
+        purpose: mediaObjects.purpose,
+        status: mediaObjects.status,
+      })
+      .from(mediaObjects)
+      .where(inArray(mediaObjects.id, args.attachment_ids));
+    const byId = new Map(mediaRows.map((m) => [m.id, m]));
+    for (const aid of args.attachment_ids) {
+      const m = byId.get(aid);
+      if (!m) return err("attachment_not_found", 422, { media_id: aid });
+      if (m.owner_user_id !== args.user_id) {
+        return err("attachment_forbidden", 422, { media_id: aid });
+      }
+      if (m.purpose !== "dispute_evidence") {
+        return err("attachment_wrong_purpose", 422, {
+          media_id: aid,
+          expected: "dispute_evidence",
+          got: m.purpose,
+        });
+      }
+      if (m.status !== "ready") {
+        return err("attachment_not_ready", 422, { media_id: aid, status: m.status });
+      }
+    }
+  }
+
   return await db.transaction(async (tx) => {
     const dr = await tx.select().from(deals).where(eq(deals.id, args.deal_id)).limit(1);
     if (dr.length === 0) return err("deal_not_found", 404);

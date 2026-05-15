@@ -20,7 +20,7 @@
  * unrelated clients can pick the same string without colliding.
  */
 import { createHash } from "node:crypto";
-import { and, desc, eq, or, sql as dsql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
   categories,
@@ -28,6 +28,7 @@ import {
   deals,
   disputeEvidence,
   listings,
+  mediaObjects,
   outboxEvents,
   users,
 } from "../db/schema.js";
@@ -387,6 +388,39 @@ export async function disputeDeal(args: TransitionArgs & {
   if (args.reason.length < 30) return err("reason_too_short", 422, { min: 30 });
   if (!args.attachment_ids || args.attachment_ids.length === 0) {
     return err("attachment_required", 422);
+  }
+
+  // SEC-005: attachment_ids must reference media uploaded by the disputing
+  // party with purpose='dispute_evidence' and status='ready'. Otherwise a
+  // malicious client could stuff in another user's media UUID, exposing it
+  // to the admin reviewing the dispute. Validation runs outside the tx —
+  // the media rows are immutable once 'ready' so no TOCTOU concern.
+  const mediaRows = await db
+    .select({
+      id: mediaObjects.id,
+      owner_user_id: mediaObjects.owner_user_id,
+      purpose: mediaObjects.purpose,
+      status: mediaObjects.status,
+    })
+    .from(mediaObjects)
+    .where(inArray(mediaObjects.id, args.attachment_ids));
+  const byId = new Map(mediaRows.map((m) => [m.id, m]));
+  for (const aid of args.attachment_ids) {
+    const m = byId.get(aid);
+    if (!m) return err("attachment_not_found", 422, { media_id: aid });
+    if (m.owner_user_id !== args.actor_id) {
+      return err("attachment_forbidden", 422, { media_id: aid });
+    }
+    if (m.purpose !== "dispute_evidence") {
+      return err("attachment_wrong_purpose", 422, {
+        media_id: aid,
+        expected: "dispute_evidence",
+        got: m.purpose,
+      });
+    }
+    if (m.status !== "ready") {
+      return err("attachment_not_ready", 422, { media_id: aid, status: m.status });
+    }
   }
 
   return await db.transaction(async (tx) => {
