@@ -54,6 +54,7 @@ export const users = pgTable(
     payout_enabled: boolean("payout_enabled").notNull().default(false),
     has_provider_role: boolean("has_provider_role").notNull().default(false),
     mfa_enrolled: boolean("mfa_enrolled").notNull().default(false),
+    totp_secret: text("totp_secret"),
     /** Denorm of "the moment this provider was KYC-approved". Set by
      *  kyc.service.approve, NEVER cleared on revoke/re-submission. Used
      *  by Feed for snapshot-stable cursor ranking (kyc_verifications

@@ -450,6 +450,87 @@ export async function deleteAccount(args: {
   return { ok: true };
 }
 
+/* ----------------------------- TOTP MFA ------------------------------ */
+
+import { authenticator } from "otplib";
+
+const TOTP_ISSUER = "Robotun";
+
+/** Enroll: generate a fresh base32 secret, store on users.totp_secret,
+ *  return the otpauth:// URL the FE renders as a QR. Does NOT flip
+ *  mfa_enrolled — that requires /verify with a valid code (proves the
+ *  user successfully imported the secret into their authenticator app).
+ *  Re-enrolling overwrites the prior secret and resets mfa_enrolled. */
+export async function enrollTotp(args: {
+  user_id: string;
+}): Promise<{ ok: true; value: { secret: string; otpauth_url: string } }> {
+  const u = await db
+    .select({ email: users.email })
+    .from(users)
+    .where(eq(users.id, args.user_id))
+    .limit(1);
+  const email = u[0]?.email ?? "user@robotun.dev";
+  const secret = authenticator.generateSecret();
+  await db
+    .update(users)
+    .set({ totp_secret: secret, mfa_enrolled: false })
+    .where(eq(users.id, args.user_id));
+  const otpauth_url = authenticator.keyuri(email, TOTP_ISSUER, secret);
+  return { ok: true, value: { secret, otpauth_url } };
+}
+
+type VerifyTotpError = { code: "no_pending_enrollment" | "invalid_code"; status: number };
+
+/** Verify the first TOTP code; flip mfa_enrolled=true on success. */
+export async function verifyTotp(args: {
+  user_id: string;
+  code: string;
+}): Promise<{ ok: true; value: { mfa_enrolled: true } } | { ok: false; error: VerifyTotpError }> {
+  const u = await db
+    .select({ totp_secret: users.totp_secret })
+    .from(users)
+    .where(eq(users.id, args.user_id))
+    .limit(1);
+  const secret = u[0]?.totp_secret;
+  if (!secret) return { ok: false, error: { code: "no_pending_enrollment", status: 409 } };
+  // 30s window default; otplib's check allows ±1 step tolerance.
+  const ok = authenticator.check(args.code, secret);
+  if (!ok) return { ok: false, error: { code: "invalid_code", status: 422 } };
+  await db
+    .update(users)
+    .set({ mfa_enrolled: true })
+    .where(eq(users.id, args.user_id));
+  return { ok: true, value: { mfa_enrolled: true } };
+}
+
+/** Disable: requires password re-auth AND a current TOTP code to defend
+ *  against compromised-session attackers. */
+type DisableTotpError = { code: "wrong_password" | "not_enrolled" | "invalid_code"; status: number };
+
+export async function disableTotp(args: {
+  user_id: string;
+  password: string;
+  code: string;
+}): Promise<{ ok: true } | { ok: false; error: DisableTotpError }> {
+  const u = await db
+    .select({ password_hash: users.password_hash, totp_secret: users.totp_secret, mfa_enrolled: users.mfa_enrolled })
+    .from(users)
+    .where(eq(users.id, args.user_id))
+    .limit(1);
+  if (u.length === 0 || !u[0]!.mfa_enrolled || !u[0]!.totp_secret) {
+    return { ok: false, error: { code: "not_enrolled", status: 409 } };
+  }
+  const pwOk = await verifyPassword(u[0]!.password_hash, args.password);
+  if (!pwOk) return { ok: false, error: { code: "wrong_password", status: 403 } };
+  const codeOk = authenticator.check(args.code, u[0]!.totp_secret);
+  if (!codeOk) return { ok: false, error: { code: "invalid_code", status: 422 } };
+  await db
+    .update(users)
+    .set({ totp_secret: null, mfa_enrolled: false })
+    .where(eq(users.id, args.user_id));
+  return { ok: true };
+}
+
 /* ----------------------------- ME PROFILE ---------------------------- */
 
 /** Fresh /users/me read — DB-backed (not JWT-claims-cached) so values

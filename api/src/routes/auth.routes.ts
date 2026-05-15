@@ -299,6 +299,43 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // TOTP MFA — enroll / verify / disable. v1 single-factor (TOTP only,
+  // no recovery codes); v2 adds backup codes + webauthn.
+  server.post(
+    "/me/mfa/totp/enroll",
+    { preHandler: server.authenticate },
+    async (req) => auth.enrollTotp({ user_id: req.auth!.user_id })
+  );
+
+  const totpCodeSchema = z.object({ code: z.string().regex(/^\d{6}$/) });
+  server.post(
+    "/me/mfa/totp/verify",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = totpCodeSchema.safeParse(req.body);
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await auth.verifyTotp({ user_id: req.auth!.user_id, code: parsed.data.code });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      return r.value;
+    }
+  );
+
+  const disableTotpSchema = z.object({
+    password: z.string().min(1).max(256),
+    code: z.string().regex(/^\d{6}$/),
+  });
+  server.post(
+    "/me/mfa/totp/disable",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = disableTotpSchema.safeParse(req.body);
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await auth.disableTotp({ user_id: req.auth!.user_id, ...parsed.data });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      return reply.code(204).send();
+    }
+  );
+
   // Own audit trail. Cursor pagination on the bigserial id, 100/page max.
   const audSchema = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(20),
