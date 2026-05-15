@@ -640,6 +640,31 @@ export const kycDocuments = pgTable(
 );
 
 /** Non-partitioned MVP; full spec wants monthly partitions. */
+/**
+ * Module 5 listing_audit_events — monthly-partitioned, append-only.
+ * REQ-014 + CON-011 + SEC-005. Drizzle metadata for INSERTs; partition
+ * management lives in raw SQL (migration 0033 + future retention job).
+ */
+export const listingAuditEvents = pgTable(
+  "listing_audit_events",
+  {
+    id: bigserial("id", { mode: "number" }).notNull(),
+    listing_id: uuid("listing_id").notNull(),
+    actor_id: uuid("actor_id"),
+    actor_role: text("actor_role").notNull(),
+    event_type: text("event_type").notNull(),
+    from_status: text("from_status"),
+    to_status: text("to_status"),
+    metadata: jsonb("metadata").notNull().default({}),
+    ip: text("ip"),
+    user_agent: text("user_agent"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    listingIdx: index("idx_lae_listing_id_created").on(t.listing_id, t.created_at),
+  })
+);
+
 export const kycReviewEvents = pgTable(
   "kyc_review_events",
   {

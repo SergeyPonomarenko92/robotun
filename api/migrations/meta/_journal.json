@@ -232,6 +232,13 @@
       "when": 1779001700000,
       "tag": "0032_kyc_review_events_ip_ua",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1779001800000,
+      "tag": "0033_listing_audit_events",
+      "breakpoints": true
     }
   ]
 }
