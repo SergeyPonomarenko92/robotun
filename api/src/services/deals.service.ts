@@ -227,6 +227,21 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
       .returning({ id: deals.id, status: deals.status, version: deals.version });
     const row = inserted[0]!;
 
+    // Module 5 REQ-010 — same-tx listing snapshot for dispute artifact.
+    // Defended by deals→listing_snapshots FK ON DELETE CASCADE.
+    if (input.listing_id) {
+      await tx.execute(
+        dsql`INSERT INTO listing_snapshots (
+                listing_id, deal_id, title, description,
+                pricing_type, price_amount, price_amount_max, currency,
+                service_type, category_id, provider_id)
+              SELECT id, ${row.id}, title, description,
+                     pricing_type::text, price_amount, price_amount_max, currency,
+                     service_type::text, category_id, provider_id
+                FROM listings WHERE id = ${input.listing_id}`
+      );
+    }
+
     await logEvent(tx, {
       deal_id: row.id,
       actor_id: input.client_id,
