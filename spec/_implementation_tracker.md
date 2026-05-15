@@ -186,4 +186,16 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 **Module 4 spec sweep COMPLETE for MVP** (HEAD d835249): REQ-006/009/009-annual/011/012/013/014/015 + SEC-010 + CON-009 verified. Open out-of-MVP: SEC-002/003 PII encryption (AWS KMS), CON-003/004 sanctions (legal/AML — descoped).
 
-**Module 5 sweep — 10 items shipped this turn** (HEAD 1d6a799): listing_audit_events table, auto_paused_reasons column, listing_reports + auto-pause trigger, audit emissions wiring, draft-auto-archive cron, /reports + /appeal-pause endpoints + listing_appeals table, kyc_revoked / category_archived / provider_status / role_revoked consumers + listing_bulk_jobs table.
+**Module 5 sweep — 10 items shipped earlier turn** (HEAD 1d6a799): listing_audit_events table, auto_paused_reasons column, listing_reports + auto-pause trigger, audit emissions wiring, draft-auto-archive cron, /reports + /appeal-pause endpoints + listing_appeals table, kyc_revoked / category_archived / provider_status / role_revoked consumers + listing_bulk_jobs table.
+
+**Cross-module sweep this turn (10 items, HEAD fa1df7a)**:
+  1. Module 5 SEC-004/AC-006/AC-008 publishListing trusted-recompute + republish-gate (01df8ee).
+  2. Module 5 REQ-010 listing_snapshots table + same-tx copy on deal create (472f3b8).
+  3. Module 6 REQ-012 kyc_document media expires_at on decide (3y approve / 90d reject) (76164e0).
+  4. Module 6 §4.7 media lifecycle sweeps — kyc-retention / soft-delete grace / row-purge (3b8d4f2).
+  5. Module 7 REQ-004 review window 60→90 days fix (1b381d6).
+  6. Module 9 notification templates for kyc.rekyc_required / kyc.expired / kyc.suspended (73f88bd).
+  7. Module 9 notification templates for listing.auto_paused / submitted_for_review (836fb95).
+  8. Module 11 payout defense-in-depth JOIN provider_profiles + kyc_verifications (c5dffc3).
+  9. Module 13 GET /search/listings with REQ-001/005/006/007 enforcement (53de7e9).
+  10. Module 5 §4.5.3 admin POST /admin/listings/reports/:id/resolve (fa1df7a).
