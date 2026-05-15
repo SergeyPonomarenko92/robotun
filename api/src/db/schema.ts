@@ -578,6 +578,7 @@ export const deals = pgTable(
     deadline_at: timestamp("deadline_at", { withTimezone: true }),
     review_started_at: timestamp("review_started_at", { withTimezone: true }),
     auto_complete_after: timestamp("auto_complete_after", { withTimezone: true }),
+    completed_at: timestamp("completed_at", { withTimezone: true }),
     dispute_window_until: timestamp("dispute_window_until", { withTimezone: true }),
     dispute_opened_at: timestamp("dispute_opened_at", { withTimezone: true }),
     dispute_resolve_by: timestamp("dispute_resolve_by", { withTimezone: true }),

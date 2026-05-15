@@ -138,6 +138,9 @@ export async function resolveDispute(args: {
         resolution_note: args.note ?? null,
         resolved_by_admin_id: args.admin_id,
         resolved_at: now,
+        // Stable 'completed' anchor for Module 7 review window — admin
+        // resolution paths must populate it too, not just /approve.
+        ...(nextStatus === "completed" ? { completed_at: now } : {}),
         ...(args.outcome === "refund_to_client" ? { cancellation_reason: "dispute_unresolved" } : {}),
       })
       .where(eq(deals.id, args.deal_id));

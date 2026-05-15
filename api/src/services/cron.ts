@@ -49,7 +49,9 @@ export async function dealAutoComplete(): Promise<number> {
     ),
     updated AS (
       UPDATE deals d
-         SET status = 'completed', version = d.version + 1
+         SET status = 'completed',
+             version = d.version + 1,
+             completed_at = COALESCE(d.completed_at, now())
         FROM due
        WHERE d.id = due.id
        RETURNING d.id, d.provider_id, d.client_id

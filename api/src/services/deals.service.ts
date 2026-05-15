@@ -357,11 +357,15 @@ export async function approveDeal(args: TransitionArgs): Promise<Result<{ id: st
     if (v) return { ok: false as const, error: v };
     if (d.status !== "in_review") return err("status_conflict", 409, { current_version: d.version, current_status: d.status });
 
+    const completedAt = new Date();
     await tx
       .update(deals)
       .set({
         status: "completed",
         version: d.version + 1,
+        // Stable anchor for Module 7's 60d review window; written ONCE on
+        // first 'completed' transition. See migration 0016.
+        completed_at: completedAt,
         // TODO Module 11: escrow release is sweep-driven per spec REQ-015 —
         // emit deal.escrow_release_requested from the release sweep after
         // dispute_window_until elapses, NOT from /approve.

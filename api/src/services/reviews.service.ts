@@ -73,9 +73,13 @@ export async function createReview(input: CreateInput): Promise<Result<{ id: str
       return err("deal_not_eligible", 409, { current_status: d.status });
     }
 
-    // Window: 60d after completion. Use updated_at as proxy for completed-at
-    // (Module 11 will introduce completed_at column).
-    const windowEnd = new Date(d.updated_at.getTime() + REVIEW_WINDOW_DAYS * 24 * 3600 * 1000);
+    // Window: 60d after completion. Anchored on deals.completed_at — written
+    // once at status flip in approveDeal / cron auto-complete / dispute
+    // resolveDispute. Fallback to updated_at for legacy rows that completed
+    // before migration 0016 backfilled completed_at from updated_at; new
+    // completions ignore the fallback path.
+    const anchor = d.completed_at ?? d.updated_at;
+    const windowEnd = new Date(anchor.getTime() + REVIEW_WINDOW_DAYS * 24 * 3600 * 1000);
     if (Date.now() > windowEnd.getTime()) {
       return err("review_window_closed", 409, { window_until: windowEnd.toISOString() });
     }
