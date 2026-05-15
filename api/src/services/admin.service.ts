@@ -14,6 +14,36 @@ type Result<T> = { ok: true; value: T } | { ok: false; error: ServiceError };
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+/** Public no-tx variant for ad-hoc audit writes (e.g. force-logout
+ *  endpoint that doesn't otherwise need a transaction). Defers to
+ *  the same INSERT shape; admin_actions trigger guards immutability. */
+export async function recordAdminAction(args: {
+  admin_id: string;
+  target_user_id?: string | null;
+  target_aggregate_type?: string | null;
+  target_aggregate_id?: string | null;
+  action: string;
+  metadata?: Record<string, unknown>;
+  ip?: string | null;
+  ua?: string | null;
+}): Promise<void> {
+  await db.execute(
+    dsql`INSERT INTO admin_actions
+            (actor_admin_id, target_user_id, target_user_id_denorm,
+             target_aggregate_type, target_aggregate_id,
+             action, metadata, ip, user_agent)
+          VALUES (${args.admin_id},
+                  ${args.target_user_id ?? null},
+                  ${args.target_user_id ?? null},
+                  ${args.target_aggregate_type ?? null},
+                  ${args.target_aggregate_id ?? null},
+                  ${args.action},
+                  ${JSON.stringify(args.metadata ?? {})}::jsonb,
+                  ${args.ip ?? null},
+                  ${args.ua ?? null})`
+  );
+}
+
 async function audit(tx: Tx, args: {
   actor_admin_id: string;
   target_user_id?: string | null;

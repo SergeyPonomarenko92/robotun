@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db, sql as dsql } from "../db/client.js";
 import { userRoles } from "../db/schema.js";
 import * as svc from "../services/admin.service.js";
+import * as auth from "../services/auth.service.js";
 import {
   runAllJobs,
   dealAutoComplete,
@@ -205,6 +206,30 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
       return r.value;
+    }
+  );
+
+  // Admin force-logout — revoke all sessions for the target user AND
+  // bump their ver. Useful after suspecting compromise on a user account
+  // without going to full suspend (which blocks payouts + feed visibility).
+  // Mirrors /me/sessions/logout-all but admin-triggered against another
+  // user. admin_actions is written by suspendUser/activateUser path;
+  // this one writes its own admin_actions row.
+  server.post<{ Params: { id: string } }>(
+    "/admin/users/:id/force-logout",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      if (!(await requireAdmin(req, reply))) return;
+      const r = await auth.revokeAllSessions(req.params.id);
+      await svc.recordAdminAction({
+        admin_id: req.auth!.user_id,
+        target_user_id: req.params.id,
+        action: "user.force_logout",
+        ip: req.ip,
+        ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null,
+        metadata: { revoked: r.revoked },
+      }).catch(() => undefined);
+      return r;
     }
   );
 
