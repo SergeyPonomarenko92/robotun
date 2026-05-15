@@ -797,12 +797,12 @@ export async function listingsRoleRevokedConsumer(): Promise<number> {
         ev AS (
           INSERT INTO listing_audit_events (listing_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
           SELECT id, NULL, 'system', 'listing.bulk_archived', NULL, 'archived',
-                 jsonb_build_object('job_id', ${job.job_id}, 'reason', 'role_revoked') FROM s1
+                 jsonb_build_object('job_id', ${job.job_id}::text, 'reason', 'role_revoked') FROM s1
         ),
         outbox AS (
           INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
           SELECT 'listing', id, 'listing.archived',
-                 jsonb_build_object('listing_id', id, 'reason', 'role_revoked', 'job_id', ${job.job_id}) FROM s1
+                 jsonb_build_object('listing_id', id::text, 'reason', 'role_revoked', 'job_id', ${job.job_id}::text) FROM s1
         )
         SELECT COUNT(*)::int AS n FROM s1`
       )) as unknown as Array<{ n: number }>;
@@ -813,13 +813,14 @@ export async function listingsRoleRevokedConsumer(): Promise<number> {
         dsqlImport`SELECT COUNT(*)::int AS n FROM listings
                     WHERE provider_id = ${job.target_id} AND status <> 'archived'`
       )) as unknown as Array<{ n: number }>;
+      const remN = remaining[0]?.n ?? 0;
       await tx.execute(
         dsqlImport`UPDATE listing_bulk_jobs
-                      SET processed = processed + ${batchN},
+                      SET processed = processed + ${batchN}::int,
                           updated_at = now(),
-                          status = CASE WHEN ${remaining[0]?.n ?? 0} = 0 THEN 'completed' ELSE status END,
-                          completed_at = CASE WHEN ${remaining[0]?.n ?? 0} = 0 THEN now() ELSE completed_at END
-                    WHERE job_id = ${job.job_id}`
+                          status = CASE WHEN ${remN}::int = 0 THEN 'completed' ELSE status END,
+                          completed_at = CASE WHEN ${remN}::int = 0 THEN now() ELSE completed_at END
+                    WHERE job_id = ${job.job_id}::uuid`
       );
     });
   }
