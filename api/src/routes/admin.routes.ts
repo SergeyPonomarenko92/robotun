@@ -14,6 +14,7 @@ import {
   kycStaleClaim,
   outboxRetention,
   listingDraftExpiry,
+  sessionsPurge,
 } from "../services/cron.js";
 import { scanRetrySweep, regenerateMissingVariants } from "../services/media.service.js";
 import { drainEmailQueue } from "../services/notifications.service.js";
@@ -162,6 +163,7 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     media_variants_backfill: regenerateMissingVariants,
     email_drain: drainEmailQueue,
     push_drain: drainPushQueue,
+    sessions_purge: sessionsPurge,
   };
   server.post<{ Params: { job: string } }>(
     "/admin/cron/run/:job",

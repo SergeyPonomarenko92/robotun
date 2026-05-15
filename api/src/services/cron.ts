@@ -15,6 +15,10 @@
  *  - outboxRetention        processed + 7d → DELETE
  *  - listingDraftExpiry     listing_drafts updated_at + 30d → DELETE
  *  - mediaScanRetry         awaiting_scan rows >2min → re-run scanMediaObject
+ *  - mediaVariantsBackfill  ready image rows missing @2x → regenerate
+ *  - emailDrain             notifications channel='email' pending → SMTP
+ *  - pushDrain              notifications channel='push' pending → VAPID
+ *  - sessionsPurge          expired/revoked sessions older than retention
  */
 import { sql } from "../db/client.js";
 import { scanRetrySweep, regenerateMissingVariants } from "./media.service.js";
@@ -314,7 +318,21 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.media_variants_backfill = await regenerateMissingVariants().catch(() => 0);
   results.email_drain = await drainEmailQueue().catch(() => 0);
   results.push_drain = await drainPushQueue().catch(() => 0);
+  results.sessions_purge = await sessionsPurge();
   return results;
+}
+
+/** Retention sweep — purge sessions whose refresh has expired more than
+ *  7 days ago, AND sessions revoked more than 30 days ago. Both windows
+ *  give an investigation buffer (admin can SELECT recent-revoke rows for
+ *  audit before they vanish) without letting the table grow unbounded. */
+export async function sessionsPurge(): Promise<number> {
+  return exec(
+    "sessions_purge",
+    `DELETE FROM sessions
+      WHERE (revoked_at IS NULL AND expires_at < now() - interval '7 days')
+         OR (revoked_at IS NOT NULL AND revoked_at < now() - interval '30 days')`
+  );
 }
 
 let started = false;
