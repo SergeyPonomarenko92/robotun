@@ -41,7 +41,11 @@ const SEEDS: SeedUser[] = [
     has_provider_role: true,
     kyc_status: "approved",
     payout_enabled: true,
-    mfa_enrolled: true,
+    // mfa_enrolled=false so the demo credentials login without a TOTP
+    // code (seeding totp_secret would be pointless — the user can't
+    // import a constant secret into their authenticator app). To smoke
+    // the MFA flow: log in, /me/mfa/totp/enroll, scan QR, /verify.
+    mfa_enrolled: false,
     roles: ["client", "provider"],
   },
   {
@@ -51,7 +55,7 @@ const SEEDS: SeedUser[] = [
     has_provider_role: false,
     kyc_status: "none",
     payout_enabled: false,
-    mfa_enrolled: true,
+    mfa_enrolled: false,
     roles: ["admin"],
   },
 ];
