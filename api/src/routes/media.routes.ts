@@ -97,16 +97,27 @@ export const mediaRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
-  server.get(
-    "/media",
-    { preHandler: server.authenticate },
-    async (req) => {
-      const q = z
-        .object({ limit: z.coerce.number().int().min(1).max(100).default(20) })
-        .parse(req.query ?? {});
-      return svc.listOwnMedia(req.auth!.user_id, q);
-    }
-  );
+  const ownListSchema = z.object({
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    cursor: z.string().min(1).max(500).optional(),
+    status: z
+      .enum(["awaiting_upload", "awaiting_scan", "ready", "scan_error_permanent", "quarantine_rejected"])
+      .optional(),
+    purpose: z.enum(["avatar", "listing_cover", "listing_gallery"]).optional(),
+  });
+  const ownListHandler = async (
+    req: import("fastify").FastifyRequest,
+    reply: import("fastify").FastifyReply
+  ) => {
+    const parsed = ownListSchema.safeParse(req.query ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_query" });
+    const r = await svc.listOwnMedia(req.auth!.user_id, parsed.data);
+    if ("error" in r) return reply.code(400).send({ error: r.error });
+    return r;
+  };
+  server.get("/media", { preHandler: server.authenticate }, ownListHandler);
+  // FE-canonical path.
+  server.get("/me/media", { preHandler: server.authenticate }, ownListHandler);
 
   /* ----------------- listing↔media link (Module 5 bridge) ----------------- */
 

@@ -708,18 +708,73 @@ export async function softDelete(args: { user_id: string; media_id: string }): P
 
 /* ---------------------------- LIST OWN MEDIA ----------------------------- */
 
-export async function listOwnMedia(userId: string, opts: { limit: number; cursor?: string }) {
+export async function listOwnMedia(
+  userId: string,
+  opts: { limit: number; cursor?: string; status?: string; purpose?: string }
+): Promise<{ items: unknown[]; next_cursor: string | null } | { error: "cursor_invalid" }> {
   const limit = Math.min(Math.max(opts.limit, 1), 100);
   const where = [eq(mediaObjects.owner_user_id, userId)];
   // Hide kyc_document — never expose via generic listing.
   where.push(dsql`${mediaObjects.purpose} <> 'kyc_document'`);
+  if (opts.status) {
+    where.push(eq(mediaObjects.status, opts.status as "ready"));
+  }
+  if (opts.purpose) {
+    where.push(dsql`${mediaObjects.purpose} = ${opts.purpose}`);
+  }
+  if (opts.cursor) {
+    try {
+      const cur = JSON.parse(Buffer.from(opts.cursor, "base64url").toString("utf8")) as { t?: string; i?: string };
+      if (!cur.t || !cur.i || Number.isNaN(new Date(cur.t).getTime()) || !/^[0-9a-f-]{36}$/i.test(cur.i)) {
+        return { error: "cursor_invalid" };
+      }
+      where.push(dsql`(${mediaObjects.created_at}, ${mediaObjects.id}) < (${new Date(cur.t)}, ${cur.i})`);
+    } catch {
+      return { error: "cursor_invalid" };
+    }
+  }
 
   const rows = await db
-    .select()
+    .select({
+      id: mediaObjects.id,
+      purpose: mediaObjects.purpose,
+      status: mediaObjects.status,
+      mime_type: mediaObjects.mime_type,
+      byte_size: mediaObjects.byte_size,
+      width_px: mediaObjects.width_px,
+      height_px: mediaObjects.height_px,
+      variants: mediaObjects.variants,
+      last_scan_error: mediaObjects.last_scan_error,
+      created_at: mediaObjects.created_at,
+      ready_at: mediaObjects.ready_at,
+      listing_id: mediaObjects.listing_id,
+    })
     .from(mediaObjects)
     .where(and(...where))
-    .orderBy(desc(mediaObjects.created_at))
+    .orderBy(desc(mediaObjects.created_at), desc(mediaObjects.id))
     .limit(limit + 1);
   const hasMore = rows.length > limit;
-  return { items: rows.slice(0, limit), has_more: hasMore };
+  const slice = rows.slice(0, limit);
+  const last = slice[slice.length - 1];
+  const next_cursor =
+    hasMore && last
+      ? Buffer.from(JSON.stringify({ t: last.created_at.toISOString(), i: last.id }), "utf8").toString("base64url")
+      : null;
+  // FE projection — strip internal-only fields (scan_attempts, checksum, etc.)
+  // and add a computed variants[] array (jsonb keys).
+  const items = slice.map((r) => ({
+    id: r.id,
+    purpose: r.purpose,
+    status: r.status,
+    mime_type: r.mime_type,
+    byte_size: r.byte_size,
+    width_px: r.width_px,
+    height_px: r.height_px,
+    variants: ["original", ...Object.keys((r.variants as Record<string, string>) ?? {})],
+    last_scan_error: r.last_scan_error,
+    listing_id: r.listing_id,
+    created_at: r.created_at.toISOString(),
+    ready_at: r.ready_at?.toISOString() ?? null,
+  }));
+  return { items, next_cursor };
 }
