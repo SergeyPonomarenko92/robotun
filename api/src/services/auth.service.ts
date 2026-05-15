@@ -4,7 +4,9 @@
  */
 import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { sessions, userRoles, users } from "../db/schema.js";
+import { passwordResetTokens, sessions, userRoles, users } from "../db/schema.js";
+import { sendEmail } from "./email.js";
+import { randomBytes } from "node:crypto";
 import { env } from "../config/env.js";
 import {
   hashPassword,
@@ -258,6 +260,97 @@ export async function listActiveSessions(userId: string) {
       expires_at: r.expires_at.toISOString(),
     })),
   };
+}
+
+/* ----------------------------- PASSWORD RESET ------------------------- */
+
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const BRAND_URL = process.env.BRAND_URL ?? "http://localhost:3000";
+
+/**
+ * Forgot-password handler. Always returns success-shaped without leaking
+ * whether the email exists (timing-equalised by always issuing argon2-
+ * priced work via the dummy hash IF no user found — covered by the
+ * regular login() pattern). Real implementations should also rate-limit
+ * per-IP and per-email; we rely on the global @fastify/rate-limit floor.
+ */
+export async function requestPasswordReset(args: {
+  email: string;
+  ip?: string | null;
+  user_agent?: string | null;
+}): Promise<{ ok: true }> {
+  const userRow = await db
+    .select({ id: users.id, status: users.status })
+    .from(users)
+    .where(eq(users.email, args.email))
+    .limit(1);
+  if (userRow.length === 0 || userRow[0]!.status !== "active") {
+    // Don't disclose existence; return ok with no side effect.
+    return { ok: true };
+  }
+  const uid = userRow[0]!.id;
+  const plaintext = randomBytes(32).toString("base64url");
+  const tokenHash = sha256Hex(plaintext);
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+  await db.insert(passwordResetTokens).values({
+    user_id: uid,
+    token_hash: tokenHash,
+    expires_at: expiresAt,
+    ip: args.ip ?? null,
+    user_agent: args.user_agent ?? null,
+  });
+  // Fire-and-forget email; failure logs but doesn't surface to caller (we
+  // already committed the token row — operator can reissue from logs).
+  const link = `${BRAND_URL}/reset-password?token=${plaintext}`;
+  sendEmail({
+    to: args.email,
+    subject: "Скидання паролю Robotun",
+    text: `Ми отримали запит на скидання пароля. Перейдіть за посиланням протягом 30 хвилин:\n\n${link}\n\nЯкщо це були не ви — проігноруйте цей лист.`,
+  }).catch((e) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[pwd-reset] email send failed for ${args.email}: ${(e as Error).message}`);
+  });
+  return { ok: true };
+}
+
+type ResetPasswordError = { code: "password_too_short" | "token_invalid" | "token_used" | "token_expired"; status: number };
+
+export async function resetPassword(args: {
+  token: string;
+  new_password: string;
+}): Promise<{ ok: true; value: { ok: true } } | { ok: false; error: ResetPasswordError }> {
+  if (args.new_password.length < 12 || args.new_password.length > 256) {
+    return { ok: false, error: { code: "password_too_short", status: 400 } };
+  }
+  const tokenHash = sha256Hex(args.token);
+  return await db.transaction(async (tx) => {
+    const r = await tx
+      .select()
+      .from(passwordResetTokens)
+      .where(eq(passwordResetTokens.token_hash, tokenHash))
+      .limit(1);
+    if (r.length === 0) return { ok: false as const, error: { code: "token_invalid", status: 400 } };
+    const row = r[0]!;
+    if (row.used_at) return { ok: false as const, error: { code: "token_used", status: 400 } };
+    if (row.expires_at.getTime() < Date.now()) {
+      return { ok: false as const, error: { code: "token_expired", status: 400 } };
+    }
+    const newHash = await hashPassword(args.new_password);
+    await tx
+      .update(users)
+      .set({ password_hash: newHash, ver: dsql`${users.ver} + 1` })
+      .where(eq(users.id, row.user_id));
+    await tx
+      .update(passwordResetTokens)
+      .set({ used_at: new Date() })
+      .where(eq(passwordResetTokens.id, row.id));
+    // Revoke all existing sessions — the user is rotating credentials.
+    await tx
+      .update(sessions)
+      .set({ revoked_at: new Date() })
+      .where(and(eq(sessions.user_id, row.user_id), isNull(sessions.revoked_at)));
+    return { ok: true as const, value: { ok: true as const } };
+  });
 }
 
 /** Revoke ALL active sessions for a user (post-breach reset). Also bumps

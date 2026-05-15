@@ -100,6 +100,33 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     await auth.logout(parsed.data.refresh_token);
     return reply.code(204).send();
   });
+
+  // Forgot-password — always 204 regardless of whether email exists,
+  // to avoid an enumeration oracle. Real send happens fire-and-forget
+  // server-side.
+  const forgotSchema = z.object({ email: z.string().email().max(254) });
+  server.post("/auth/forgot-password", async (req, reply) => {
+    const parsed = forgotSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+    await auth.requestPasswordReset({
+      email: parsed.data.email,
+      ip: req.ip,
+      user_agent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null,
+    });
+    return reply.code(204).send();
+  });
+
+  const resetSchema = z.object({
+    token: z.string().min(8).max(128),
+    new_password: z.string().min(12).max(256),
+  });
+  server.post("/auth/reset-password", async (req, reply) => {
+    const parsed = resetSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+    const r = await auth.resetPassword(parsed.data);
+    if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+    return { ok: true };
+  });
 };
 
 export const usersRoutes: FastifyPluginAsync = async (server) => {

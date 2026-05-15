@@ -96,6 +96,26 @@ export const userRoles = pgTable(
  * an opaque random string; we store only its SHA-256 hash. Each session
  * tracks `revoked` for rotation/replay-prevention.
  */
+export const passwordResetTokens = pgTable(
+  "password_reset_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    user_id: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    token_hash: text("token_hash").notNull(),
+    expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
+    used_at: timestamp("used_at", { withTimezone: true }),
+    ip: text("ip"),
+    user_agent: text("user_agent"),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    hashUniq: uniqueIndex("uq_password_reset_tokens_hash").on(t.token_hash),
+    userIdx: index("idx_password_reset_tokens_user").on(t.user_id),
+  })
+);
+
 export const sessions = pgTable(
   "sessions",
   {
