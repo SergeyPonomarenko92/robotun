@@ -140,7 +140,7 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ## Module 3-14 (стиснуто; деталі по REQ-list — у трекер коли черга)
 - Module 2 Categories (spec-data-category-tree.md): MVP DONE (2c10370) — see expanded sweep above.
-- Module 3 Deals (spec-architecture-deal-workflow.md): MVP DONE + deep-review fixes (efafd78 + cc81f69 + а74160b).
+- Module 3 Deals (spec-architecture-deal-workflow.md): MVP DONE + deep-review fixes (efafd78 + cc81f69 + а74160b). **Module 3 AC-010** (cancel-request 48h expiry sweep) ✅ this turn — new `dealCancelRequestExpiry` cron job with critic refinements (RISK-1 narrowed CASE SET, RISK-3 ORDER BY GREATEST timestamp for FIFO-by-age). Deferred: RISK-4 notification template for `deal.cancel_request_expired`, RISK-5 metadata.requested_by_role + §4.7 projection whitelist. Module 3 REMAINING gaps: REQ-003/004 escrow async flow (Module 11 dependency), REQ-014/015 release sweep + auto-complete refinement (Module 11 dep), AC-005 /internal/escrow-held endpoint (Module 11 dep).
 - Module 4 KYC (spec-architecture-kyc-provider-verification.md): MVP DONE (fbd3be2).
 - Module 5 Listings: MVP DONE + KYC gate (1d93fbb + 63f493f).
 - Module 6 Media: MVP DONE + ClamAV + variants (fbd3be2 + 37e649e + 7ee3a1a + 376927e + 9ab35cf).

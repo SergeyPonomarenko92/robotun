@@ -309,6 +309,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
   results.deal_auto_complete = await dealAutoComplete();
   results.deal_pending_expiry = await dealPendingExpiry();
+  results.deal_cancel_request_expiry = await dealCancelRequestExpiry();
   results.dispute_escalation = await disputeEscalation();
   results.dispute_auto_refund = await disputeAutoRefund();
   results.kyc_expired_sweep = await kycExpiredSweep();
@@ -380,6 +381,70 @@ export async function authAuditPurge(): Promise<number> {
   return exec(
     "auth_audit_purge",
     `DELETE FROM auth_audit_events WHERE created_at < now() - interval '365 days'`
+  );
+}
+
+/** Module 3 AC-010 — cancel-request 48h expiry sweep.
+ *  When one party of an active deal has POSTed /cancel but the other
+ *  hasn't joined within 48h, clear both cancel_requested_*_at timestamps
+ *  (single-party requests can be re-issued) and emit
+ *  deal.cancel_request_expired.
+ *
+ *  Idempotent via the timer-condition WHERE clause + RETURNING zero rows
+ *  on re-tick. Bounded at 200 rows/tick.
+ */
+export async function dealCancelRequestExpiry(): Promise<number> {
+  return exec(
+    "deal_cancel_request_expiry",
+    `
+    WITH expired AS (
+      SELECT id, version FROM deals
+       WHERE status = 'active'
+         AND (
+           (cancel_requested_by_client_at IS NOT NULL
+              AND cancel_requested_by_client_at <= now() - interval '48 hours')
+           OR
+           (cancel_requested_by_provider_at IS NOT NULL
+              AND cancel_requested_by_provider_at <= now() - interval '48 hours')
+         )
+       -- RISK-3: FIFO-by-oldest-request (matches idx_deals_cancel_expiry).
+       ORDER BY GREATEST(
+         cancel_requested_by_client_at,
+         cancel_requested_by_provider_at
+       )
+       LIMIT 200
+       FOR UPDATE SKIP LOCKED
+    ),
+    updated AS (
+      UPDATE deals d
+         -- RISK-1: defensive narrowed CASE — only NULL the side that
+         -- actually expired; preserves a counterparty's still-valid
+         -- request if it landed within the 48h window before sweep.
+         SET cancel_requested_by_client_at = CASE
+               WHEN d.cancel_requested_by_client_at <= now() - interval '48 hours'
+               THEN NULL ELSE d.cancel_requested_by_client_at END,
+             cancel_requested_by_provider_at = CASE
+               WHEN d.cancel_requested_by_provider_at <= now() - interval '48 hours'
+               THEN NULL ELSE d.cancel_requested_by_provider_at END,
+             version = d.version + 1
+        FROM expired
+       WHERE d.id = expired.id
+       RETURNING d.id, d.client_id, d.provider_id
+    ),
+    ev AS (
+      INSERT INTO deal_events (deal_id, actor_id, actor_role, event_type,
+                                from_status, to_status, metadata)
+      SELECT id, NULL, 'system', 'deal.cancel_request_expired',
+             'active', 'active', '{}'::jsonb
+        FROM updated
+    )
+    INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+    SELECT 'deal', id, 'deal.cancel_request_expired',
+           jsonb_build_object('deal_id', id,
+                              'client_id', client_id,
+                              'provider_id', provider_id)
+      FROM updated
+    `
   );
 }
 

@@ -9,6 +9,7 @@ import {
   runAllJobs,
   dealAutoComplete,
   dealPendingExpiry,
+  dealCancelRequestExpiry,
   disputeEscalation,
   disputeAutoRefund,
   kycExpiredSweep,
@@ -293,6 +294,7 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
   const JOBS: Record<string, () => Promise<number>> = {
     deal_auto_complete: dealAutoComplete,
     deal_pending_expiry: dealPendingExpiry,
+    deal_cancel_request_expiry: dealCancelRequestExpiry,
     dispute_escalation: disputeEscalation,
     dispute_auto_refund: disputeAutoRefund,
     kyc_expired_sweep: kycExpiredSweep,
