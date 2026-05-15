@@ -446,6 +446,11 @@ function projectNotification(row: typeof notifications.$inferSelect): Notificati
     case "listing":
       href = `/listings/${row.aggregate_id}`;
       break;
+    case "media":
+      // No /media/:id user-facing page; deep-link to the uploader's media
+      // index (FE catches the query param and scrolls/highlights).
+      href = `/me/uploads?media_id=${row.aggregate_id}`;
+      break;
     default:
       href = null;
   }

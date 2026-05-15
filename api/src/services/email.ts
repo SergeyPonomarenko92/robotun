@@ -42,6 +42,7 @@ const CTA_PATHS: Record<string, string> = {
   user: "/me",
   message: "/messages",
   conversation: "/messages",
+  media: "/me/uploads",
 };
 
 // Per-notification-code CTA label override. Defaults to "Відкрити Robotun"
@@ -57,6 +58,7 @@ const CTA_LABELS: Record<string, string> = {
   payout_completed: "Деталі виплати",
   new_message_for_recipient: "Перейти у чат",
   review_published: "Відповісти на відгук",
+  media_quarantined_for_owner: "Завантажити інший файл",
 };
 
 function ctaFor(args: {
