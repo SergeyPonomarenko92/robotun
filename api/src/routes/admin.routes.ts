@@ -61,7 +61,14 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
            AND created_at > now() - interval '24 hours') AS email_failed_24h,
         (SELECT COUNT(*)::int FROM notifications WHERE channel = 'email' AND status = 'sent'
            AND created_at > now() - interval '24 hours') AS email_sent_24h,
+        (SELECT COUNT(*)::int FROM notifications WHERE channel = 'push' AND status = 'pending') AS push_pending,
+        (SELECT COUNT(*)::int FROM notifications WHERE channel = 'push' AND status = 'failed'
+           AND created_at > now() - interval '24 hours') AS push_failed_24h,
+        (SELECT COUNT(*)::int FROM notifications WHERE channel = 'push' AND status = 'sent'
+           AND created_at > now() - interval '24 hours') AS push_sent_24h,
+        (SELECT COUNT(*)::int FROM push_subscriptions) AS push_subs_active,
         (SELECT COUNT(*)::int FROM media_objects WHERE status = 'awaiting_scan') AS scan_pending,
+        (SELECT COUNT(*)::int FROM media_objects WHERE status = 'scan_error_permanent') AS scan_terminal,
         (SELECT COUNT(*)::int FROM media_objects WHERE status = 'quarantine_rejected'
            AND scan_completed_at > now() - interval '24 hours') AS scan_quarantined_24h,
         (SELECT COUNT(*)::int FROM media_objects WHERE status = 'ready'
