@@ -217,9 +217,15 @@ type PublicReview = {
   status: "published";
 };
 
-async function projectReviews(rows: { id: string }[]): Promise<PublicReview[]> {
+async function projectReviews(
+  rows: { id: string }[],
+  opts: { includeDealRef?: boolean } = {}
+): Promise<PublicReview[]> {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
+  // Hidden replies (status='hidden') must NOT appear in public feeds — a
+  // moderator hiding a reply for harassment/defamation expects it gone.
+  // CHECK constraint allows ('published','hidden'); JOIN predicate enforces.
   const fullRows = await db.execute<{
     id: string;
     overall_rating: number;
@@ -238,7 +244,7 @@ async function projectReviews(rows: { id: string }[]): Promise<PublicReview[]> {
                 rep.body AS reply_body, rep.created_at AS reply_created_at
            FROM reviews r
            LEFT JOIN users u ON u.id = r.reviewer_id
-           LEFT JOIN review_replies rep ON rep.review_id = r.id
+           LEFT JOIN review_replies rep ON rep.review_id = r.id AND rep.status = 'published'
           WHERE r.id = ANY(${ids}::uuid[])`
   );
   // Preserve incoming ids order.
@@ -255,7 +261,11 @@ async function projectReviews(rows: { id: string }[]): Promise<PublicReview[]> {
         display_name: r.reviewer_name ?? "Видалений користувач",
         avatar_url: r.reviewer_avatar ?? undefined,
       },
-      deal_ref: r.deal_id,
+      // deal_ref exposes raw deal UUID. Public listing/user feeds are
+      // unauthenticated — emitting it builds a listing→deal_ids oracle. Only
+      // /deals/:id/reviews (viewer is already proven to be a party) sets
+      // includeDealRef=true.
+      ...(opts.includeDealRef ? { deal_ref: r.deal_id } : {}),
       reply: r.reply_body
         ? {
             body: r.reply_body,
@@ -269,10 +279,16 @@ async function projectReviews(rows: { id: string }[]): Promise<PublicReview[]> {
 function decodeReviewCursor(c: string | undefined): { t: string; i: string } | null {
   if (!c) return null;
   try {
-    const o = JSON.parse(Buffer.from(c, "base64").toString("utf8"));
-    if (typeof o?.t === "string" && typeof o?.i === "string") return o;
-  } catch {}
-  return null;
+    const o = JSON.parse(Buffer.from(c, "base64").toString("utf8")) as Partial<{ t: string; i: string }>;
+    if (typeof o?.t !== "string" || typeof o?.i !== "string") return null;
+    // Bad timestamps used to drop the comparison to NULL → empty page silently.
+    if (Number.isNaN(new Date(o.t).getTime())) return null;
+    // Bad UUIDs used to bubble up as a 500 from PG cast.
+    if (!/^[0-9a-f-]{36}$/i.test(o.i)) return null;
+    return { t: o.t, i: o.i };
+  } catch {
+    return null;
+  }
 }
 
 export async function listForListing(
@@ -329,8 +345,14 @@ export async function listForListing(
 
 export async function listForUser(userId: string, opts: { limit: number; cursor?: string }) {
   const limit = Math.min(Math.max(opts.limit, 1), 50);
+  // Spec REQ-017: user/provider profile aggregates and listings show ONLY
+  // client→provider reviews. Without this filter, when the same person acts
+  // on both sides of any deal, provider→client reviews would pollute the
+  // public rating with semantically incompatible scales (provider role
+  // gives overall only; client role gives 4 subscores).
   const where = [
     eq(reviews.reviewee_id, userId),
+    eq(reviews.reviewer_role, "client"),
     eq(reviews.status, "published"),
     isNotNull(reviews.revealed_at),
   ];
@@ -353,6 +375,7 @@ export async function listForUser(userId: string, opts: { limit: number; cursor?
   const totalRows = await db.execute<{ n: number }>(
     dsql`SELECT COUNT(*)::int AS n FROM reviews
           WHERE reviewee_id = ${userId}
+            AND reviewer_role = 'client'
             AND status = 'published' AND revealed_at IS NOT NULL`
   );
   return {
@@ -364,10 +387,10 @@ export async function listForUser(userId: string, opts: { limit: number; cursor?
 }
 
 export async function aggregatesFor(targetType: "listing" | "user", id: string) {
-  const where =
-    targetType === "listing"
-      ? and(eq(reviews.listing_id, id), eq(reviews.reviewer_role, "client"))
-      : eq(reviews.reviewee_id, id);
+  // Spec REQ-017: profile aggregates count only client→provider reviews.
+  // The user-branch SQL now mirrors the listing-branch with the role filter.
+  // The previous version had a dead drizzle predicate next to the raw SQL —
+  // refactor traps avoided by keeping only the SQL.
   const rows = await db.execute<{ avg_rating: number | null; review_count: number }>(
     targetType === "listing"
       ? dsql`SELECT AVG(overall_rating)::float AS avg_rating, COUNT(*)::int AS review_count
@@ -376,7 +399,7 @@ export async function aggregatesFor(targetType: "listing" | "user", id: string) 
                 AND status='published' AND revealed_at IS NOT NULL`
       : dsql`SELECT AVG(overall_rating)::float AS avg_rating, COUNT(*)::int AS review_count
                FROM reviews
-              WHERE reviewee_id = ${id}
+              WHERE reviewee_id = ${id} AND reviewer_role='client'
                 AND status='published' AND revealed_at IS NOT NULL`
   );
   return {
@@ -390,9 +413,18 @@ export async function listForDeal(viewerId: string, dealId: string) {
   if (dr.length === 0) return null;
   const d = dr[0]!;
   if (d.client_id !== viewerId && d.provider_id !== viewerId) return "forbidden" as const;
+  // Defense-in-depth for v2 blind-reveal: the counterparty must NOT see the
+  // other side's review pre-reveal. Today (MVP immediate-reveal) every row
+  // passes this gate; the day the reveal default flips, this predicate makes
+  // sure /deals/:id/reviews stays safe. SEC-001 fallback since RLS is OOS.
   const r = await db
     .select({ id: reviews.id })
     .from(reviews)
-    .where(eq(reviews.deal_id, dealId));
-  return { items: await projectReviews(r) };
+    .where(
+      and(
+        eq(reviews.deal_id, dealId),
+        dsql`(${reviews.reviewer_id} = ${viewerId} OR (${reviews.status} = 'published' AND ${reviews.revealed_at} IS NOT NULL))`
+      )
+    );
+  return { items: await projectReviews(r, { includeDealRef: true }) };
 }

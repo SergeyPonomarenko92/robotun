@@ -3,11 +3,21 @@
  *
  * State machine pending → active → in_review → completed|disputed|cancelled.
  * /accept transitions pending→active synchronously (TODO Module 11 will
- * gate via /internal/deals/{id}/escrow-held callback). All transitions
- * use optimistic version concurrency control.
+ * gate via /internal/deals/{id}/escrow-held callback).
+ *
+ * Concurrency: each transition function does (a) SELECT … FOR UPDATE on the
+ * deal row inside its transaction, (b) JS-side version check, (c) plain
+ * UPDATE without a version predicate. The FOR UPDATE makes this effectively
+ * pessimistic; the spec's PAT-001 calls for true optimistic (`UPDATE …
+ * WHERE id=$id AND version=$v RETURNING …`). The implementation here is
+ * intentionally pessimistic because the row contention is already low and
+ * FOR UPDATE gives clearer error semantics — anyone refactoring towards
+ * read-replica scaling MUST drop FOR UPDATE AND add `AND version=$v` to
+ * every UPDATE WHERE, or lost-update bugs become possible on the money path.
  *
  * Idempotent POST /deals via Idempotency-Key + sha256(canonical body).
- * Replay with same key+hash returns existing row 200; mismatch → 409.
+ * Key uniqueness is scoped per-client (uq_deals_client_idempotency); two
+ * unrelated clients can pick the same string without colliding.
  */
 import { createHash } from "node:crypto";
 import { and, desc, eq, or, sql as dsql } from "drizzle-orm";
@@ -28,6 +38,10 @@ const err = (code: string, status: number, details?: unknown): Result<never> => 
   ok: false,
   error: { code, status, details },
 });
+
+// Spec REQ-014: agreed_price ceiling is ₴999,999.99 = 99_999_999 kopecks.
+// Mirrored by chk_deals_price_cap CHECK (migration 0015).
+const MAX_AGREED_PRICE_KOPECKS = 99_999_999;
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -82,6 +96,9 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
   if (input.agreed_price <= 0) {
     return err("validation_failed", 400, { fields: { agreed_price: "must_be_positive" } });
   }
+  if (input.agreed_price > MAX_AGREED_PRICE_KOPECKS) {
+    return err("validation_failed", 400, { fields: { agreed_price: "exceeds_max" } });
+  }
   if (input.client_id === input.provider_id) {
     return err("validation_failed", 400, { fields: { provider_id: "same_as_client" } });
   }
@@ -97,15 +114,17 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
   });
 
   return await db.transaction(async (tx) => {
-    // Idempotency replay
+    // Idempotency replay — scoped to (client_id, idempotency_key) per
+    // migration 0015. Same string from a different client now means a
+    // *different* logical key; the unique index allows the row, and we
+    // never disclose another client's keys via 403.
     const existing = await tx
       .select()
       .from(deals)
-      .where(eq(deals.idempotency_key, input.idempotency_key))
+      .where(and(eq(deals.client_id, input.client_id), eq(deals.idempotency_key, input.idempotency_key)))
       .limit(1);
     if (existing.length > 0) {
       const d = existing[0]!;
-      if (d.client_id !== input.client_id) return err("forbidden", 403);
       if (d.idempotency_body_hash !== bodyHash) return err("idempotency_body_mismatch", 409);
       return { ok: true as const, value: { id: d.id, status: d.status, version: d.version, replay: true } };
     }
@@ -120,16 +139,28 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
     if (!providerRows[0]!.has_provider_role) return err("not_a_provider", 422);
     if (providerRows[0]!.status !== "active") return err("provider_not_active", 422);
 
-    // Validate listing if supplied and matches provider.
+    // Validate listing if supplied and matches provider + category.
     if (input.listing_id) {
       const lrows = await tx
-        .select({ provider_id: listings.provider_id, status: listings.status })
+        .select({
+          provider_id: listings.provider_id,
+          status: listings.status,
+          category_id: listings.category_id,
+        })
         .from(listings)
         .where(eq(listings.id, input.listing_id))
         .limit(1);
       if (lrows.length === 0) return err("listing_not_found", 404);
       if (lrows[0]!.provider_id !== input.provider_id) return err("listing_provider_mismatch", 422);
       if (lrows[0]!.status !== "active") return err("listing_not_active", 422);
+      // Prevent denormalized category drift: deal's category must match the
+      // listing it was created from. Otherwise analytics + ranking surface
+      // misclassified deals indistinguishable from genuine ones.
+      if (lrows[0]!.category_id !== input.category_id) {
+        return err("listing_category_mismatch", 422, {
+          expected_category_id: lrows[0]!.category_id,
+        });
+      }
     }
 
     // Validate category active.
@@ -185,10 +216,14 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
 
 /* ----------------------------- TRANSITIONS ------------------------------- */
 
+// actor_role is intentionally NOT carried in TransitionArgs: each transition
+// function derives the role from the deal it locks (client_id vs provider_id
+// match). The route layer used to hard-code role="client" for all transitions,
+// which mis-tagged deal_events rows for provider actions. See d68d5a8 sibling
+// pattern in Modules 11/14.
 type TransitionArgs = {
   deal_id: string;
   actor_id: string;
-  actor_role: "client" | "provider" | "admin";
   version: number;
 };
 
@@ -327,13 +362,14 @@ export async function approveDeal(args: TransitionArgs): Promise<Result<{ id: st
       .set({
         status: "completed",
         version: d.version + 1,
-        // TODO Module 11: emit deal.escrow_release_requested + flip escrow_status.
+        // TODO Module 11: escrow release is sweep-driven per spec REQ-015 —
+        // emit deal.escrow_release_requested from the release sweep after
+        // dispute_window_until elapses, NOT from /approve.
       })
       .where(eq(deals.id, d.id));
 
     await logEvent(tx, { deal_id: d.id, actor_id: args.actor_id, actor_role: "client", event_type: "deal.approved", from_status: "in_review", to_status: "completed" });
     await emit(tx, d.id, "deal.approved", { provider_id: d.provider_id });
-    await emit(tx, d.id, "deal.escrow_release_requested", { provider_id: d.provider_id });
 
     return { ok: true as const, value: { id: d.id, status: "completed", version: d.version + 1 } };
   });
@@ -358,14 +394,24 @@ export async function disputeDeal(args: TransitionArgs & {
     if (d.status !== "in_review" && d.status !== "completed") {
       return err("status_conflict", 409, { current_version: d.version, current_status: d.status });
     }
-    // Grace window for completed → disputed: only if dispute_window_until has not passed.
+    // Grace window for completed → disputed: only if dispute_window_until has
+    // not passed AND escrow release is not yet in flight or terminal. Spec
+    // REQ-007 — once the release sweep flips escrow_status to release_requested,
+    // the deal is no longer rollbackable (PSP-side capture is happening).
     if (d.status === "completed") {
-      const r = await tx.execute<{ dispute_window_until: string | null; escrow_released_at: string | null }>(
-        dsql`SELECT dispute_window_until, escrow_released_at FROM deals WHERE id = ${d.id}`
+      const r = await tx.execute<{
+        dispute_window_until: string | null;
+        escrow_status: string;
+      }>(
+        dsql`SELECT dispute_window_until, escrow_status FROM deals WHERE id = ${d.id}`
       );
       const dw = r[0]?.dispute_window_until ? new Date(r[0].dispute_window_until) : null;
       if (!dw || dw.getTime() < Date.now()) return err("dispute_window_closed", 409);
-      if (r[0]?.escrow_released_at) return err("escrow_already_released", 409);
+      const es = r[0]?.escrow_status ?? "not_required";
+      const TERMINAL_OR_INFLIGHT = ["release_requested", "released", "refund_requested", "refunded"];
+      if (TERMINAL_OR_INFLIGHT.includes(es)) {
+        return err("escrow_already_released", 409, { escrow_status: es });
+      }
     }
 
     const now = new Date();
@@ -433,6 +479,16 @@ export async function cancelDeal(args: TransitionArgs): Promise<Result<{ id: str
     }
 
     if (d.status === "active") {
+      // Prevent the requesting party from re-arming the 48h window or bumping
+      // version on every retry. Only the *counterparty* may flip an active
+      // cancel-request into a mutual-cancel.
+      if (isClient && d.cancel_requested_by_client_at) {
+        return err("cancel_already_requested", 409, { by: "client" });
+      }
+      if (isProvider && d.cancel_requested_by_provider_at) {
+        return err("cancel_already_requested", 409, { by: "provider" });
+      }
+
       const now = new Date();
       const set: Record<string, unknown> = { version: d.version + 1 };
       if (isClient) set.cancel_requested_by_client_at = now;
@@ -572,13 +628,6 @@ async function projectDealFE(dealId: string, viewerId: string): Promise<DealFE |
   if (!r) return null;
   if (r.client_id !== viewerId && r.provider_id !== viewerId) return "forbidden";
 
-  // Dispute evidence (both parties).
-  const ev = await db
-    .select()
-    .from(dealEvents)
-    .where(eq(dealEvents.deal_id, dealId))
-    .limit(0);
-  void ev;
   const evidenceRows = await db.execute<{
     party_role: "client" | "provider";
     reason: string | null;
@@ -657,17 +706,50 @@ export async function getDeal(viewerId: string, dealId: string) {
   return projectDealFE(dealId, viewerId);
 }
 
-export async function listMine(viewerId: string, opts: { status?: string; limit: number }) {
+/** Cursor: base64url JSON `{t: ISO string, i: deal-id}` for keyset on (created_at DESC, id DESC). */
+function encodeListCursor(createdAt: Date | string, id: string): string {
+  const t = typeof createdAt === "string" ? createdAt : createdAt.toISOString();
+  return Buffer.from(JSON.stringify({ t, i: id })).toString("base64url");
+}
+function decodeListCursor(s: string): { t: string; i: string } | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(s, "base64url").toString("utf8")) as Partial<{ t: string; i: string }>;
+    if (!parsed.t || !parsed.i) return null;
+    if (Number.isNaN(new Date(parsed.t).getTime())) return null;
+    if (!/^[0-9a-f-]{36}$/i.test(parsed.i)) return null;
+    return { t: parsed.t, i: parsed.i };
+  } catch {
+    return null;
+  }
+}
+
+export async function listMine(
+  viewerId: string,
+  opts: { status?: string; limit: number; cursor?: string }
+): Promise<{ items: unknown[]; next_cursor: string | null } | { error: "cursor_invalid" }> {
   const limit = Math.min(Math.max(opts.limit, 1), 100);
   const where = [or(eq(deals.client_id, viewerId), eq(deals.provider_id, viewerId))!];
   if (opts.status) where.push(eq(deals.status, opts.status as "active"));
+  if (opts.cursor) {
+    const cur = decodeListCursor(opts.cursor);
+    if (!cur) return { error: "cursor_invalid" };
+    where.push(
+      dsql`(${deals.created_at}, ${deals.id}) < (${new Date(cur.t)}, ${cur.i})`
+    );
+  }
   const rows = await db
     .select()
     .from(deals)
     .where(and(...where))
-    .orderBy(desc(deals.created_at))
-    .limit(limit);
-  return { items: rows };
+    .orderBy(desc(deals.created_at), desc(deals.id))
+    .limit(limit + 1);
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const next_cursor =
+    hasMore && items.length > 0
+      ? encodeListCursor(items[items.length - 1]!.created_at, items[items.length - 1]!.id)
+      : null;
+  return { items, next_cursor };
 }
 
 export async function listEvents(viewerId: string, dealId: string) {

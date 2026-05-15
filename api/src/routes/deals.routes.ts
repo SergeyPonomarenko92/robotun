@@ -20,7 +20,7 @@ const createSchema = z.object({
   deadline_at: z.string().datetime().nullable().optional(),
 });
 
-const versionSchema = z.object({ version: z.number().int().nonnegative() });
+const versionSchema = z.object({ version: z.number().int().positive() });
 
 const disputeSchema = versionSchema.extend({
   reason: z.string().min(30).max(2000),
@@ -30,6 +30,7 @@ const disputeSchema = versionSchema.extend({
 const listQuery = z.object({
   status: z.enum(["pending", "active", "in_review", "completed", "disputed", "cancelled"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
+  cursor: z.string().min(1).max(500).optional(),
 });
 
 export const dealsRoutes: FastifyPluginAsync = async (server) => {
@@ -66,9 +67,12 @@ export const dealsRoutes: FastifyPluginAsync = async (server) => {
   server.get(
     "/deals",
     { preHandler: server.authenticate },
-    async (req) => {
-      const q = listQuery.parse(req.query ?? {});
-      return svc.listMine(req.auth!.user_id, q);
+    async (req, reply) => {
+      const parsed = listQuery.safeParse(req.query ?? {});
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_query" });
+      const r = await svc.listMine(req.auth!.user_id, parsed.data);
+      if ("error" in r) return reply.code(400).send({ error: r.error });
+      return r;
     }
   );
 
@@ -94,14 +98,20 @@ export const dealsRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
-  // Generic transition factory.
-  const transitions: Record<string, (id: string, actor: string, role: "client"|"provider"|"admin", v: number) => Promise<Awaited<ReturnType<typeof svc.acceptDeal>>>> = {
-    accept: (id, a, r, v) => svc.acceptDeal({ deal_id: id, actor_id: a, actor_role: r, version: v }),
-    reject: (id, a, r, v) => svc.rejectDeal({ deal_id: id, actor_id: a, actor_role: r, version: v }),
-    submit: (id, a, r, v) => svc.submitDeal({ deal_id: id, actor_id: a, actor_role: r, version: v }),
-    approve: (id, a, r, v) => svc.approveDeal({ deal_id: id, actor_id: a, actor_role: r, version: v }),
-    cancel: (id, a, r, v) => svc.cancelDeal({ deal_id: id, actor_id: a, actor_role: r, version: v }),
-  };
+  // Service derives actor_role from the deal row it locks (client_id vs
+  // provider_id), so the route layer no longer hard-codes role per action.
+  const transitions = {
+    accept: svc.acceptDeal,
+    reject: svc.rejectDeal,
+    submit: svc.submitDeal,
+    approve: svc.approveDeal,
+    cancel: svc.cancelDeal,
+  } as const;
+
+  // Mapping service-level `forbidden` to 404 deal_not_found collapses the
+  // IDOR oracle (writes used to leak deal existence via 403). Reads already
+  // do this in /deals/:id and /deals/:id/events.
+  const FORBIDDEN_TO_NOT_FOUND = new Set(["forbidden"]);
 
   for (const [action, fn] of Object.entries(transitions)) {
     server.post<{ Params: { id: string } }>(
@@ -110,8 +120,17 @@ export const dealsRoutes: FastifyPluginAsync = async (server) => {
       async (req, reply) => {
         const parsed = versionSchema.safeParse(req.body ?? {});
         if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
-        const r = await fn(req.params.id, req.auth!.user_id, "client", parsed.data.version);
-        if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+        const r = await fn({
+          deal_id: req.params.id,
+          actor_id: req.auth!.user_id,
+          version: parsed.data.version,
+        });
+        if (!r.ok) {
+          if (FORBIDDEN_TO_NOT_FOUND.has(r.error.code)) {
+            return reply.code(404).send({ error: "deal_not_found" });
+          }
+          return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+        }
         return r.value;
       }
     );
@@ -130,10 +149,14 @@ export const dealsRoutes: FastifyPluginAsync = async (server) => {
       const r = await svc.disputeDeal({
         deal_id: req.params.id,
         actor_id: req.auth!.user_id,
-        actor_role: "client",
         ...parsed.data,
       });
-      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      if (!r.ok) {
+        if (FORBIDDEN_TO_NOT_FOUND.has(r.error.code)) {
+          return reply.code(404).send({ error: "deal_not_found" });
+        }
+        return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
+      }
       return r.value;
     }
   );
