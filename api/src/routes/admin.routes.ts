@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "../db/client.js";
+import { db, sql as dsql } from "../db/client.js";
 import { userRoles } from "../db/schema.js";
 import * as svc from "../services/admin.service.js";
 import { runAllJobs } from "../services/cron.js";
@@ -36,6 +36,42 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
   server.get("/admin/stats", { preHandler: server.authenticate }, async (req, reply) => {
     if (!(await requireAdmin(req, reply))) return;
     return svc.platformStats();
+  });
+
+  // Ops-facing queue/health metrics. Different from /admin/stats which is
+  // product-shaped (deals/users/etc.); this surfaces infrastructure health:
+  // pending work, recent failures, oldest stuck items. Polling-safe (read-
+  // only aggregate queries, no FOR UPDATE).
+  server.get("/admin/metrics", { preHandler: server.authenticate }, async (req, reply) => {
+    if (!(await requireAdmin(req, reply))) return;
+    const rows = await dsql.unsafe(`
+      SELECT
+        -- outbox_pending = rows the in_app notifications consumer has not
+        -- crossed yet (last_seen_id is the high-watermark). Returns full
+        -- backlog if cursor row hasn't bootstrapped yet.
+        (SELECT GREATEST(0, (SELECT COALESCE(MAX(id), 0) FROM outbox_events)
+                          - COALESCE((SELECT last_seen_id FROM notification_consumer_cursors
+                                       WHERE consumer_name = 'notifications:in_app'), 0))::int) AS outbox_pending,
+        (SELECT EXTRACT(EPOCH FROM (now() - MIN(created_at)))::int
+           FROM outbox_events WHERE id > COALESCE(
+             (SELECT last_seen_id FROM notification_consumer_cursors
+               WHERE consumer_name = 'notifications:in_app'), 0)) AS outbox_oldest_age_seconds,
+        (SELECT COUNT(*)::int FROM notifications WHERE channel = 'email' AND status = 'pending') AS email_pending,
+        (SELECT COUNT(*)::int FROM notifications WHERE channel = 'email' AND status = 'failed'
+           AND created_at > now() - interval '24 hours') AS email_failed_24h,
+        (SELECT COUNT(*)::int FROM notifications WHERE channel = 'email' AND status = 'sent'
+           AND created_at > now() - interval '24 hours') AS email_sent_24h,
+        (SELECT COUNT(*)::int FROM media_objects WHERE status = 'awaiting_scan') AS scan_pending,
+        (SELECT COUNT(*)::int FROM media_objects WHERE status = 'quarantine_rejected'
+           AND scan_completed_at > now() - interval '24 hours') AS scan_quarantined_24h,
+        (SELECT COUNT(*)::int FROM media_objects WHERE status = 'ready'
+           AND scan_completed_at > now() - interval '24 hours') AS scan_clean_24h,
+        (SELECT COUNT(*)::int FROM deals WHERE status = 'pending') AS deals_pending,
+        (SELECT COUNT(*)::int FROM deals WHERE status = 'in_review') AS deals_in_review,
+        (SELECT COUNT(*)::int FROM deals WHERE status = 'disputed') AS deals_disputed,
+        (SELECT COUNT(*)::int FROM kyc_verifications WHERE status IN ('submitted', 'in_review')) AS kyc_queue_depth
+    `);
+    return rows[0] ?? {};
   });
 
   server.get<{ Params: { id: string } }>(
