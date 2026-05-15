@@ -737,6 +737,8 @@ export const notifications = pgTable(
     body: text("body").notNull(),
     payload: jsonb("payload").notNull().default({}),
     status: notificationStatusEnum("status").notNull().default("sent"),
+    delivery_attempts: smallint("delivery_attempts").notNull().default(0),
+    next_retry_at: timestamp("next_retry_at", { withTimezone: true }),
     created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     read_at: timestamp("read_at", { withTimezone: true }),
   },

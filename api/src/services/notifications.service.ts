@@ -452,14 +452,26 @@ export async function unreadCount(userId: string): Promise<number> {
 /* ----------------------------- email drain ------------------------------ */
 
 /**
- * Drains notifications WHERE channel='email' AND status='pending'.
- * Looks up recipient email, calls SMTP, flips to 'sent' or 'failed'.
+ * Drains notifications WHERE channel='email' AND status='pending' AND
+ * (next_retry_at IS NULL OR next_retry_at <= now()). Looks up recipient
+ * email, calls SMTP, on failure increments delivery_attempts and either
+ * schedules a retry (exponential backoff) or flips to 'failed' after
+ * the cap. NULL email → 'skipped'.
  *
- * Bounded at 50 rows per tick to avoid hogging the cron tick. Failed rows
- * stay at status='failed' — no automatic retry in v1 (retry counter +
- * backoff is v2). Operator can SQL-flip status back to 'pending' to
- * re-queue.
+ * Backoff schedule: 30s, 2min, 10min, 30min, 2h. After EMAIL_MAX_ATTEMPTS=5
+ * the row is terminal-failed; operator can SQL-flip back to 'pending'
+ * with delivery_attempts=0 to retry from scratch.
+ *
+ * Bounded at 50 rows per tick.
  */
+const EMAIL_MAX_ATTEMPTS = 5;
+const EMAIL_BACKOFF_SECONDS = [30, 120, 600, 1800, 7200];
+
+function nextRetryAfter(attempts: number): Date {
+  const idx = Math.min(attempts, EMAIL_BACKOFF_SECONDS.length - 1);
+  return new Date(Date.now() + EMAIL_BACKOFF_SECONDS[idx]! * 1000);
+}
+
 export async function drainEmailQueue(): Promise<number> {
   const rows = await db.execute<{
     id: string;
@@ -467,12 +479,14 @@ export async function drainEmailQueue(): Promise<number> {
     title: string;
     body: string;
     email: string | null;
+    delivery_attempts: number;
   }>(
-    dsql`SELECT n.id, n.recipient_user_id, n.title, n.body, u.email
+    dsql`SELECT n.id, n.recipient_user_id, n.title, n.body, u.email, n.delivery_attempts
            FROM notifications n
            JOIN users u ON u.id = n.recipient_user_id
           WHERE n.channel = 'email' AND n.status = 'pending'
             AND u.status = 'active'
+            AND (n.next_retry_at IS NULL OR n.next_retry_at <= now())
           ORDER BY n.created_at
           LIMIT 50
           FOR UPDATE OF n SKIP LOCKED`
@@ -490,16 +504,29 @@ export async function drainEmailQueue(): Promise<number> {
     if (res.ok) {
       await db
         .update(notifications)
-        .set({ status: "sent" })
+        .set({ status: "sent", delivery_attempts: r.delivery_attempts + 1 })
         .where(eq(notifications.id, r.id));
       sent += 1;
     } else {
-      await db
-        .update(notifications)
-        .set({ status: "failed" })
-        .where(eq(notifications.id, r.id));
-      // eslint-disable-next-line no-console
-      console.warn(`[email] send failed for notif=${r.id}: ${res.error}`);
+      const newAttempts = r.delivery_attempts + 1;
+      if (newAttempts >= EMAIL_MAX_ATTEMPTS) {
+        await db
+          .update(notifications)
+          .set({ status: "failed", delivery_attempts: newAttempts })
+          .where(eq(notifications.id, r.id));
+        // eslint-disable-next-line no-console
+        console.warn(`[email] EXHAUSTED notif=${r.id} after ${newAttempts}: ${res.error}`);
+      } else {
+        await db
+          .update(notifications)
+          .set({
+            delivery_attempts: newAttempts,
+            next_retry_at: nextRetryAfter(newAttempts),
+          })
+          .where(eq(notifications.id, r.id));
+        // eslint-disable-next-line no-console
+        console.warn(`[email] retry notif=${r.id} attempt ${newAttempts}: ${res.error}`);
+      }
     }
   }
   return sent;
