@@ -698,6 +698,134 @@ export async function listingsProviderStatusConsumer(): Promise<number> {
   return processed;
 }
 
+/**
+ * Module 5 REQ-017 / CON-010 / PAT-005 — bulk-archive on role_revoked.
+ *
+ * Two-stage worker:
+ *   (A) consume user.role_revoked outbox events → enqueue one
+ *       listing_bulk_jobs row per provider (job_type='archive_provider_listings',
+ *       status='running'). Cursor: 'listings:role_revoked'.
+ *   (B) drain running jobs: pick up to N (default 3) running rows, for
+ *       each batch up to 10 listings under SET LOCAL statement_timeout=30s,
+ *       UPDATE status='archived' first then provider_id=NULL (CON-010
+ *       column order). Append audit + outbox per archived row. When the
+ *       provider has 0 remaining non-archived listings, mark the job
+ *       'completed'.
+ *
+ * Idempotent re-entry: pause-resume safe because the job row tracks
+ * processed-count incrementally; a crashed worker re-picks the same job
+ * and resumes from the next batch.
+ *
+ * Note on event name: spec REQ-017 calls it 'provider.role_revoked'; our
+ * auth audit emits 'user.role_revoked'. We accept both for forward-compat
+ * if the spec wording is enforced later.
+ */
+export async function listingsRoleRevokedConsumer(): Promise<number> {
+  // Stage A: enqueue jobs.
+  await sql.unsafe(`
+    INSERT INTO notification_consumer_cursors (consumer_name, last_seen_id)
+    VALUES ('listings:role_revoked', 0)
+    ON CONFLICT (consumer_name) DO NOTHING
+  `);
+  let enqueued = 0;
+  await db.transaction(async (tx) => {
+    const lockRows = (await tx.execute(
+      dsqlImport`SELECT last_seen_id FROM notification_consumer_cursors
+                  WHERE consumer_name = 'listings:role_revoked' FOR UPDATE`
+    )) as unknown as Array<{ last_seen_id: string }>;
+    const lastSeen = lockRows[0]?.last_seen_id ?? "0";
+    const r = (await tx.execute(
+      dsqlImport`WITH events AS (
+        SELECT id, (payload->>'user_id')::uuid AS provider_id
+          FROM outbox_events
+         WHERE aggregate_type = 'user'
+           AND event_type IN ('user.role_revoked','provider.role_revoked')
+           AND id > ${lastSeen}::bigint
+         ORDER BY id ASC LIMIT 100
+      ),
+      ins AS (
+        INSERT INTO listing_bulk_jobs (job_type, target_id, triggered_by)
+        SELECT 'archive_provider_listings', provider_id, 'role_revoked' FROM events
+        WHERE provider_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM listing_bulk_jobs j
+             WHERE j.target_id = events.provider_id
+               AND j.job_type = 'archive_provider_listings'
+               AND j.status = 'running'
+          )
+        RETURNING job_id
+      ),
+      cur AS (
+        UPDATE notification_consumer_cursors
+           SET last_seen_id = COALESCE((SELECT MAX(id) FROM events), last_seen_id),
+               updated_at = now()
+         WHERE consumer_name = 'listings:role_revoked'
+      )
+      SELECT COUNT(*)::int AS n FROM ins`
+    )) as unknown as Array<{ n: number }>;
+    enqueued = r[0]?.n ?? 0;
+  });
+
+  // Stage B: drain up to 3 running jobs per tick. Per-batch tx so
+  // statement_timeout SET LOCAL is scoped correctly.
+  const runningJobs = (await sql.unsafe(`
+    SELECT job_id, target_id, processed
+      FROM listing_bulk_jobs
+     WHERE job_type = 'archive_provider_listings' AND status = 'running'
+     ORDER BY created_at LIMIT 3
+  `)) as unknown as Array<{ job_id: string; target_id: string; processed: number }>;
+
+  let archivedRows = 0;
+  for (const job of runningJobs) {
+    await db.transaction(async (tx) => {
+      await tx.execute(dsqlImport`SET LOCAL statement_timeout = '30s'`);
+      // Batch of 10 non-archived listings; CON-010 column order: status first.
+      const upd = (await tx.execute(
+        dsqlImport`WITH due AS (
+          SELECT id FROM listings
+           WHERE provider_id = ${job.target_id} AND status <> 'archived'
+           ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED
+        ),
+        s1 AS (
+          UPDATE listings SET status = 'archived', archived_at = now(),
+                              version = version + 1, updated_at = now()
+            FROM due WHERE listings.id = due.id RETURNING listings.id
+        ),
+        s2 AS (
+          UPDATE listings SET provider_id = NULL FROM s1 WHERE listings.id = s1.id
+        ),
+        ev AS (
+          INSERT INTO listing_audit_events (listing_id, actor_id, actor_role, event_type, from_status, to_status, metadata)
+          SELECT id, NULL, 'system', 'listing.bulk_archived', NULL, 'archived',
+                 jsonb_build_object('job_id', ${job.job_id}, 'reason', 'role_revoked') FROM s1
+        ),
+        outbox AS (
+          INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+          SELECT 'listing', id, 'listing.archived',
+                 jsonb_build_object('listing_id', id, 'reason', 'role_revoked', 'job_id', ${job.job_id}) FROM s1
+        )
+        SELECT COUNT(*)::int AS n FROM s1`
+      )) as unknown as Array<{ n: number }>;
+      const batchN = upd[0]?.n ?? 0;
+      archivedRows += batchN;
+
+      const remaining = (await tx.execute(
+        dsqlImport`SELECT COUNT(*)::int AS n FROM listings
+                    WHERE provider_id = ${job.target_id} AND status <> 'archived'`
+      )) as unknown as Array<{ n: number }>;
+      await tx.execute(
+        dsqlImport`UPDATE listing_bulk_jobs
+                      SET processed = processed + ${batchN},
+                          updated_at = now(),
+                          status = CASE WHEN ${remaining[0]?.n ?? 0} = 0 THEN 'completed' ELSE status END,
+                          completed_at = CASE WHEN ${remaining[0]?.n ?? 0} = 0 THEN now() ELSE completed_at END
+                    WHERE job_id = ${job.job_id}`
+      );
+    });
+  }
+  return enqueued + archivedRows;
+}
+
 /* ----------------------------- retention -------------------------------- */
 
 export async function outboxRetention(): Promise<number> {
@@ -735,6 +863,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.listings_kyc_revoked_consumer = await listingsKycRevokedConsumer();
   results.listings_category_archived_consumer = await listingsCategoryArchivedConsumer();
   results.listings_provider_status_consumer = await listingsProviderStatusConsumer();
+  results.listings_role_revoked_consumer = await listingsRoleRevokedConsumer();
   results.outbox_retention = await outboxRetention();
   results.listing_draft_expiry = await listingDraftExpiry();
   results.media_scan_retry = await scanRetrySweep().catch(() => 0);

@@ -260,6 +260,13 @@
       "when": 1779002100000,
       "tag": "0036_listing_appeals",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1779002200000,
+      "tag": "0037_listing_bulk_jobs",
+      "breakpoints": true
     }
   ]
 }
