@@ -652,6 +652,10 @@ export const kycReviewEvents = pgTable(
     from_status: text("from_status"),
     to_status: text("to_status"),
     metadata: jsonb("metadata").notNull().default({}),
+    // REQ-014: every admin mutation captures network metadata for audit /
+    // forensics. SEC-006: never returned to provider-facing endpoints.
+    ip: text("ip"),
+    user_agent: text("user_agent"),
     created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

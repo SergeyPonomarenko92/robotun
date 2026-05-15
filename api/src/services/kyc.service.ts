@@ -94,6 +94,12 @@ async function logEvent(tx: Tx, args: {
   from_status?: string;
   to_status?: string;
   metadata?: Record<string, unknown>;
+  // REQ-014: ip + user_agent captured for every admin-actor mutation.
+  // Optional because system-actor cron paths (sweep, expiry) legitimately
+  // have no request context. Required de-facto for actor_role='admin'
+  // (route layer always threads it).
+  ip?: string | null;
+  user_agent?: string | null;
 }) {
   await tx.insert(kycReviewEvents).values({
     kyc_verification_id: args.kv_id,
@@ -104,6 +110,8 @@ async function logEvent(tx: Tx, args: {
     from_status: args.from_status ?? null,
     to_status: args.to_status ?? null,
     metadata: args.metadata ?? {},
+    ip: args.ip ?? null,
+    user_agent: args.user_agent ?? null,
   });
 }
 
@@ -173,9 +181,13 @@ export type SubmitDoc = {
   document_expires_at?: string | null;
 };
 
+// REQ-014 / SEC-006 audit context, threaded from route layer.
+export type AuditCtx = { ip?: string | null; user_agent?: string | null };
+
 export async function submitKyc(args: {
   provider_id: string;
   documents: SubmitDoc[];
+  audit?: AuditCtx;
 }): Promise<Result<{ kyc_id: string; status: "submitted"; submission_index: number }>> {
   if (args.documents.length === 0) return err("incomplete_submission", 422);
   if (args.documents.length > 10) return err("too_many_documents", 422);
@@ -263,6 +275,8 @@ export async function submitKyc(args: {
       from_status: kv.status,
       to_status: "submitted",
       metadata: { submission_index: newCount, doc_count: args.documents.length },
+      ip: args.audit?.ip ?? null,
+      user_agent: args.audit?.user_agent ?? null,
     });
 
     await tx.insert(outboxEvents).values({
@@ -381,7 +395,7 @@ export async function kycIdForProvider(providerId: string): Promise<string | nul
   return r[0]?.id ?? null;
 }
 
-export async function claim(args: { kyc_id: string; admin_id: string }): Promise<Result<{ id: string }>> {
+export async function claim(args: { kyc_id: string; admin_id: string; audit?: AuditCtx }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
     // SEC-010: serialize concurrent claims by the same admin via xact-scoped
     // advisory lock keyed on hashtext(admin_id). Held until COMMIT/ROLLBACK,
@@ -432,13 +446,15 @@ export async function claim(args: { kyc_id: string; admin_id: string }): Promise
       event_type: "kyc.claimed",
       from_status: "submitted",
       to_status: "in_review",
+      ip: args.audit?.ip ?? null,
+      user_agent: args.audit?.user_agent ?? null,
     });
 
     return { ok: true as const, value: { id: args.kyc_id } };
   });
 }
 
-export async function approve(args: { kyc_id: string; admin_id: string }): Promise<Result<{ id: string }>> {
+export async function approve(args: { kyc_id: string; admin_id: string; audit?: AuditCtx }): Promise<Result<{ id: string }>> {
   return await db.transaction(async (tx) => {
     const r = await tx.execute<{ id: string; status: string; provider_id: string | null; reviewed_by: string | null }>(
       dsql`SELECT id, status, provider_id, reviewed_by FROM kyc_verifications WHERE id = ${args.kyc_id} FOR UPDATE`
@@ -503,6 +519,8 @@ export async function approve(args: { kyc_id: string; admin_id: string }): Promi
       from_status: "in_review",
       to_status: "approved",
       metadata: { payout_enabled: payoutEnabled, expires_at: expiresAt.toISOString() },
+      ip: args.audit?.ip ?? null,
+      user_agent: args.audit?.user_agent ?? null,
     });
 
     await tx.insert(outboxEvents).values({
@@ -526,6 +544,7 @@ export async function reject(args: {
   admin_id: string;
   rejection_code: string;
   rejection_note?: string;
+  audit?: AuditCtx;
 }): Promise<Result<{ id: string }>> {
   const VALID_CODES = new Set([
     "document_expired",
@@ -585,6 +604,8 @@ export async function reject(args: {
       from_status: "in_review",
       to_status: "rejected",
       metadata: { rejection_code: args.rejection_code },
+      ip: args.audit?.ip ?? null,
+      user_agent: args.audit?.user_agent ?? null,
     });
 
     await tx.insert(outboxEvents).values({
@@ -610,6 +631,7 @@ export async function flagRekyc(args: {
   provider_id: string;
   admin_id: string;
   reason: string;
+  audit?: AuditCtx;
 }): Promise<Result<{ kyc_id: string }>> {
   if (!args.reason || args.reason.trim().length < 5) {
     return err("validation_failed", 400, { fields: { reason: "min_length_5" } });
@@ -657,6 +679,8 @@ export async function flagRekyc(args: {
       from_status: row.status,
       to_status: "not_submitted",
       metadata: { reason: args.reason },
+      ip: args.audit?.ip ?? null,
+      user_agent: args.audit?.user_agent ?? null,
     });
 
     await tx.insert(outboxEvents).values({

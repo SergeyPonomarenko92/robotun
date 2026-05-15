@@ -95,6 +95,7 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
       const r = await svc.submitKyc({
         provider_id: req.auth!.user_id,
         documents: parsed.data.documents,
+        audit: { ip: req.ip, user_agent: req.headers["user-agent"] ?? null },
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return reply.code(201).send(r.value);
@@ -126,12 +127,13 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
       if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
       const kycId = await svc.kycIdForProvider(req.params.provider_id);
       if (!kycId) return reply.code(404).send({ error: "not_found" });
+      const audit = { ip: req.ip, user_agent: req.headers["user-agent"] ?? null };
       // Auto-claim if not claimed yet (FE flow doesn't separate claim+approve).
-      const claimR = await svc.claim({ kyc_id: kycId, admin_id: req.auth!.user_id });
+      const claimR = await svc.claim({ kyc_id: kycId, admin_id: req.auth!.user_id, audit });
       if (!claimR.ok && claimR.error.code !== "not_claimable") {
         return reply.code(claimR.error.status).send({ error: claimR.error.code });
       }
-      const r = await svc.approve({ kyc_id: kycId, admin_id: req.auth!.user_id });
+      const r = await svc.approve({ kyc_id: kycId, admin_id: req.auth!.user_id, audit });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return r.value;
     }
@@ -146,11 +148,12 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
       if (!kycId) return reply.code(404).send({ error: "not_found" });
       const parsed = rejectSchema.safeParse(req.body ?? {});
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
-      const claimR = await svc.claim({ kyc_id: kycId, admin_id: req.auth!.user_id });
+      const audit = { ip: req.ip, user_agent: req.headers["user-agent"] ?? null };
+      const claimR = await svc.claim({ kyc_id: kycId, admin_id: req.auth!.user_id, audit });
       if (!claimR.ok && claimR.error.code !== "not_claimable") {
         return reply.code(claimR.error.status).send({ error: claimR.error.code });
       }
-      const r = await svc.reject({ kyc_id: kycId, admin_id: req.auth!.user_id, ...parsed.data });
+      const r = await svc.reject({ kyc_id: kycId, admin_id: req.auth!.user_id, audit, ...parsed.data });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return r.value;
     }
@@ -170,6 +173,7 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
         provider_id: req.params.provider_id,
         admin_id: req.auth!.user_id,
         reason: parsed.data.reason,
+        audit: { ip: req.ip, user_agent: req.headers["user-agent"] ?? null },
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return r.value;
@@ -186,7 +190,11 @@ export const kycRoutes: FastifyPluginAsync = async (server) => {
       if (!(await requireAdmin(req.auth!.user_id))) return reply.code(403).send({ error: "forbidden" });
       const kycId = await svc.kycIdForProvider(req.params.provider_id);
       if (!kycId) return reply.code(404).send({ error: "not_found" });
-      const r = await svc.claim({ kyc_id: kycId, admin_id: req.auth!.user_id });
+      const r = await svc.claim({
+        kyc_id: kycId,
+        admin_id: req.auth!.user_id,
+        audit: { ip: req.ip, user_agent: req.headers["user-agent"] ?? null },
+      });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code, ...(r.error.details ?? {}) });
       return r.value;
     }
