@@ -386,6 +386,12 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
         new_email: parsed.data.new_email,
       });
       if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      void auth.logAuthEvent({
+        user_id: req.auth!.user_id,
+        event_type: "email_change_requested",
+        ...meta(req),
+        metadata: { new_email: parsed.data.new_email },
+      });
       return reply.code(204).send();
     }
   );
@@ -396,6 +402,12 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
     const r = await auth.confirmEmailChange(parsed.data);
     if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+    void auth.logAuthEvent({
+      user_id: r.value.user_id,
+      event_type: "email_changed",
+      ...meta(req),
+      metadata: { new_email: r.value.new_email },
+    });
     return r.value;
   });
 

@@ -18,6 +18,7 @@ import {
   sessionsPurge,
   passwordResetTokensPurge,
   emailVerificationTokensPurge,
+  emailChangeTokensPurge,
   authAuditPurge,
 } from "../services/cron.js";
 import { scanRetrySweep, regenerateMissingVariants } from "../services/media.service.js";
@@ -70,6 +71,8 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
       "password_reset_completed",
       "email_verification_requested",
       "email_verified",
+      "email_change_requested",
+      "email_changed",
       "sessions_logged_out_all",
       "profile_updated",
       "account_deleted",
@@ -274,6 +277,7 @@ export const adminRoutes: FastifyPluginAsync = async (server) => {
     sessions_purge: sessionsPurge,
     password_reset_tokens_purge: passwordResetTokensPurge,
     email_verification_tokens_purge: emailVerificationTokensPurge,
+    email_change_tokens_purge: emailChangeTokensPurge,
     auth_audit_purge: authAuditPurge,
   };
   server.post<{ Params: { job: string } }>(

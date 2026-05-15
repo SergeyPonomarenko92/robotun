@@ -494,6 +494,16 @@ export async function requestEmailChange(args: {
     // eslint-disable-next-line no-console
     console.warn(`[email-change] send failed: ${(e as Error).message}`);
   });
+  // Security alert to the OLD address — user should know that someone
+  // initiated an email change. Fire-and-forget; no error propagates.
+  sendEmail({
+    to: u[0]!.email,
+    subject: "Запит на зміну email — Robotun",
+    text: `На вашому акаунті запросили зміну email на ${newEmail}. Якщо це були не ви, негайно змініть пароль і перевірте активні сесії: ${BRAND_URL}/settings/security`,
+  }).catch((e) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[email-change] alert-old send failed: ${(e as Error).message}`);
+  });
   return { ok: true };
 }
 
@@ -877,6 +887,8 @@ export type AuthEventType =
   | "password_reset_completed"
   | "email_verification_requested"
   | "email_verified"
+  | "email_change_requested"
+  | "email_changed"
   | "sessions_logged_out_all"
   | "profile_updated"
   | "account_deleted";
