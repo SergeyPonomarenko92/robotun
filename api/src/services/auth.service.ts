@@ -91,7 +91,11 @@ export async function register(
       password_hash,
       display_name,
       has_provider_role: isProvider,
-      status: "active", // mock parity — real flow would gate on email_verified
+      // Spec REQ-001 / AC-001 — fresh registrations land in 'pending' and
+      // get promoted to 'active' by verifyEmail. Pending accounts CAN log
+      // in (no /users/me block), but revenue-affecting actions (payouts)
+      // continue to gate on payout_enabled which gates on KYC + MFA.
+      status: "pending",
     })
     .returning();
   if (!user) throw new Error("register: insert returned no row");
@@ -1013,9 +1017,16 @@ export async function verifyEmail(token: string): Promise<
       return { ok: false as const, error: { code: "token_expired" as const, status: 400 } };
     }
     const now = new Date();
+    // Promote pending→active per spec REQ-001 / AC-001. Idempotent: if
+    // the user was already 'active' (re-verification after email change),
+    // the UPDATE just touches email_verified_at + flag.
     const u = await tx
       .update(users)
-      .set({ email_verified: true, email_verified_at: now })
+      .set({
+        email_verified: true,
+        email_verified_at: now,
+        status: dsql`CASE WHEN ${users.status} = 'pending' THEN 'active'::user_status ELSE ${users.status} END`,
+      })
       .where(eq(users.id, row.user_id))
       .returning({ email: users.email });
     await tx
@@ -1048,7 +1059,15 @@ export async function requestPasswordReset(args: {
     .from(users)
     .where(eq(users.email, args.email))
     .limit(1);
-  if (userRow.length === 0 || userRow[0]!.status !== "active") {
+  // pending users MUST be allowed (RISK-1 from REQ-001 critic) — someone
+  // who registered and immediately forgot the password before clicking
+  // the verification link still needs a recovery path. Only suspended/
+  // deleted accounts get the silent no-op.
+  if (
+    userRow.length === 0 ||
+    userRow[0]!.status === "suspended" ||
+    userRow[0]!.status === "deleted"
+  ) {
     // Don't disclose existence to the caller; return ok with no side
     // effect. user_id=null here is for the AUDIT writer in the route;
     // the HTTP envelope itself stays 204 to preserve anti-enumeration.

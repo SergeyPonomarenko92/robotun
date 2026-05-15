@@ -297,7 +297,11 @@ export async function createListing(
       dsql`SELECT kyc_status, status FROM users WHERE id = ${input.provider_id} LIMIT 1`
     );
     if (trust.length === 0) return err("provider_not_found", 404);
-    if (trust[0]!.status !== "active") return err("provider_not_active", 403);
+    // pending + active both publish — REQ-001 critic RISK-2. Only
+    // suspended/deleted are hard-blocked (mirror of authenticate plugin).
+    if (trust[0]!.status === "suspended" || trust[0]!.status === "deleted") {
+      return err("provider_not_active", 403);
+    }
     if (trust[0]!.kyc_status !== "approved") {
       return err("kyc_required", 403, { current_kyc_status: trust[0]!.kyc_status });
     }

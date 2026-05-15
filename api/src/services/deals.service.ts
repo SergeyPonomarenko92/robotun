@@ -142,7 +142,11 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
       .limit(1);
     if (providerRows.length === 0) return err("provider_not_found", 404);
     if (!providerRows[0]!.has_provider_role) return err("not_a_provider", 422);
-    if (providerRows[0]!.status !== "active") return err("provider_not_active", 422);
+    // pending + active both targetable — REQ-001 critic RISK-2. The hard
+    // block is suspended/deleted (matches authenticate plugin gate).
+    if (providerRows[0]!.status === "suspended" || providerRows[0]!.status === "deleted") {
+      return err("provider_not_active", 422);
+    }
     // KYC mirror of the Module 5 listings gate (63f493f). A provider whose
     // KYC expired/never-approved shouldn't be findable for new deals, and
     // any direct create-from-id path needs the same defense.

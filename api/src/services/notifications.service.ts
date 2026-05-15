@@ -544,7 +544,7 @@ export async function drainEmailQueue(): Promise<number> {
            FROM notifications n
            JOIN users u ON u.id = n.recipient_user_id
           WHERE n.channel = 'email' AND n.status = 'pending'
-            AND u.status = 'active'
+            AND u.status NOT IN ('suspended', 'deleted')
             AND (n.next_retry_at IS NULL OR n.next_retry_at <= now())
           ORDER BY n.created_at
           LIMIT 50
