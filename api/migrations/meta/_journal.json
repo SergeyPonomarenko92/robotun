@@ -190,6 +190,13 @@
       "when": 1779001100000,
       "tag": "0026_totp_recovery_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1779001200000,
+      "tag": "0027_email_change_tokens",
+      "breakpoints": true
     }
   ]
 }

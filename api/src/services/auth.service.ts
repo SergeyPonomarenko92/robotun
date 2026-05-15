@@ -4,7 +4,7 @@
  */
 import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { authAuditEvents, emailVerificationTokens, mediaObjects, passwordResetTokens, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
+import { authAuditEvents, emailChangeTokens, emailVerificationTokens, mediaObjects, passwordResetTokens, sessions, totpRecoveryCodes, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
 import { randomBytes } from "node:crypto";
 import { env } from "../config/env.js";
@@ -441,6 +441,111 @@ export async function changePassword(args: {
       .where(and(eq(sessions.user_id, args.user_id), isNull(sessions.revoked_at)));
   });
   return { ok: true };
+}
+
+/* ----------------------------- EMAIL CHANGE -------------------------- */
+
+const EMAIL_CHANGE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+type RequestEmailChangeError = { code: "wrong_password" | "email_taken" | "same_email"; status: number };
+
+/** Initiate email change. Verifies current password (defends against
+ *  CSRF / session theft), checks the new email isn't already taken,
+ *  mints a token, sends a verification link to the NEW address. Old
+ *  email gets a security-alert note via in-app + (when wired) email
+ *  channel — out of scope for this commit; v2 adds. */
+export async function requestEmailChange(args: {
+  user_id: string;
+  password: string;
+  new_email: string;
+}): Promise<{ ok: true } | { ok: false; error: RequestEmailChangeError }> {
+  const newEmail = args.new_email.trim().toLowerCase();
+  const u = await db
+    .select({ password_hash: users.password_hash, email: users.email })
+    .from(users)
+    .where(eq(users.id, args.user_id))
+    .limit(1);
+  if (u.length === 0) return { ok: false, error: { code: "wrong_password", status: 403 } };
+  if (u[0]!.email === newEmail) {
+    return { ok: false, error: { code: "same_email", status: 400 } };
+  }
+  const pwOk = await verifyPassword(u[0]!.password_hash, args.password);
+  if (!pwOk) return { ok: false, error: { code: "wrong_password", status: 403 } };
+  const taken = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, newEmail))
+    .limit(1);
+  if (taken.length > 0) return { ok: false, error: { code: "email_taken", status: 409 } };
+  const plaintext = randomBytes(32).toString("base64url");
+  const tokenHash = sha256Hex(plaintext);
+  await db.insert(emailChangeTokens).values({
+    user_id: args.user_id,
+    new_email: newEmail,
+    token_hash: tokenHash,
+    expires_at: new Date(Date.now() + EMAIL_CHANGE_TTL_MS),
+  });
+  const link = `${BRAND_URL}/confirm-email-change?token=${plaintext}`;
+  sendEmail({
+    to: newEmail,
+    subject: "Підтвердьте новий email на Robotun",
+    text: `Ваш акаунт запросив зміну email. Підтвердьте за посиланням протягом 1 години:\n\n${link}\n\nЯкщо це були не ви — проігноруйте.`,
+  }).catch((e) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[email-change] send failed: ${(e as Error).message}`);
+  });
+  return { ok: true };
+}
+
+type ConfirmEmailChangeError = { code: "token_invalid" | "token_used" | "token_expired" | "email_taken"; status: number };
+
+export async function confirmEmailChange(args: {
+  token: string;
+}): Promise<{ ok: true; value: { user_id: string; new_email: string } } | { ok: false; error: ConfirmEmailChangeError }> {
+  const tokenHash = sha256Hex(args.token);
+  return await db.transaction(async (tx) => {
+    const r = await tx
+      .select()
+      .from(emailChangeTokens)
+      .where(eq(emailChangeTokens.token_hash, tokenHash))
+      .limit(1);
+    if (r.length === 0) return { ok: false as const, error: { code: "token_invalid" as const, status: 400 } };
+    const row = r[0]!;
+    if (row.used_at) return { ok: false as const, error: { code: "token_used" as const, status: 400 } };
+    if (row.expires_at.getTime() < Date.now()) {
+      return { ok: false as const, error: { code: "token_expired" as const, status: 400 } };
+    }
+    // Re-check uniqueness at confirm time (another user could have claimed
+    // the email between request and confirm — narrow window but possible).
+    const taken = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, row.new_email))
+      .limit(1);
+    if (taken.length > 0 && taken[0]!.id !== row.user_id) {
+      return { ok: false as const, error: { code: "email_taken" as const, status: 409 } };
+    }
+    await tx
+      .update(users)
+      .set({
+        email: row.new_email,
+        email_verified: true,
+        email_verified_at: new Date(),
+        ver: dsql`${users.ver} + 1`,
+      })
+      .where(eq(users.id, row.user_id));
+    await tx
+      .update(emailChangeTokens)
+      .set({ used_at: new Date() })
+      .where(eq(emailChangeTokens.id, row.id));
+    // Revoke all sessions — email is part of the auth identity, force
+    // re-login on every device.
+    await tx
+      .update(sessions)
+      .set({ revoked_at: new Date() })
+      .where(and(eq(sessions.user_id, row.user_id), isNull(sessions.revoked_at)));
+    return { ok: true as const, value: { user_id: row.user_id, new_email: row.new_email } };
+  });
 }
 
 /* ----------------------------- DATA EXPORT --------------------------- */

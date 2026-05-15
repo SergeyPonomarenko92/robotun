@@ -365,6 +365,40 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // Email change — two-step. Step 1: user submits password + new email,
+  // server sends verification link to the NEW address. Step 2: clicking
+  // the link calls /auth/confirm-email-change with the token; only then
+  // does users.email flip. Both endpoints idempotent; old email keeps
+  // working until step 2 commits.
+  const reqEmailChangeSchema = z.object({
+    password: z.string().min(1).max(256),
+    new_email: z.string().email().max(254),
+  });
+  server.post(
+    "/me/email/change",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const parsed = reqEmailChangeSchema.safeParse(req.body);
+      if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+      const r = await auth.requestEmailChange({
+        user_id: req.auth!.user_id,
+        password: parsed.data.password,
+        new_email: parsed.data.new_email,
+      });
+      if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+      return reply.code(204).send();
+    }
+  );
+
+  const confirmEmailChangeSchema = z.object({ token: z.string().min(8).max(128) });
+  server.post("/auth/confirm-email-change", async (req, reply) => {
+    const parsed = confirmEmailChangeSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+    const r = await auth.confirmEmailChange(parsed.data);
+    if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+    return r.value;
+  });
+
   // GDPR Art.20 right-to-data-portability. Synchronous JSON snapshot of
   // the user's data across modules. Reply has Content-Disposition so the
   // browser can save-as.
