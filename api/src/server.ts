@@ -21,6 +21,8 @@ import { adminRoutes } from "./routes/admin.routes.js";
 import { consumeOutboxOnce } from "./services/notifications.service.js";
 import { startCronScheduler } from "./services/cron.js";
 import { ensureBuckets } from "./services/s3.js";
+import { ping as clamavPing } from "./services/clamav.js";
+import { verifyConnection as smtpVerify } from "./services/email.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
@@ -80,6 +82,26 @@ export async function buildServer(): Promise<FastifyInstance> {
       ok: dbOk,
       uptime_seconds: Math.floor(process.uptime()),
       db_latency_ms: Date.now() - start,
+      env: env.NODE_ENV,
+    };
+  });
+
+  // Detailed health probe — exercises every external dependency. Slow
+  // (clamav can take 100-500ms; SMTP can timeout on misconfig); not for
+  // hot polling, use /health for that. Used by /admin and ops dashboards.
+  server.get("/health/deep", async () => {
+    const checks = await Promise.allSettled([
+      sql`SELECT 1`.then(() => true).catch(() => false),
+      clamavPing().catch(() => false),
+      smtpVerify().catch(() => false),
+    ]);
+    const [db, clamav, smtp] = checks.map((c) =>
+      c.status === "fulfilled" ? Boolean(c.value) : false
+    );
+    return {
+      ok: Boolean(db && clamav && smtp),
+      checks: { db, clamav, smtp },
+      uptime_seconds: Math.floor(process.uptime()),
       env: env.NODE_ENV,
     };
   });
