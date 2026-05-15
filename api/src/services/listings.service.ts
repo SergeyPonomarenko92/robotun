@@ -288,6 +288,20 @@ export async function createListing(
 
   try {
   return await db.transaction(async (tx) => {
+    // Trusted-provider gate. Auto-publish (status='active') only for users
+    // with kyc_status='approved'. Untrusted providers get a structured
+    // 403 so the FE can route them to /provider/kyc with explanatory copy.
+    // Module 5 spec calls this REQ-002; closes the prior MVP shortcut
+    // ("temporarily treat all providers as trusted").
+    const trust = await tx.execute<{ kyc_status: string; status: string }>(
+      dsql`SELECT kyc_status, status FROM users WHERE id = ${input.provider_id} LIMIT 1`
+    );
+    if (trust.length === 0) return err("provider_not_found", 404);
+    if (trust[0]!.status !== "active") return err("provider_not_active", 403);
+    if (trust[0]!.kyc_status !== "approved") {
+      return err("kyc_required", 403, { current_kyc_status: trust[0]!.kyc_status });
+    }
+
     const caps = await loadCapsForUpdate(tx, input.provider_id);
     if (caps.active_count >= CAP_ACTIVE) {
       return err("cap_exceeded", 429, { code: "active_cap" });
