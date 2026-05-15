@@ -367,6 +367,8 @@ export const mediaObjects = pgTable(
     // sharp-generated 256x256 webp thumbnail; same bucket, key suffix
     // `__thumb.webp`. Only image purposes (avatar/listing_*) get this.
     thumbnail_key: text("thumbnail_key"),
+    // sharp-generated 640px-wide webp preview; key suffix `__preview.webp`.
+    preview_key: text("preview_key"),
     status: mediaStatusEnum("status").notNull().default("awaiting_upload"),
     scan_attempts: smallint("scan_attempts").notNull().default(0),
     last_scan_error: text("last_scan_error"),

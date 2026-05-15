@@ -36,32 +36,40 @@ import {
 } from "./s3.js";
 import { scanBuffer } from "./clamav.js";
 
-// Purposes that get a thumbnail variant generated after clean scan.
+// Purposes that get image variants generated after clean scan.
 const VARIANT_PURPOSES = new Set(["avatar", "listing_cover", "listing_gallery"]);
 const THUMBNAIL_SIZE = 256;
+const PREVIEW_WIDTH = 640;
 
-/** Best-effort thumbnail generation. Failures don't block the ready flip. */
-async function tryGenerateThumbnail(args: {
+/** Generate one resized variant from the in-memory original. Best-effort —
+ *  failures return null so the parent ready flip is unaffected. */
+async function tryGenerateVariant(args: {
   bucket: BucketAlias;
   originalKey: string;
   originalBuffer: Buffer;
+  kind: "thumbnail" | "preview";
 }): Promise<string | null> {
   try {
-    const thumb = await sharp(args.originalBuffer)
-      .resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, { fit: "cover", position: "attention" })
-      .webp({ quality: 80 })
-      .toBuffer();
-    const thumbKey = `${args.originalKey}__thumb.webp`;
+    const pipeline = sharp(args.originalBuffer);
+    if (args.kind === "thumbnail") {
+      pipeline.resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, { fit: "cover", position: "attention" });
+    } else {
+      // preview — constrain width, height auto.
+      pipeline.resize({ width: PREVIEW_WIDTH, withoutEnlargement: true });
+    }
+    const buf = await pipeline.webp({ quality: 80 }).toBuffer();
+    const suffix = args.kind === "thumbnail" ? "__thumb.webp" : "__preview.webp";
+    const key = `${args.originalKey}${suffix}`;
     await uploadObject({
       bucket: args.bucket,
-      key: thumbKey,
-      body: thumb,
+      key,
+      body: buf,
       contentType: "image/webp",
     });
-    return thumbKey;
+    return key;
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.warn(`[variants] thumbnail generation failed for ${args.originalKey}: ${(e as Error).message}`);
+    console.warn(`[variants] ${args.kind} failed for ${args.originalKey}: ${(e as Error).message}`);
     return null;
   }
 }
@@ -341,15 +349,21 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
   const now = new Date();
 
   if (scan.result === "clean") {
-    // Generate thumbnail variant for image purposes. We already have the
-    // original buffer in memory from the scan; reuse it (saves an S3 GET).
+    // Generate variants for image purposes. We already have the original
+    // buffer in memory from the scan; reuse it (saves two S3 GETs).
     let thumbnailKey: string | null = null;
+    let previewKey: string | null = null;
     if (VARIANT_PURPOSES.has(m.purpose)) {
-      thumbnailKey = await tryGenerateThumbnail({
+      const common = {
         bucket: m.bucket_alias as BucketAlias,
         originalKey: m.storage_key,
         originalBuffer: buf,
-      });
+      } as const;
+      // Run sequentially — sharp internally uses libvips threads; parallel
+      // sharp calls on one buffer race the underlying file descriptor in
+      // some libvips versions.
+      thumbnailKey = await tryGenerateVariant({ ...common, kind: "thumbnail" });
+      previewKey = await tryGenerateVariant({ ...common, kind: "preview" });
     }
     await db.transaction(async (tx) => {
       const upd = await tx
@@ -359,6 +373,7 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
           ready_at: now,
           scan_completed_at: now,
           ...(thumbnailKey ? { thumbnail_key: thumbnailKey } : {}),
+          ...(previewKey ? { preview_key: previewKey } : {}),
         })
         .where(and(eq(mediaObjects.id, mediaId), eq(mediaObjects.status, "awaiting_scan")))
         .returning({ id: mediaObjects.id });
@@ -372,6 +387,7 @@ export async function scanMediaObject(mediaId: string): Promise<"clean" | "infec
           purpose: m.purpose,
           listing_id: m.listing_id,
           has_thumbnail: thumbnailKey != null,
+          has_preview: previewKey != null,
         },
       });
     });
@@ -481,7 +497,11 @@ export async function getMetadata(args: { user_id: string | null; media_id: stri
       height_px: m.height_px,
       status: m.status,
       created_at: m.created_at.toISOString(),
-      variants: m.thumbnail_key ? ["original", "thumbnail"] : ["original"],
+      variants: [
+        "original",
+        ...(m.thumbnail_key ? ["thumbnail"] : []),
+        ...(m.preview_key ? ["preview"] : []),
+      ],
     },
   };
 }
@@ -524,8 +544,9 @@ export async function getStreamUrl(args: {
   // original — caller asked for a specific shape).
   let key = m.storage_key;
   if (args.variant && args.variant !== "original") {
-    if (args.variant !== "thumbnail" || !m.thumbnail_key) return err("not_found", 404);
-    key = m.thumbnail_key;
+    if (args.variant === "thumbnail" && m.thumbnail_key) key = m.thumbnail_key;
+    else if (args.variant === "preview" && m.preview_key) key = m.preview_key;
+    else return err("not_found", 404);
   }
 
   const url = await presignDownload({
