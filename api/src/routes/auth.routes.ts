@@ -127,6 +127,30 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
     return { ok: true };
   });
+
+  // Email verification — current user requests a fresh token. Always 204
+  // (no enumeration concern since this is auth'd, but consistent with
+  // /auth/forgot-password).
+  server.post(
+    "/auth/request-email-verification",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      await auth.requestEmailVerification({
+        user_id: req.auth!.user_id,
+        email: req.auth!.email,
+      });
+      return reply.code(204).send();
+    }
+  );
+
+  const verifyEmailSchema = z.object({ token: z.string().min(8).max(128) });
+  server.post("/auth/verify-email", async (req, reply) => {
+    const parsed = verifyEmailSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+    const r = await auth.verifyEmail(parsed.data.token);
+    if (!r.ok) return reply.code(r.error.status).send({ error: r.error.code });
+    return r.value;
+  });
 };
 
 export const usersRoutes: FastifyPluginAsync = async (server) => {

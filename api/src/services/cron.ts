@@ -320,6 +320,7 @@ export async function runAllJobs(): Promise<Record<string, number>> {
   results.push_drain = await drainPushQueue().catch(() => 0);
   results.sessions_purge = await sessionsPurge();
   results.password_reset_tokens_purge = await passwordResetTokensPurge();
+  results.email_verification_tokens_purge = await emailVerificationTokensPurge();
   return results;
 }
 
@@ -344,6 +345,16 @@ export async function passwordResetTokensPurge(): Promise<number> {
     `DELETE FROM password_reset_tokens
       WHERE (used_at IS NULL AND expires_at < now() - interval '1 day')
          OR (used_at IS NOT NULL AND used_at < now() - interval '30 days')`
+  );
+}
+
+/** Same retention shape for email_verification_tokens (24h TTL). */
+export async function emailVerificationTokensPurge(): Promise<number> {
+  return exec(
+    "email_verification_tokens_purge",
+    `DELETE FROM email_verification_tokens
+      WHERE (used_at IS NULL AND expires_at < now() - interval '7 days')
+         OR (used_at IS NOT NULL AND used_at < now() - interval '90 days')`
   );
 }
 

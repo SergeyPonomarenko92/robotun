@@ -48,6 +48,7 @@ export const users = pgTable(
     display_name: text("display_name").notNull(),
     avatar_url: text("avatar_url"),
     email_verified: boolean("email_verified").notNull().default(false),
+    email_verified_at: timestamp("email_verified_at", { withTimezone: true }),
     status: userStatusEnum("status").notNull().default("pending"),
     kyc_status: kycStatusEnum("kyc_status").notNull().default("none"),
     payout_enabled: boolean("payout_enabled").notNull().default(false),
@@ -96,6 +97,24 @@ export const userRoles = pgTable(
  * an opaque random string; we store only its SHA-256 hash. Each session
  * tracks `revoked` for rotation/replay-prevention.
  */
+export const emailVerificationTokens = pgTable(
+  "email_verification_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    user_id: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    token_hash: text("token_hash").notNull(),
+    expires_at: timestamp("expires_at", { withTimezone: true }).notNull(),
+    used_at: timestamp("used_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    hashUniq: uniqueIndex("uq_email_verification_tokens_hash").on(t.token_hash),
+    userIdx: index("idx_email_verification_tokens_user").on(t.user_id),
+  })
+);
+
 export const passwordResetTokens = pgTable(
   "password_reset_tokens",
   {

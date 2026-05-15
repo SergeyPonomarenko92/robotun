@@ -4,7 +4,7 @@
  */
 import { eq, and, isNull, gt, desc, sql as dsql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { passwordResetTokens, sessions, userRoles, users } from "../db/schema.js";
+import { emailVerificationTokens, passwordResetTokens, sessions, userRoles, users } from "../db/schema.js";
 import { sendEmail } from "./email.js";
 import { randomBytes } from "node:crypto";
 import { env } from "../config/env.js";
@@ -100,6 +100,14 @@ export async function register(
     user_agent: input.user_agent,
     ip: input.ip,
   });
+
+  // Fire-and-forget email verification — failure logs but doesn't block
+  // registration. User can re-request via /auth/request-email-verification.
+  requestEmailVerification({ user_id: user.id, email: user.email }).catch((e) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[register] verify-email enqueue failed for ${user.email}: ${(e as Error).message}`);
+  });
+
   return {
     ok: true,
     result: {
@@ -260,6 +268,66 @@ export async function listActiveSessions(userId: string) {
       expires_at: r.expires_at.toISOString(),
     })),
   };
+}
+
+/* ----------------------------- EMAIL VERIFY -------------------------- */
+
+const EMAIL_VERIFY_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+export async function requestEmailVerification(args: {
+  user_id: string;
+  email: string;
+}): Promise<{ ok: true }> {
+  const plaintext = randomBytes(32).toString("base64url");
+  const tokenHash = sha256Hex(plaintext);
+  const expiresAt = new Date(Date.now() + EMAIL_VERIFY_TTL_MS);
+  await db.insert(emailVerificationTokens).values({
+    user_id: args.user_id,
+    token_hash: tokenHash,
+    expires_at: expiresAt,
+  });
+  const link = `${BRAND_URL}/verify-email?token=${plaintext}`;
+  sendEmail({
+    to: args.email,
+    subject: "Підтвердьте email на Robotun",
+    text: `Підтвердьте свою адресу email — посилання дійсне 24 години:\n\n${link}`,
+  }).catch((e) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[email-verify] send failed for ${args.email}: ${(e as Error).message}`);
+  });
+  return { ok: true };
+}
+
+type VerifyEmailError = { code: "token_invalid" | "token_used" | "token_expired"; status: number };
+
+export async function verifyEmail(token: string): Promise<
+  { ok: true; value: { email: string } } | { ok: false; error: VerifyEmailError }
+> {
+  const tokenHash = sha256Hex(token);
+  return await db.transaction(async (tx) => {
+    const r = await tx
+      .select()
+      .from(emailVerificationTokens)
+      .where(eq(emailVerificationTokens.token_hash, tokenHash))
+      .limit(1);
+    if (r.length === 0) return { ok: false as const, error: { code: "token_invalid" as const, status: 400 } };
+    const row = r[0]!;
+    if (row.used_at) return { ok: false as const, error: { code: "token_used" as const, status: 400 } };
+    if (row.expires_at.getTime() < Date.now()) {
+      return { ok: false as const, error: { code: "token_expired" as const, status: 400 } };
+    }
+    const now = new Date();
+    const u = await tx
+      .update(users)
+      .set({ email_verified: true, email_verified_at: now })
+      .where(eq(users.id, row.user_id))
+      .returning({ email: users.email });
+    await tx
+      .update(emailVerificationTokens)
+      .set({ used_at: now })
+      .where(eq(emailVerificationTokens.id, row.id));
+    return { ok: true as const, value: { email: u[0]?.email ?? "" } };
+  });
 }
 
 /* ----------------------------- PASSWORD RESET ------------------------- */
