@@ -443,6 +443,65 @@ export async function changePassword(args: {
   return { ok: true };
 }
 
+/* ----------------------------- DATA EXPORT --------------------------- */
+
+/** GDPR Art.20 right-to-data-portability. Returns a JSON snapshot of the
+ *  user's data across all modules. Synchronous because the volume is
+ *  bounded by per-user CAPs; v2 should switch to async with email-link
+ *  delivery for users with very long history. */
+export async function exportUserData(userId: string) {
+  const profile = await getCurrentUserProfile(userId);
+  if (!profile) return null;
+
+  // Use raw SQL to avoid pulling every drizzle schema import here.
+  const deals = await db.execute(
+    dsql`SELECT id, status, title, agreed_price, created_at, completed_at, cancellation_reason,
+                CASE WHEN client_id = ${userId} THEN 'client' ELSE 'provider' END AS my_role
+           FROM deals
+          WHERE client_id = ${userId} OR provider_id = ${userId}
+          ORDER BY created_at DESC`
+  );
+  const reviews = await db.execute(
+    dsql`SELECT id, deal_id, reviewer_role, overall_rating, comment, created_at
+           FROM reviews WHERE reviewer_id = ${userId}
+          ORDER BY created_at DESC`
+  );
+  const sessionsList = await db.execute(
+    dsql`SELECT id, user_agent, ip, created_at, expires_at, revoked_at
+           FROM sessions WHERE user_id = ${userId}
+          ORDER BY created_at DESC`
+  );
+  const media = await db.execute(
+    dsql`SELECT id, purpose, status, mime_type, byte_size, created_at
+           FROM media_objects WHERE owner_user_id = ${userId}
+          ORDER BY created_at DESC`
+  );
+  const prefs = await db.execute(
+    dsql`SELECT notification_code, channel, enabled, updated_at
+           FROM notification_preferences WHERE user_id = ${userId}`
+  );
+  const auditEvents = await db.execute(
+    dsql`SELECT event_type, ip, user_agent, metadata, created_at
+           FROM auth_audit_events WHERE user_id = ${userId}
+          ORDER BY id DESC LIMIT 500`
+  );
+
+  return {
+    exported_at: new Date().toISOString(),
+    profile,
+    deals,
+    reviews,
+    sessions: sessionsList,
+    media,
+    notification_preferences: prefs,
+    auth_audit_recent: auditEvents,
+    // Messages and KYC documents intentionally excluded — they're per
+    // their own modules' GDPR export surfaces (Messaging exports via
+    // /me/data-export/messages; KYC docs require admin-mediated transfer
+    // per spec §SEC-007).
+  };
+}
+
 /* ----------------------------- ACCOUNT DELETE ------------------------ */
 
 type DeleteAccountError = { code: "wrong_password" | "user_not_found" | "already_deleted"; status: number };

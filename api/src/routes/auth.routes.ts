@@ -365,6 +365,23 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // GDPR Art.20 right-to-data-portability. Synchronous JSON snapshot of
+  // the user's data across modules. Reply has Content-Disposition so the
+  // browser can save-as.
+  server.get(
+    "/me/data-export",
+    { preHandler: server.authenticate },
+    async (req, reply) => {
+      const data = await auth.exportUserData(req.auth!.user_id);
+      if (!data) return reply.code(404).send({ error: "user_not_found" });
+      reply.header(
+        "Content-Disposition",
+        `attachment; filename="robotun-data-${req.auth!.user_id}.json"`
+      );
+      return data;
+    }
+  );
+
   // Own audit trail. Cursor pagination on the bigserial id, 100/page max.
   const audSchema = z.object({
     limit: z.coerce.number().int().min(1).max(100).default(20),
