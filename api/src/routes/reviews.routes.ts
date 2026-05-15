@@ -55,6 +55,18 @@ export const reviewsRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // Spec §4.9 — single-review fetch, anonymous-allowed. SEC-007 identical
+  // 404 hides invisibility from non-existence.
+  server.get<{ Params: { id: string } }>(
+    "/reviews/:id",
+    async (req, reply) => {
+      const viewerId = (req.auth?.user_id as string | undefined) ?? null;
+      const r = await svc.getById(viewerId, req.params.id);
+      if (r === null) return reply.code(404).send({ error: "review_not_found" });
+      return r;
+    }
+  );
+
   server.get<{ Params: { id: string } }>(
     "/listings/:id/reviews",
     async (req) => {

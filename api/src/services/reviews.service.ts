@@ -54,6 +54,17 @@ export async function createReview(input: CreateInput): Promise<Result<{ id: str
   }
 
   return await db.transaction(async (tx) => {
+    // FOR UPDATE on the deal row serializes the two concurrent submits
+    // (client + provider). Without the lock the trg_set_both_submitted
+    // trigger sees the counterparty's still-uncommitted row in only one
+    // of the two transactions and `both_submitted` drifts. Both rows now
+    // observe the other after the second one commits, so the trigger sets
+    // both flags correctly on the second insert. MVP immediate-reveal
+    // makes this latent today; v2 blind-reveal would surface the drift.
+    const dlock = await tx.execute<{ id: string }>(
+      dsql`SELECT id FROM deals WHERE id = ${input.deal_id} FOR UPDATE`
+    );
+    if (dlock.length === 0) return err("deal_not_found", 404);
     const dr = await tx
       .select()
       .from(deals)
@@ -64,13 +75,18 @@ export async function createReview(input: CreateInput): Promise<Result<{ id: str
 
     const isClient = d.client_id === input.reviewer_id;
     const isProvider = d.provider_id === input.reviewer_id;
-    if (!isClient && !isProvider) return err("forbidden", 403);
+    // Spec §4.9: "not a deal participant" and "deal not in terminal review
+    // state" collapse to the same 403 deal_not_eligible code. Avoids leaking
+    // whether a non-participant guessed a real deal id.
+    if (!isClient && !isProvider) {
+      return err("deal_not_eligible", 403, { reason: "not_a_party" });
+    }
 
     // Reviews only on terminal completed/disputed/cancelled deals — but spec
     // is "after completion". MVP: require status='completed'. Drop disputed
     // path until Module 14 is wired.
     if (d.status !== "completed") {
-      return err("deal_not_eligible", 409, { current_status: d.status });
+      return err("deal_not_eligible", 403, { current_status: d.status });
     }
 
     // Window: 60d after completion. Anchored on deals.completed_at — written
@@ -81,7 +97,10 @@ export async function createReview(input: CreateInput): Promise<Result<{ id: str
     const anchor = d.completed_at ?? d.updated_at;
     const windowEnd = new Date(anchor.getTime() + REVIEW_WINDOW_DAYS * 24 * 3600 * 1000);
     if (Date.now() > windowEnd.getTime()) {
-      return err("review_window_closed", 409, { window_until: windowEnd.toISOString() });
+      // Spec §4.9 — window-closed is a sub-case of deal_not_eligible (403).
+      // Distinct error code kept so FE error UX can render the specific
+      // "review window has closed" message.
+      return err("review_window_closed", 403, { window_until: windowEnd.toISOString() });
     }
 
     const role: "client" | "provider" = isClient ? "client" : "provider";
@@ -147,7 +166,8 @@ export async function createReview(input: CreateInput): Promise<Result<{ id: str
 
     return { ok: true as const, value: { id: rid, reviewer_role: role } };
   }).catch((e) => {
-    if (pgCode(e) === "23505") return err("review_already_exists", 409);
+    // Spec §4.9 canonical code is `already_reviewed`.
+    if (pgCode(e) === "23505") return err("already_reviewed", 409);
     throw e;
   });
 }
@@ -410,6 +430,35 @@ export async function aggregatesFor(targetType: "listing" | "user", id: string) 
     avg_rating: rows[0]?.avg_rating ?? null,
     review_count: rows[0]?.review_count ?? 0,
   };
+}
+
+/**
+ * Spec §4.9 GET /reviews/{id}. SEC-007: identical 404 for "review does not
+ * exist" and "review is not publicly visible". Owner (the reviewer) can fetch
+ * their own pre-reveal review when authenticated.
+ */
+export async function getById(
+  viewerId: string | null,
+  reviewId: string
+): Promise<PublicReview | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(reviewId)) return null;
+  const r = await db
+    .select({
+      id: reviews.id,
+      reviewer_id: reviews.reviewer_id,
+      status: reviews.status,
+      revealed_at: reviews.revealed_at,
+    })
+    .from(reviews)
+    .where(eq(reviews.id, reviewId))
+    .limit(1);
+  if (r.length === 0) return null;
+  const row = r[0]!;
+  const publiclyVisible = row.status === "published" && row.revealed_at != null;
+  const ownerView = viewerId != null && row.reviewer_id === viewerId;
+  if (!publiclyVisible && !ownerView) return null;
+  const items = await projectReviews([{ id: row.id }]);
+  return items[0] ?? null;
 }
 
 export async function listForDeal(viewerId: string, dealId: string) {
