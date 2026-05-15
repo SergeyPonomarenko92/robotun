@@ -80,7 +80,21 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
     }
   });
 
-  server.post("/auth/login", async (req, reply) => {
+  // AC-011 — per-IP login throttle 6/min independent of the global
+  // floor (240/min/IP). At the route level so brute-force attempts on
+  // /auth/login are bounded even if the attacker hasn't saturated the
+  // global counter via other endpoints.
+  server.post(
+    "/auth/login",
+    {
+      config: {
+        rateLimit: {
+          max: 6,
+          timeWindow: "1 minute",
+        },
+      },
+    },
+    async (req, reply) => {
     const parsed = credentialsSchema.safeParse(req.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid_body" });
@@ -128,7 +142,8 @@ export const authRoutes: FastifyPluginAsync = async (server) => {
       user_agent: m.user_agent,
     });
     return reply.code(200).send(r.result);
-  });
+  }
+  );
 
   server.post("/auth/refresh", async (req, reply) => {
     const parsed = refreshSchema.safeParse(req.body);
