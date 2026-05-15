@@ -450,6 +450,49 @@ export async function deleteAccount(args: {
   return { ok: true };
 }
 
+/* ----------------------------- ME PROFILE ---------------------------- */
+
+/** Fresh /users/me read — DB-backed (not JWT-claims-cached) so values
+ *  like email_verified, avatar_url, display_name reflect changes since
+ *  the access token was issued. JWT still gates auth; this just refreshes
+ *  the surface. */
+export async function getCurrentUserProfile(userId: string) {
+  const r = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      email_verified: users.email_verified,
+      email_verified_at: users.email_verified_at,
+      display_name: users.display_name,
+      avatar_url: users.avatar_url,
+      has_provider_role: users.has_provider_role,
+      kyc_status: users.kyc_status,
+      payout_enabled: users.payout_enabled,
+      mfa_enrolled: users.mfa_enrolled,
+      status: users.status,
+      created_at: users.created_at,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (r.length === 0) return null;
+  const u = r[0]!;
+  return {
+    id: u.id,
+    email: u.email,
+    email_verified: u.email_verified,
+    email_verified_at: u.email_verified_at?.toISOString() ?? null,
+    display_name: u.display_name,
+    avatar_url: u.avatar_url,
+    has_provider_role: u.has_provider_role,
+    kyc_status: u.kyc_status,
+    payout_enabled: u.payout_enabled,
+    mfa_enrolled: u.mfa_enrolled,
+    status: u.status,
+    created_at: u.created_at.toISOString(),
+  };
+}
+
 /* ----------------------------- AUTH AUDIT ---------------------------- */
 
 export type AuthEventType =

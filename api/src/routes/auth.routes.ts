@@ -321,19 +321,7 @@ export const usersRoutes: FastifyPluginAsync = async (server) => {
   server.get(
     "/users/me",
     { preHandler: server.authenticate },
-    async (req) => {
-      const u = req.auth!;
-      return {
-        id: u.user_id,
-        email: u.email,
-        display_name: u.display_name,
-        has_provider_role: u.has_provider_role,
-        kyc_status: u.kyc_status,
-        payout_enabled: u.payout_enabled,
-        mfa_enrolled: u.mfa_enrolled,
-        status: u.status,
-      };
-    }
+    async (req) => auth.getCurrentUserProfile(req.auth!.user_id)
   );
 
   // Active sessions for the current user. Refresh-token hashes are never
