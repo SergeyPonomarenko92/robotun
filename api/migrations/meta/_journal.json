@@ -218,6 +218,13 @@
       "when": 1779001500000,
       "tag": "0030_soft_delete_restore_window",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1779001600000,
+      "tag": "0031_users_email_citext",
+      "breakpoints": true
     }
   ]
 }

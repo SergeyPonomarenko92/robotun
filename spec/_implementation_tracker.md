@@ -60,14 +60,14 @@ After each closed item: commit hash in trailing `→ <hash>`.
 - SEC-003 MFA mandatory for admin/moderator — ✅ this turn. login + refresh both check (admin/mod OR has-role) && !mfa_enrolled → block. disableTotp 403 mfa_required_for_role for admin/mod (after pw+code verify so no oracle). Seed admin pre-enrolls with dev TOTP secret. **Deferred per critic**: RISK-1 spec amendment (AC-005 wording mfa_required vs mfa_enrollment_required), RISK-4 perf (cache is_privileged column), RISK-5 moderator route-gate consistency (spec ambiguous on which endpoints moderators access), RISK-6 require TOTP on resetPassword/changePassword for admins (next commit), RISK-7 seed rotation, RISK-8 distinct audit event mfa_enrollment_blocked.
 - SEC-004 MFA mandatory for provider before payout — ✅ d68d5a8.
 - SEC-005 RS256 + 90-day key rotation — 🟡 RS256 ✅; rotation procedural (not in code).
-- SEC-006 high-impact actions re-read role+status from DB — 🟡 NEED AUDIT site-by-site.
+- SEC-006 high-impact actions re-read role+status from DB — ✅ verified. Payout init (FOR UPDATE on users), elevateToProvider (RISK-2 fix), disableTotp role re-check, admin route requireAdmin helpers — all query DB fresh, not JWT claims.
 - SEC-007 login constant-time ≥300ms — ✅ withFloor.
 - SEC-008 generic invalid_credentials — ✅.
 - SEC-009 rate limits at gateway — ✅ a5b1a1d 240/min/IP global.
 - SEC-010 10 concurrent sessions cap, oldest revoked — ✅ this turn. issueTokensFor (called from register/login/refresh) wraps in db.transaction with SELECT FOR UPDATE on active sessions, computes overflow, revokes oldest BY created_at ASC, INSERT new — single tx. session_cap_revoked audit event with session_ids in metadata. Critic RISK-3 known: rotation makes created_at imperfect proxy for session age; documented for v2 session-origin lineage.
 
 ### Constraints (CON-001..CON-005)
-- CON-001 email CITEXT primary, phone secondary — 🟡 email lowercased manually (not CITEXT); phone NOT modeled.
+- CON-001 email CITEXT primary, phone secondary — 🟡 email **CITEXT done** (migration 0031); phone column STILL NOT modeled (deferred — REQ-002 scope, separate feature).
 - CON-002 soft-deleted email→tombstone + deleted_user_index — ✅ this turn. Email→`deleted-{uuid}@tombstone.local` per spec wording; deleted_user_index keeps salted hash.
 - CON-003 rate limits (exact thresholds) — 🟡 240/min/IP global; per-route fine-grained per spec TBD.
 - CON-004 audit_events append-only + monthly partitioned — 🟡 auth_audit_events append-only, NOT partitioned.
@@ -109,4 +109,6 @@ After each closed item: commit hash in trailing `→ <hash>`.
 
 ## Active task
 
-**Working** (Module 1 closed items): REQ-001 ✅, REQ-004 / AC-007 ✅, REQ-010 / CON-002 / AC-009 ✅, SEC-002 ✅, SEC-003 / AC-005 / RISK-6 ✅, SEC-010 / AC-010 ✅, AC-011 ✅. **Module 1 next**: SEC-001 verify Argon2id m=64MiB/t=3/p=1; SEC-006 audit high-impact actions re-read state from DB (not JWT); CON-001 email CITEXT; CON-004 audit_events partitioning monthly.
+**Module 1 closed (16 items)**: REQ-001, REQ-004, REQ-010, AC-001, AC-005, AC-007, AC-009, AC-010, AC-011, AC-012, SEC-001, SEC-002, SEC-003, SEC-006, SEC-010, CON-002. **Module 1 partially closed**: CON-001 (CITEXT done, phone column TBD). **Module 1 remaining MISSING/PARTIAL**: REQ-002 (Provider profile page details — needs Module 4+7+8 cross-section), REQ-004 audit-event for role grant (RISK-1 from earlier critic — minor), SEC-005 RS256 90-day key rotation (procedural), CON-004 audit_events monthly partitioning (bigger), AC-002 code rename email_taken→email_in_use (minor).
+
+**Phase next**: pivoting to Module 2 (Category Tree) or Module 3 (Deal Workflow) REQ sweep. Both modules already have MVP code shipped — sweep checks each REQ vs implementation.
