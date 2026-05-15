@@ -20,6 +20,7 @@ import { paymentsRoutes } from "./routes/payments.routes.js";
 import { disputesRoutes } from "./routes/disputes.routes.js";
 import { adminRoutes } from "./routes/admin.routes.js";
 import { pushRoutes } from "./routes/push.routes.js";
+import { searchRoutes } from "./routes/search.routes.js";
 import { consumeOutboxOnce } from "./services/notifications.service.js";
 import { startCronScheduler } from "./services/cron.js";
 import { ensureBuckets } from "./services/s3.js";
@@ -138,6 +139,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       await api.register(disputesRoutes);
       await api.register(adminRoutes);
       await api.register(pushRoutes);
+      await api.register(searchRoutes);
     },
     { prefix: "/api/v1" }
   );
