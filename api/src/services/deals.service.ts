@@ -132,13 +132,25 @@ export async function createDeal(input: CreateInput): Promise<Result<{ id: strin
 
     // Validate provider is actually a provider.
     const providerRows = await tx
-      .select({ has_provider_role: users.has_provider_role, status: users.status })
+      .select({
+        has_provider_role: users.has_provider_role,
+        status: users.status,
+        kyc_status: users.kyc_status,
+      })
       .from(users)
       .where(eq(users.id, input.provider_id))
       .limit(1);
     if (providerRows.length === 0) return err("provider_not_found", 404);
     if (!providerRows[0]!.has_provider_role) return err("not_a_provider", 422);
     if (providerRows[0]!.status !== "active") return err("provider_not_active", 422);
+    // KYC mirror of the Module 5 listings gate (63f493f). A provider whose
+    // KYC expired/never-approved shouldn't be findable for new deals, and
+    // any direct create-from-id path needs the same defense.
+    if (providerRows[0]!.kyc_status !== "approved") {
+      return err("provider_kyc_not_approved", 422, {
+        provider_kyc_status: providerRows[0]!.kyc_status,
+      });
+    }
 
     // Validate listing if supplied and matches provider + category.
     if (input.listing_id) {
