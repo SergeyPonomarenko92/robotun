@@ -294,7 +294,7 @@ export async function consumeOutboxOnce(): Promise<number> {
           and(
             inArray(notificationPreferences.user_id, allUserIds),
             inArray(notificationPreferences.notification_code, allCodes),
-            inArray(notificationPreferences.channel, ["in_app", "email"])
+            inArray(notificationPreferences.channel, ["in_app", "email", "push"])
           )
         );
       for (const r of prefRows) {
@@ -333,6 +333,25 @@ export async function consumeOutboxOnce(): Promise<number> {
                      notification_code, channel, title, body, payload, status)
                   VALUES (${uid}, ${plan.row.id}, ${plan.row.aggregate_type}, ${plan.row.aggregate_id},
                           ${plan.tpl.code}, 'email', ${plan.tpl.title(ctx)}, ${plan.tpl.body(ctx)},
+                          ${JSON.stringify(plan.row.payload)}::jsonb, 'pending')
+                  ON CONFLICT DO NOTHING`
+          );
+        }
+        // push: opt-IN (default false). Same MANDATORY policy as email.
+        // The push worker only attempts delivery if the user has registered
+        // a push_subscription — otherwise the notification row is created
+        // but stays unconsumed until subscription appears OR scan_attempts
+        // exhausts in drainPushQueue.
+        const pushEnabled = MANDATORY_CODES.has(plan.tpl.code)
+          ? true
+          : prefMap.get(`${uid}|${plan.tpl.code}|push`) ?? false;
+        if (pushEnabled) {
+          await tx.execute(
+            dsql`INSERT INTO notifications
+                    (recipient_user_id, source_event_id, aggregate_type, aggregate_id,
+                     notification_code, channel, title, body, payload, status)
+                  VALUES (${uid}, ${plan.row.id}, ${plan.row.aggregate_type}, ${plan.row.aggregate_id},
+                          ${plan.tpl.code}, 'push', ${plan.tpl.title(ctx)}, ${plan.tpl.body(ctx)},
                           ${JSON.stringify(plan.row.payload)}::jsonb, 'pending')
                   ON CONFLICT DO NOTHING`
           );
