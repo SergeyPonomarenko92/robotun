@@ -19,7 +19,11 @@ import {
   reviews,
 } from "../db/schema.js";
 
-const REVIEW_WINDOW_DAYS = 60;
+// Module 7 REQ-004 — eligible_until = eligible_from + 90 days. Earlier
+// MVP cut used 60d; spec amended to 90 (the §3.1 REQ-007 60d in Module
+// "marketplace social platform" referred to leaving a review at all,
+// while the Reviews-module spec gives the canonical window length).
+const REVIEW_WINDOW_DAYS = 90;
 
 type ServiceError = { code: string; status: number; details?: unknown };
 type Result<T> = { ok: true; value: T } | { ok: false; error: ServiceError };
